@@ -118,8 +118,8 @@ def load_toml(p: Path) -> dict:
         raise LogoError(f"{rel(p)} 格式错误：{e}")
 
 
-def render_template(name: str, **values: str) -> str:
-    text = (TEMPLATES / name).read_text(encoding="utf-8")
+def render_template(template_name: str, **values: str) -> str:
+    text = (TEMPLATES / template_name).read_text(encoding="utf-8")
     for k, v in values.items():
         text = text.replace("{{" + k + "}}", v)
     return text
