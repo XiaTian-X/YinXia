@@ -1,0 +1,39 @@
+[project]
+name = "{{name}}"
+slug = "{{slug}}"
+client = "Myself"
+created = "{{date}}"
+
+[state]
+stage = "briefing"
+selected_direction = ""
+selected_version = ""
+current_release = ""
+updated = "{{date}}"
+
+[palette]
+primary = "#000000"
+secondary = "#666666"
+ink = "#111111"
+
+[color_modes]
+modes = ["color", "mono", "reversed"]
+[color_modes.mono]
+primary = "#000000"
+secondary = "#000000"
+ink = "#000000"
+[color_modes.reversed]
+primary = "#FFFFFF"
+secondary = "#FFFFFF"
+ink = "#FFFFFF"
+
+[fonts]
+used = []
+
+[layouts]
+logo = ["primary", "horizontal", "icon"]
+
+[export]
+profiles = ["general", "favicon", "ios", "android", "social"]
+android_background = "primary"
+android_foreground_mode = "reversed"

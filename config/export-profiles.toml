@@ -1,0 +1,75 @@
+[general]
+layout = ""
+sizes = [64, 128, 256, 512, 1024]
+# modes = ["color", "mono", "reversed"] # 默认取项目自身的 color_modes
+
+[favicon]
+layout = "icon"
+sizes = [16, 32, 48]
+ico_sizes = [16, 32, 48]
+apple_touch_layout = "icon"
+apple_touch_size = 180
+
+[ios]
+layout = "app-icon"
+sizes = [1024]
+opaque = true
+verified_on = "2026-10-09"
+
+[android]
+legacy_layout = "app-icon"
+play_store_size = 512
+adaptive_foreground_layout = "icon"
+adaptive_size = 432
+adaptive_safe_ratio = 0.5
+verified_on = "2026-10-09"
+[android.mipmap]
+mdpi = 48
+hdpi = 72
+xhdpi = 96
+xxhdpi = 144
+xxxhdpi = 192
+
+[social]
+[social.avatar]
+layout = "avatar"
+sizes = [400, 800, 1080]
+safe_radius_ratio = 0.8
+verified_on = "2026-10-09"
+
+[[social.cover]]
+id = "youtube"
+layout = "cover-16x9"
+width = 2560
+height = 1440
+safe = [507, 509, 1546, 423] # Desktop and mobile minimum safe area
+verified_on = "2026-10-09"
+
+[[social.cover]]
+id = "x"
+layout = "cover-3x1"
+width = 1500
+height = 500
+occlusions = [[0, 200, 400, 300]] # profile picture area roughly
+verified_on = "2026-10-09"
+
+[[social.cover]]
+id = "facebook"
+layout = "cover-2.7x1"
+width = 820
+height = 312
+verified_on = "2026-10-09"
+
+[[social.cover]]
+id = "linkedin"
+layout = "cover-6x1"
+width = 1128
+height = 191
+verified_on = "2026-10-09"
+
+[[social.cover]]
+id = "og"
+layout = "cover-og"
+width = 1200
+height = 630
+verified_on = "2026-10-09"
