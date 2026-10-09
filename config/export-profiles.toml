@@ -73,3 +73,17 @@ layout = "cover-og"
 width = 1200
 height = 630
 verified_on = "2026-10-09"
+
+[[social.cover]]
+id = "ratio-4x3"
+layout = "cover-4x3"
+width = 1600
+height = 1200
+verified_on = "2026-10-09"
+
+[[social.cover]]
+id = "ratio-3x4"
+layout = "cover-3x4"
+width = 1200
+height = 1600
+verified_on = "2026-10-09"
