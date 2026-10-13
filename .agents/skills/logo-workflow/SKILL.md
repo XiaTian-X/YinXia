@@ -31,6 +31,9 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 3. 编写 SVG：`projects/<slug>/directions/<字母>-<名>/vNNN/logo.svg`。
    文字用 `./logo outline --font <id> --text "…" --fill "#HEX" --project <slug>` 生成 `<path>` 粘贴进来。
 4. 预览自查：`./logo preview <slug> <字母>-vNNN`，**自己先看渲染图**（彩色/单色/反白、16/32/64px 可读性）。
+   出现“非彩色版只保留了彩色版部分细节”时，说明单色/反白版会糊成一块（印章、单色印刷、Android 主题图标都会用到）：
+   在 `project.toml` 的 `[color_modes.mono]` 中把部分颜色映射为 `#FFFFFF`、`[color_modes.reversed]` 中映射为 `#000000` 作为留白，
+   或在发布时提供 `<版式>.mono.svg` / `<版式>.reversed.svg`（可用黑白）。
 5. 写 `notes.md`：替换“改动说明”“理念体现”的占位；声明的效果必须与实际 SVG 一致，不夸大。
 6. 多方向时出对比图：`./logo compare <slug> [A-v003 B-v002 …]`，展示给用户。
 7. 用户反馈：以“日期 + 原话/要点”的形式**追加**到该版本 `notes.md` 的“评审与反馈”段。

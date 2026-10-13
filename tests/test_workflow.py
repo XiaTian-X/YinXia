@@ -184,6 +184,77 @@ class ExportTest(unittest.TestCase):
             self.assertIsNotNone(logo.android_safe_warning(bad, ap))
 
 
+# 依赖颜色区分结构的设计：方块上的圆，单色化后成为一整块
+COLOR_RELIANT = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+                 f'<rect x="5" y="5" width="90" height="90" fill="{PRIMARY}"/>'
+                 '<circle cx="50" cy="50" r="30" fill="#FFB300"/></svg>\n')
+
+
+@unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
+class MonoStructureTest(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self._cache = logo.STRUCTURE_CACHE
+        logo.STRUCTURE_CACHE = Path(tempfile.mkdtemp()) / "structure.json"  # 不写入真实仓库的缓存
+        self.addCleanup(setattr, logo, "STRUCTURE_CACHE", self._cache)
+        self.ws = Workspace()
+        self.addCleanup(self.ws.cleanup)
+        self.p = self.ws.new_project()
+        toml = self.p / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('secondary = "#666666"', 'secondary = "#FFB300"', 1),
+                        encoding="utf-8")
+
+    @staticmethod
+    def recolor(text: str, mapping: dict) -> str:
+        return logo.HEX_IN_TEXT_RE.sub(lambda m: mapping.get(m.group(0).upper(), m.group(0)), text)
+
+    def test_metric(self):
+        black = {PRIMARY: "#000000", "#FFB300": "#000000"}
+        keep = {PRIMARY: "#000000", "#FFB300": "#FFFFFF"}  # 修法：次色在单色版中留白
+        tri = TRIANGLE.format(c=PRIMARY)
+        self.assertIsNone(logo.structure_warning("tri", lambda m: tri if m == "color" else self.recolor(tri, black),
+                                                 ["color", "mono"], ""))
+        w = logo.structure_warning("blob", lambda m: COLOR_RELIANT if m == "color" else self.recolor(COLOR_RELIANT, black),
+                                   ["color", "mono"], "")
+        self.assertIn("单色版约", w)
+        self.assertIsNone(logo.structure_warning(
+            "fixed", lambda m: COLOR_RELIANT if m == "color" else self.recolor(COLOR_RELIANT, keep), ["color", "mono"], ""))
+
+    def test_check_preview_and_palette_fix(self):
+        ws = self.ws
+        ws.new_version(svg=COLOR_RELIANT)
+        self.assertEqual(ws.commit("projects", "[demo] A-v001").returncode, 0)
+        ws.logo("state", "demo", "selected_version=A-v001")
+        self.assertIn("选定版本 A-v001", ws.logo("check").stdout)
+        self.assertIn("非彩色版只保留", ws.logo("preview", "demo", "A-v001").stdout)
+        toml = self.p / "project.toml"
+        text = toml.read_text(encoding="utf-8")
+        mono, rev = text.index("[color_modes.mono]"), text.index("[color_modes.reversed]")
+        text = (text[:mono] + text[mono:rev].replace('secondary = "#000000"', 'secondary = "#FFFFFF"')
+                + text[rev:].replace('secondary = "#FFFFFF"', 'secondary = "#000000"'))
+        toml.write_text(text, encoding="utf-8")
+        self.assertNotIn("非彩色版只保留", ws.logo("check").stdout)
+
+    def test_release_layouts_grouped_and_override_fix(self):
+        ws = self.ws
+        ws.new_version()
+        ws.commit("projects", "[demo] A-v001")
+        ws.logo("release", "demo", "--from", "A-v001")
+        ldir = self.p / "releases" / "r1" / "layouts"
+        logos = ["primary", "horizontal", "icon", "wordmark-cn", "wordmark-en"]
+        for n in logos:
+            (ldir / f"{n}.svg").write_text(COLOR_RELIANT, encoding="utf-8")
+        out = ws.logo("check").stdout
+        self.assertIn("primary.svg（同内容：horizontal、icon、wordmark-cn、wordmark-en）", out)
+        kept = COLOR_RELIANT.replace("#FFB300", "#FFFFFF").replace(PRIMARY, "#000000")
+        for n in logos:
+            for mode, txt in (("mono", kept), ("reversed", kept.replace("#000000", "#X").replace("#FFFFFF", "#000000")
+                                                         .replace("#X", "#FFFFFF"))):
+                (ldir / f"{n}.{mode}.svg").write_text(txt, encoding="utf-8")
+        self.assertNotIn("非彩色版只保留", ws.logo("check").stdout)
+
+
 @unittest.skipUnless(any(f.name == "Inter-Regular.ttf" for f in FONT_BINARIES), "Inter 未下载")
 class OutlineTest(unittest.TestCase):
     def setUp(self):

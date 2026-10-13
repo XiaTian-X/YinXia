@@ -89,7 +89,7 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 系统仓库的 `.gitignore` 采用白名单：根目录默认忽略一切，只放行系统文件；放行的目录内仍忽略临时文件、日志、编辑器杂物、密钥与字体文件。
 项目仓库的 `.gitignore` 同样是白名单，逐层只放行规定的项目文件（由 `./logo setup` 从 `templates/projects.gitignore` 生成，与模板不一致时 `check` 会提醒）。
 
-同时会提醒（不拦截）：选定版本尚未发布、`final/` 与当前发布不一致、当前发布缺少导出所需版式、头像超出圆形安全区、Android 图标超出 66dp 安全区、brief.md 未填完、平台导出规格未核实或缺少来源。
+同时会提醒（不拦截）：选定版本尚未发布、`final/` 与当前发布不一致、当前发布缺少导出所需版式、头像超出圆形安全区、Android 图标超出 66dp 安全区、单色/反白版丢失内部细节（糊成一块）、brief.md 未填完、平台导出规格未核实或缺少来源。
 
 `./logo export` 先在临时目录生成全部文件，成功后才整体替换 `final/`；发布的 `guide.md` 未填完时拒绝导出。
 

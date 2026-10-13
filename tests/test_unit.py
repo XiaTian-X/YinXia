@@ -155,6 +155,14 @@ class PreviewAndModesTest(unittest.TestCase):
             self.assertEqual(logo.layout_mode_text(p, ldir, "icon", "mono"), "OVERRIDE")
             self.assertIn("#00897B", logo.layout_mode_text(p, ldir, "icon", "color"))  # color 不可覆盖
 
+    def test_override_palette_allows_black_and_white(self):
+        p, base = self.FakeProject(), {"#00897B"}
+        self.assertEqual(logo.layout_palette(p, Path("icon.svg"), base), base)  # 普通版式只能用色板
+        self.assertEqual(logo.layout_palette(p, Path("cover-2.7x1.svg"), base), base)  # 比例里的点不算配色模式
+        mono = logo.layout_palette(p, Path("icon.mono.svg"), base)
+        self.assertTrue({"#000000", "#FFFFFF", "#00897B"} <= mono)
+        self.assertNotIn("#FF0000", mono)
+
     def test_dark_background(self):
         self.assertEqual(logo.dark_background(self.FakeProject()), "#1A1A1A")
         light = self.FakeProject()

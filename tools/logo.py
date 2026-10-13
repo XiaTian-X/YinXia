@@ -139,6 +139,16 @@ DOC_TEMPLATES = [
 DECISION_REF_RE = re.compile(r"decisions/(\d{3}-[a-z0-9-]+\.md)")
 CONCEPT_REF_RE = re.compile(r"concepts/(\d{3}-[a-z0-9-]+\.md)")
 
+# 单色/反白版结构检查：只看图形内部（离轮廓 2px 以上）的颜色分界线——外轮廓任何配色都会保留，不能算数。
+# 非彩色版保留的内部分界线不足彩色版的 STRUCTURE_MIN_RATIO 时提醒。标定（256px 渲染）：
+# cat-dog 各版本单色化后 0%；正确修复（次色留白）100%；单色 Logo、acme 等无内部结构的跳过。
+STRUCTURE_MIN_RATIO = 0.6
+STRUCTURE_MIN_INTERIOR = 150  # 彩色版内部分界线少于此像素数视为没有内部结构（如同色图形重叠的抗锯齿接缝）
+STRUCTURE_RENDER_SIZE = 256
+STRUCTURE_CACHE = CACHE / "structure-cache.json"
+MODE_NAMES = {"color": "彩色", "mono": "单色", "reversed": "反白"}
+STRUCTURE_PALETTE_HINT = "在 [color_modes.mono] 中把部分颜色映射为 #FFFFFF、在 [color_modes.reversed] 中映射为 #000000，作为留白保留细节"
+
 # release.md 头部字段（模板写法 “- **基于**: A-v001”）到元数据键名的映射
 RELEASE_META_KEYS = {"基于": "based_on", "日期": "date", "based_on": "based_on", "date": "date"}
 
@@ -404,6 +414,30 @@ def avatar_safe_warning(ldir: Path, av: dict) -> str | None:
     return None
 
 
+def release_structure_warnings(p: Project, ldir: Path, prof: dict) -> list[str]:
+    """检查发布中各标志版式（及 Android 单色层所用版式）的单色/反白结构；内容相同的版式只检查一次。"""
+    cfg = p.cfg
+    modes = cfg.get("color_modes", {}).get("modes", ["color"])
+    targets = {n: modes for n in cfg.get("layouts", {}).get("logo", [])}
+    ap = prof.get("android", {})
+    if "android" in cfg.get("export", {}).get("profiles", []) and ap.get("adaptive_foreground_layout"):
+        fg = ap["adaptive_foreground_layout"]
+        targets[fg] = sorted(set(targets.get(fg, [])) | {"color", "mono"})  # Android 13+ 主题图标使用单色层
+    groups: dict[tuple, list[str]] = {}  # 内容与配色模式都相同的版式合并为一组，只检查一次
+    for name, ms in targets.items():
+        if (ldir / f"{name}.svg").exists():
+            key = (tuple(ms), tuple(layout_mode_text(p, ldir, name, m) for m in ms))
+            groups.setdefault(key, []).append(name)
+    out = []
+    for (ms, _), names in groups.items():
+        first = names[0]
+        label = rel(ldir / f"{first}.svg") + (f"（同内容：{'、'.join(names[1:])}）" if names[1:] else "")
+        hint = f"可提供 {first}.mono.svg / {first}.reversed.svg 等手工配色文件，或{STRUCTURE_PALETTE_HINT}"
+        if (w := structure_warning(label, lambda m, n=first: layout_mode_text(p, ldir, n, m), ms, hint)):
+            out.append(w)
+    return out
+
+
 def render_android_foreground(p: Project, ldir: Path, ap: dict, mode: str, out: Path) -> Path:
     """按自适应图标规格生成前景层：图形缩放进中心区域，再扩展到整层画布（透明）。"""
     size = ap["adaptive_size"]
@@ -421,6 +455,54 @@ def android_safe_warning(png: Path, ap: dict) -> str | None:
     if alpha_outside_circle(png, ratio) > 0.05:
         return f"Android 自适应图标前景超出 {round(ratio * 108)}dp 安全区，在部分启动器的遮罩下会被裁切"
     return None
+
+
+def interior_edge_pixels(svg_text: str) -> float:
+    """渲染后统计图形内部的颜色分界像素数（排除外轮廓附近 2px），结果按内容哈希缓存。"""
+    key = hashlib.sha256(f"v2|{STRUCTURE_RENDER_SIZE}|{svg_text}".encode("utf-8")).hexdigest()
+    try:
+        cache = json.loads(STRUCTURE_CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    if key in cache:
+        return cache[key]
+    with tempfile.TemporaryDirectory() as td:
+        svg = Path(td) / "s.svg"
+        svg.write_text(svg_text, encoding="utf-8")
+        png = render_fit(svg, Path(td) / "s.png", STRUCTURE_RENDER_SIZE)
+        # 颜色边缘：逐通道对称梯度（两侧都计），取最大值后二值化；
+        # 内部掩膜：不透明区域向内收缩 2px，去掉外轮廓及抗锯齿造成的环；两者相乘后计数
+        val = float(run(["magick", str(png),
+                         "(", "-clone", "0", "-alpha", "off", "-separate", "-morphology", "Edge", "Diamond:1",
+                         "-evaluate-sequence", "max", "-threshold", "12%", ")",
+                         "(", "-clone", "0", "-alpha", "extract", "-threshold", "50%",
+                         "-morphology", "Erode", "Disk:2", ")",
+                         "-delete", "0", "-compose", "multiply", "-composite",
+                         "-format", "%[fx:mean*w*h]", "info:"], capture=True).strip() or 0)
+    cache[key] = val
+    STRUCTURE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+    STRUCTURE_CACHE.write_text(json.dumps(cache), encoding="utf-8")
+    return val
+
+
+def structure_warning(label: str, mode_text, modes: list[str], fix_hint: str) -> str | None:
+    """比较彩色版与各非彩色版的分界线；有配色模式保留不足 STRUCTURE_MIN_RATIO 时返回一条提醒。
+
+    mode_text(mode) 返回该配色下的 SVG 文本（与导出相同的逻辑，含手工覆盖文件）。
+    """
+    color = interior_edge_pixels(mode_text("color"))
+    if color < STRUCTURE_MIN_INTERIOR:
+        return None  # 没有可丢失的内部结构
+    lost = []
+    for mode in modes:
+        if mode == "color":
+            continue
+        ratio = min(interior_edge_pixels(mode_text(mode)) / color, 1.0)
+        if ratio < STRUCTURE_MIN_RATIO:
+            lost.append(f"{MODE_NAMES.get(mode, mode)}版约 {ratio:.0%}")
+    if not lost:
+        return None
+    return (f"{label}：非彩色版只保留了彩色版部分细节（{'、'.join(lost)}），图形可能糊成一块；{fix_hint}")
 
 
 def strip_element_by_id(src: Path, element_id: str) -> str | None:
@@ -906,6 +988,10 @@ def cmd_preview(a) -> None:
     out = make_preview_sheet(p, mode_text, CACHE / p.slug / "preview" / f"{label}.png")
     print(f"预览：{rel(out)}")
     print("第一行：彩色 / 单色 / 反白；第二行：16px×8、32px×4、64px×2 放大查看小尺寸效果")
+    modes = p.cfg.get("color_modes", {}).get("modes", ["color", "mono", "reversed"])
+    if (w := structure_warning(a.target, mode_text, modes,
+                               f"可{STRUCTURE_PALETTE_HINT}，或在发布时提供 <版式>.mono.svg")):
+        print(f"⚠ {w}")
 
 
 def cmd_compare(a) -> None:
@@ -983,7 +1069,7 @@ def cmd_export(a) -> None:
 
     errors, warnings = [], []
     for f in sorted(ldir.glob("*.svg")):
-        check_svg(f, set(p.palette.values()), errors, warnings)
+        check_svg(f, layout_palette(p, f, set(p.palette.values())), errors, warnings)
     if errors:
         raise LogoError("版式未通过检查：\n  " + "\n  ".join(errors))
 
@@ -1102,6 +1188,7 @@ def build_export(p: Project, cfg: dict, rid: str, rdir: Path, ldir: Path, root_v
             outputs.append(f)
         if (w := android_safe_warning(adir / "ic_launcher_foreground.png", ap)):
             warnings.append(w)
+    warnings.extend(release_structure_warnings(p, ldir, prof))
 
     if "social" in enabled:
         sp = prof["social"]
@@ -1233,6 +1320,17 @@ def check_svg(path: Path, palette: set[str], errors: list[str], warnings: list[s
                 check_color_value(v, palette, f"{r} <style {prop}>", errors)
 
 
+def layout_palette(p: Project, f: Path, palette: set[str]) -> set[str]:
+    """版式允许的颜色：色板；手工配色文件 name.mode.svg 另可使用该模式的映射色与黑白（单色/反白版本来就是黑白）。"""
+    m = re.fullmatch(r"(.+)\.([a-z]+)", f.stem)
+    if not m or m.group(2) == "color":
+        return palette
+    try:
+        return palette | set(p.mode_map(m.group(2)).values()) | {"#000000", "#FFFFFF"}
+    except LogoError:
+        return palette  # 未知配色模式，由覆盖文件检查报错
+
+
 def check_project(p: Project, errors: list[str], warnings: list[str], staged: bool = False) -> None:
     try:
         cfg = p.cfg
@@ -1297,7 +1395,7 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
             errors.append(f"{rel(rd)}: 追溯链断裂：{e}")
         ldir = rd / "layouts"
         for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
-            check_svg(f, palette, errors, warnings, staged)
+            check_svg(f, layout_palette(p, f, palette), errors, warnings, staged)
             m = re.fullmatch(r"(.+)\.([a-z]+)", f.stem)  # 手工配色覆盖文件 name.mode.svg（cover-2.7x1 不算）
             if m:
                 base, mode = m.groups()
@@ -1322,6 +1420,7 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
             if "social" in enabled:
                 if (w := avatar_safe_warning(ldir, prof["social"]["avatar"])):
                     warnings.append(w)
+            warnings.extend(release_structure_warnings(p, ldir, prof))
             ap = prof.get("android", {})
             if "android" in enabled and (ldir / f"{ap.get('adaptive_foreground_layout')}.svg").exists():
                 with tempfile.TemporaryDirectory() as td:
@@ -1330,6 +1429,17 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
                         warnings.append(f"{rel(ldir)}: {w}")
         except LogoError as e:
             warnings.append(f"{rel(ldir)}: 无法完成版式检查：{e}")
+
+    if sel_ver and "selected_version" in valid and (cur_rel not in release_versions
+                                                    or release_versions[cur_rel] != sel_ver):
+        svg = p.version_dir(sel_ver) / "logo.svg"
+        try:
+            w = structure_warning(f"{rel(svg)}（选定版本 {sel_ver}）", lambda m: recolor_svg(svg, p.mode_map(m)),
+                                  modes, f"可{STRUCTURE_PALETTE_HINT}")
+            if w:
+                warnings.append(w)
+        except LogoError as e:
+            warnings.append(f"{rel(svg)}: 无法完成单色结构检查：{e}")
 
     final = p.dir / "final"
     if final.exists():

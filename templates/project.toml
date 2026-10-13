@@ -19,6 +19,8 @@ ink = "#111111"
 
 [color_modes]
 modes = ["color", "mono", "reversed"]
+# 单色/反白版默认把所有颜色映射为同一种颜色；图形内部靠颜色区分的细节会因此消失（check 会提醒）。
+# 需要保留时，把内部细节的颜色映射为留白：单色版用 #FFFFFF，反白版用 #000000。
 [color_modes.mono]
 primary = "#000000"
 secondary = "#000000"
