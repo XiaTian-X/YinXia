@@ -54,13 +54,13 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 | `./logo new <slug> --name 名称` | 新建项目 |
 | `./logo concept <slug> <图片> --name x --prompt "…"` | 登记概念图 |
 | `./logo direction <slug> A mountain` | 新建方向 |
-| `./logo version <slug> A [--from B-v002]` | 新建版本 |
+| `./logo version <slug> A [--from B-v002] [--inspired-by 001]` | 新建版本（可引用概念图） |
 | `./logo preview <slug> A-v001` / `compare <slug>` | 预览 / 多版本对比（输出到 `.cache/`） |
 | `./logo decision <slug> select-direction-a` | 新建决策记录 |
 | `./logo state <slug> [key=value…]` | 查看/更新状态 |
 | `./logo release <slug> --from A-v004` | 新建发布 |
 | `./logo export <slug>` | 从当前发布生成 `final/` |
-| `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug>` | 文字转路径 |
+| `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug>` | 文字转路径（默认应用字距调整，`--no-kern` 关闭） |
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
 
 ## 规则如何被强制执行
@@ -68,13 +68,16 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 `./logo check` 会拦截下列问题。提交时两个仓库的钩子分别以 `--staged --scope system|projects` 运行：项目仓库的不可变规则与 SVG 规范按暂存区内容检查，其余按工作区检查；系统仓库提交时，项目仓库里的问题只提醒、不拦截。
 
 - 已冻结文件（版本 SVG、发布版式、概念图）被修改或删除；只追加文件被改写；
-- SVG 不合规（缺 viewBox、写死宽高、`<text>`/位图/脚本、外部引用、色板外颜色）；
+- SVG 不合规（缺 viewBox、写死宽高、`<text>`/位图/脚本/事件属性、外部引用与 CSS 外部资源、色板外颜色）；
+- 新建文档仍留有模板占位；发布未引用决策记录；版本引用了未登记的概念图；
 - 状态自相矛盾（选定版本不属于选定方向、发布阶段却没有当前发布）、发布的追溯链断裂；
 - `final/` 被手改或混入文件；
 - 字体未登记、校验值不符、`used_by` 与项目声明不一致；
 - 目录结构外的文件（临时文件请放 `.cache/`）。
 
-同时会提醒（不拦截）：选定版本尚未发布、`final/` 与当前发布不一致、当前发布缺少导出所需版式、头像超出圆形安全区、平台导出规格未核实或缺少来源。
+同时会提醒（不拦截）：选定版本尚未发布、`final/` 与当前发布不一致、当前发布缺少导出所需版式、头像超出圆形安全区、Android 图标超出 66dp 安全区、brief.md 未填完、平台导出规格未核实或缺少来源。
+
+`./logo export` 先在临时目录生成全部文件，成功后才整体替换 `final/`；发布的 `guide.md` 未填完时拒绝导出。
 
 ## 导出规格
 

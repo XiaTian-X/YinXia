@@ -1,5 +1,4 @@
 [general]
-layout = ""
 sizes = [64, 128, 256, 512, 1024]
 # modes = ["color", "mono", "reversed"] # 默认取项目自身的 color_modes
 
@@ -14,16 +13,18 @@ apple_touch_size = 180
 layout = "app-icon"
 sizes = [1024]
 opaque = true
-verified_on = "2026-10-09"
-source = "https://developer.apple.com/design/human-interface-guidelines/app-icons"
+verified_on = "2026-10-13"
+source = "https://developer.apple.com/design/human-interface-guidelines/app-icons" # 版面 1024x1024，背景层须不透明
 
 [android]
 legacy_layout = "app-icon"
 play_store_size = 512
 adaptive_foreground_layout = "icon"
 adaptive_size = 432
-adaptive_safe_ratio = 0.5
-verified_on = "2026-10-09"
+adaptive_safe_zone = 0.6111 # 官方安全区 66dp / 108dp 画布
+adaptive_safe_ratio = 0.5 # 图形缩放到 54dp（官方：Logo 至少 48dp、不超过 66dp；66dp 安全区由 check 校验）
+play_store_source = "https://developer.android.com/distribute/google-play/resources/icon-design-specifications"
+verified_on = "2026-10-13"
 source = "https://developer.android.com/develop/ui/views/launch/icon_design_adaptive"
 [android.mipmap]
 mdpi = 48
@@ -47,9 +48,9 @@ id = "youtube"
 layout = "cover-16x9"
 width = 2560
 height = 1440
-safe = [507, 509, 1546, 423] # Desktop and mobile minimum safe area
-verified_on = "2026-10-09"
-source = "https://support.google.com/youtube/answer/2972003"
+safe = [507, 509, 1546, 423] # 官方：最小尺寸 2048x1152 时文字/Logo 安全区 1235x338，按 2560 等比放大
+verified_on = "2026-10-13"
+source = "https://support.google.com/youtube/answer/10456525"
 
 [[social.cover]]
 id = "x"
@@ -57,23 +58,25 @@ layout = "cover-3x1"
 width = 1500
 height = 500
 occlusions = [[0, 200, 400, 300]] # profile picture area roughly
-verified_on = "2026-10-09"
-source = "https://help.x.com/en/managing-your-account/common-issues-when-uploading-media"
+verified_on = "2026-10-13"
+source = "https://help.x.com/en/managing-your-account/common-issues-when-uploading-profile-photo"
+verify_note = "help.x.com 拒绝自动抓取，经搜索摘要核对官方原文 1500x500"
 
 [[social.cover]]
 id = "facebook"
 layout = "cover-2.7x1"
 width = 820
 height = 312
-verified_on = "2026-10-09"
+verified_on = ""
 source = "https://www.facebook.com/help/125379114252045"
+verify_note = "官方帮助页无法自动读取；第三方资料一致为桌面 820x312、手机 640x360，待人工核对"
 
 [[social.cover]]
 id = "linkedin"
 layout = "cover-6x1"
-width = 1128
-height = 191
-verified_on = "2026-10-09"
+width = 1512
+height = 256
+verified_on = "2026-10-13"
 source = "https://www.linkedin.com/help/linkedin/answer/a563309"
 
 [[social.cover]]
@@ -81,7 +84,7 @@ id = "og"
 layout = "cover-og"
 width = 1200
 height = 630
-verified_on = "2026-10-09"
+verified_on = "2026-10-13"
 source = "https://developers.facebook.com/docs/sharing/webmasters/images"
 
 [[social.cover]]
@@ -105,7 +108,7 @@ id = "github"
 layout = "cover-og"
 width = 1280
 height = 640
-verified_on = "" # 待按官方文档核实
+verified_on = "2026-10-13"
 source = "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/customizing-your-repositorys-social-media-preview"
 
 [[social.cover]]
@@ -113,13 +116,14 @@ id = "xiaohongshu"
 layout = "cover-3x4"
 width = 1080
 height = 1440
-verified_on = "" # 待按官方文档核实
 source = ""
+verify_note = "未找到官方规格页；第三方资料：图文笔记竖版 3:4，常用 1080x1440"
 
 [[social.cover]]
 id = "douyin"
 layout = "cover-9x16"
 width = 1080
 height = 1920
-verified_on = "" # 待按官方文档核实
 source = ""
+verify_note = "未找到官方规格页；第三方资料：竖版 9:16，常用 1080x1920，底部与右侧有界面遮挡"
+
