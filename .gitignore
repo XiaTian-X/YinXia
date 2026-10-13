@@ -3,6 +3,13 @@
 # 项目数据在独立的 Git 仓库中（projects/.git），系统仓库不跟踪
 /projects/
 
+# 字体文件不进 Git：由 ./logo fonts fetch 按 assets/fonts/fonts.toml 从官方地址下载并校验 sha256
+assets/fonts/**/*.otf
+assets/fonts/**/*.ttf
+assets/fonts/**/*.ttc
+assets/fonts/**/*.woff
+assets/fonts/**/*.woff2
+
 # 预览、对比图、参考线等过程产物（可随时由 ./logo preview/compare/export 重建）
 .cache/
 

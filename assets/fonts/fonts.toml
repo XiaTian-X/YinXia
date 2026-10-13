@@ -1,3 +1,6 @@
+# 字体登记表。字体文件本身不进 Git（见 .gitignore），运行 ./logo fonts fetch 从 download_url 下载，
+# archive_member 指明压缩包内的文件；落盘前校验 sha256，与登记不符则拒绝。授权原文随仓库保存。
+
 [[font]]
 id            = "inter"
 family        = "Inter"
@@ -9,6 +12,7 @@ license_file  = "inter/LICENSE.txt"
 tier          = "open-source"
 official_url  = "https://github.com/rsms/inter"
 download_url  = "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.zip"
+archive_member = "extras/ttf/Inter-Regular.ttf"
 sha256        = "64f8be6e55c37e32ef03da99714bf3aa58b8f2099bfe4f759a7578e3b8291123"
 retrieved_on  = "2026-10-09"
 used_by       = ["acme"]
@@ -23,7 +27,8 @@ license       = "OFL-1.1"
 license_file  = "source-han-sans/LICENSE.txt"
 tier          = "open-source"
 official_url  = "https://github.com/adobe-fonts/source-han-sans"
-download_url  = "https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/09_SourceHanSansSC.zip"  # 取其中 OTF/SimplifiedChinese/SourceHanSansSC-Bold.otf，原样未改
+download_url  = "https://github.com/adobe-fonts/source-han-sans/releases/download/2.005R/09_SourceHanSansSC.zip"
+archive_member = "OTF/SimplifiedChinese/SourceHanSansSC-Bold.otf"
 sha256        = "df2b90f5bcc6d01dfc964cec5f6d535d6b6aebd26ed7fd79a9c1b3f2112fcb6b"
 retrieved_on  = "2026-10-13"
 used_by       = []

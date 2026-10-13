@@ -57,9 +57,11 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 - ⚠ 提醒：在回复中如实告诉用户，例如“选定版本尚未发布”“final/ 与当前发布不一致”“平台规格待核实”。
 
 ## 文字转曲
-1. 查阅 `assets/fonts/fonts.toml` 中已登记的字体 id。
-2. 新字体入库：只用 OFL/Apache 等开源字体（非开源免费商用字体需先写授权复核决策），保存官方原文件与授权原文，
-   在 fonts.toml 登记全部字段（含 sha256、download_url、retrieved_on）。下载前须征得用户同意。
+1. `./logo fonts` 查看已登记字体及是否已下载；未下载时 `./logo fonts fetch <id>`（从官方地址下载并校验 sha256）。
+   **字体文件不进 Git**，只提交 fonts.toml 登记与授权原文。
+2. 新字体入库：只用 OFL/Apache 等开源字体（非开源免费商用字体需先写授权复核决策），授权原文存入 `assets/fonts/<目录>/`，
+   在 fonts.toml 登记全部字段（含 sha256、download_url、压缩包内路径 archive_member、retrieved_on），
+   之后用 `./logo fonts fetch <id>` 下载并校验。新字体下载前须征得用户同意。
 3. 项目使用某字体时：写入 `project.toml` 的 `[fonts] used`，并在 fonts.toml 的 `used_by` 中加入项目 slug。
 4. 转曲：`./logo outline --font <id> --text "TEXT" --size 120 --fill "#HEX" --project <slug>`，将输出粘贴至 svg。
    默认应用字体自带的字距调整（与 HarfBuzz 排版一致）；需要逐字等距时加 `--no-kern`。

@@ -20,6 +20,8 @@ import subprocess
 import sys
 import tempfile
 import tomllib
+import urllib.parse
+import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -45,6 +47,7 @@ SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 VERSION_ID_RE = re.compile(r"^([A-Z])-v(\d{3})$")
 RELEASE_RE = re.compile(r"^r(\d+)$")
 CONCEPT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+FONT_BINARY_RE = re.compile(r"\.(otf|ttf|ttc|woff2?)$", re.I)  # 字体文件不进 Git
 HEX6_RE = re.compile(r"^#[0-9A-F]{6}$")
 HEX_IN_TEXT_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
 STAGES = ["briefing", "exploring", "iterating", "releasing", "delivered", "paused"]
@@ -685,7 +688,7 @@ def cmd_outline(a) -> None:
     entry = find_font(a.font)
     path = FONTS_DIR / entry["file"]
     if not path.exists():
-        raise LogoError(f"字体文件不存在：{rel(path)}")
+        raise LogoError(f"字体文件未下载：{rel(path)}，请运行 ./logo fonts fetch {a.font}")
     if sha256_file(path) != entry.get("sha256"):
         raise LogoError(f"字体校验值不匹配：{rel(path)}，文件可能被替换或修改")
     if not HEX6_RE.match(a.fill.upper()):
@@ -743,6 +746,63 @@ def cmd_outline(a) -> None:
     else:
         print(comment)
         print(path_el)
+
+
+def font_status(entry: dict) -> str:
+    fp = FONTS_DIR / entry["file"]
+    if not fp.exists():
+        return "未下载"
+    return "已就绪" if sha256_file(fp) == entry.get("sha256") else "校验不符"
+
+
+def fetch_font(entry: dict) -> str:
+    """从 download_url 下载（压缩包取 archive_member），校验 sha256 后写入 assets/fonts/。"""
+    dest = FONTS_DIR / entry["file"]
+    if font_status(entry) == "已就绪":
+        return "已就绪，跳过"
+    url = entry["download_url"]
+    cache = CACHE / "downloads" / Path(urllib.parse.urlparse(url).path).name
+    if not cache.exists():
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        part = cache.with_name(cache.name + ".part")
+        print(f"下载 {url} …")
+        run(["curl", "-sSL", "--fail", "-o", str(part), url])
+        part.rename(cache)
+    member = entry.get("archive_member")
+    try:
+        if member:
+            with zipfile.ZipFile(cache) as z:
+                data = z.read(member)
+        else:
+            data = cache.read_bytes()
+    except (zipfile.BadZipFile, KeyError) as e:
+        cache.unlink(missing_ok=True)
+        raise LogoError(f"[{entry['id']}] 下载内容无法读取（{e}），已删除缓存，请重试")
+    if hashlib.sha256(data).hexdigest() != entry.get("sha256"):
+        cache.unlink(missing_ok=True)
+        raise LogoError(f"[{entry['id']}] 下载文件的 sha256 与 fonts.toml 不符，已拒绝并删除缓存")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    part = dest.with_name(dest.name + ".part")
+    part.write_bytes(data)
+    part.rename(dest)
+    return f"已下载并校验 → {rel(dest)}"
+
+
+def cmd_fonts(a) -> None:
+    fonts = load_fonts()
+    if a.ids:
+        known = {f.get("id") for f in fonts}
+        unknown = [i for i in a.ids if i not in known]
+        if unknown:
+            raise LogoError(f"字体未登记：{', '.join(unknown)}")
+        fonts = [f for f in fonts if f.get("id") in a.ids]
+    if a.action == "fetch":
+        for f in fonts:
+            print(f"{f['id']}: {fetch_font(f)}")
+        return
+    for f in fonts:
+        used = ", ".join(f.get("used_by", [])) or "—"
+        print(f"{f['id']:<28} {f.get('family', '')} {f.get('weight', '')}  [{font_status(f)}]  使用：{used}")
 
 
 # ---------------------------------------------------------------------------
@@ -1295,7 +1355,7 @@ def check_fonts(errors: list[str], warnings: list[str], projects: list[Project] 
         if f.get("file"):
             fp = FONTS_DIR / f["file"]
             if not fp.exists():
-                errors.append(f"{where}: 字体文件不存在 {rel(fp)}")
+                warnings.append(f"{where}: 字体文件未下载，运行 ./logo fonts fetch {fid}")
             elif f.get("sha256") and sha256_file(fp) != f["sha256"]:
                 errors.append(f"{where}: sha256 与文件不符")
         if f.get("license_file") and not (FONTS_DIR / f["license_file"]).exists():
@@ -1484,6 +1544,9 @@ def check_stray_files(scope: str, errors: list[str], warnings: list[str]) -> Non
 
     tracked = ls("--cached")
     untracked = ls("--others", "--exclude-standard")
+    for path in sorted(tracked):
+        if scope == "system" and FONT_BINARY_RE.search(path):
+            errors.append(f"{path}: 字体文件不应提交到 Git（由 ./logo fonts fetch 下载）")
     for path in sorted(tracked | untracked):
         if not path_allowed(path, scope):
             msg = f"{prefix}{path}: 不在规定的目录结构中（临时文件请放 .cache/，或删除）"
@@ -1588,6 +1651,9 @@ def cmd_setup(a) -> None:
     for tool in ("resvg", "magick"):
         if not shutil.which(tool):
             print(f"⚠ 未找到 {tool}，请用 Homebrew 安装")
+    missing = [f["id"] for f in load_fonts() if font_status(f) != "已就绪"]
+    if missing:
+        print(f"⚠ 以下字体尚未下载：{', '.join(missing)}；需要时运行 ./logo fonts fetch [id…]")
     print("环境就绪")
 
 
@@ -1655,6 +1721,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-kern", action="store_true", help="不应用字体自带的字距调整（kerning）")
     s.add_argument("--svg", help="输出为独立 SVG 文件；不填则输出 <path> 片段")
     s.set_defaults(fn=cmd_outline)
+
+    s = sub.add_parser("fonts", help="查看已登记字体，或从官方地址下载并校验（字体文件不进 Git）")
+    s.add_argument("action", nargs="?", choices=["list", "fetch"], default="list")
+    s.add_argument("ids", nargs="*", help="字体 id（默认全部）")
+    s.set_defaults(fn=cmd_fonts)
 
     s = sub.add_parser("preview", help="渲染预览图（彩色/单色/反白/小尺寸）")
     s.add_argument("slug")

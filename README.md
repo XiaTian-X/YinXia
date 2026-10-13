@@ -13,11 +13,19 @@
 
 需要本机已安装 `resvg` 与 `magick`（Homebrew）。`setup` 会创建 `.venv`、安装 fonttools、初始化项目仓库 `projects/`，并为两个仓库启用 pre-commit 钩子。
 
+字体文件不进 Git。需要文字转曲时运行：
+
+```bash
+./logo fonts fetch
+```
+
+它按 [assets/fonts/fonts.toml](assets/fonts/fonts.toml) 中登记的官方地址下载（压缩包取 `archive_member`），sha256 与登记一致才落盘；`./logo fonts` 查看状态。
+
 ## 两个仓库
 
 | 仓库 | 位置 | 内容 | 提交方式 |
 |---|---|---|---|
-| 系统仓库 | 根目录 | `tools/`、`templates/`、`config/`、`assets/fonts/`、规则文档、`.githooks/` | `git commit …` |
+| 系统仓库 | 根目录 | `tools/`、`templates/`、`config/`、字体登记与授权（`assets/fonts/`，不含字体文件）、规则文档、`.githooks/` | `git commit …` |
 | 项目仓库 | `projects/`（系统仓库忽略它） | 各项目目录、`PROJECTS.md` | `git -C projects commit …` |
 
 系统可以单独分享或克隆；单独克隆时 `./logo check` 会跳过项目相关检查，运行 `./logo setup` 即可新建空的项目仓库。
@@ -61,6 +69,7 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 | `./logo release <slug> --from A-v004` | 新建发布 |
 | `./logo export <slug>` | 从当前发布生成 `final/` |
 | `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug>` | 文字转路径（默认应用字距调整，`--no-kern` 关闭） |
+| `./logo fonts [fetch] [id…]` | 查看字体状态 / 从官方地址下载并校验 |
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
 
 ## 规则如何被强制执行
@@ -72,7 +81,7 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 - 新建文档仍留有模板占位；发布未引用决策记录；版本引用了未登记的概念图；
 - 状态自相矛盾（选定版本不属于选定方向、发布阶段却没有当前发布）、发布的追溯链断裂；
 - `final/` 被手改或混入文件；
-- 字体未登记、校验值不符、`used_by` 与项目声明不一致；
+- 字体未登记、校验值不符、`used_by` 与项目声明不一致；字体文件被提交到系统仓库；
 - 目录结构外的文件（临时文件请放 `.cache/`）。
 
 同时会提醒（不拦截）：选定版本尚未发布、`final/` 与当前发布不一致、当前发布缺少导出所需版式、头像超出圆形安全区、Android 图标超出 66dp 安全区、brief.md 未填完、平台导出规格未核实或缺少来源。
