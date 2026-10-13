@@ -34,14 +34,13 @@ xxhdpi = 144
 xxxhdpi = 192
 
 [social]
-# 尚未登记具体尺寸的平台；补齐（尺寸 + 安全区 + 官方来源 + 核对日期）后从此列表移除
-pending = ["微信公众号封面（约 2.35:1）", "微博封面", "哔哩哔哩空间头图", "视频号封面", "快手封面", "知乎封面"]
 [social.avatar]
 layout = "avatar"
 sizes = [400, 800, 1080]
 safe_radius_ratio = 0.8
-verified_on = "2026-10-09"
-source = "" # 各平台头像均为方图圆裁，暂无单一官方出处，待补
+verified_on = "2026-10-13"
+basis = "common"
+verify_note = "各平台头像普遍为方图圆裁，无单一官方出处；按 1:1 高分辨率导出"
 
 [[social.cover]]
 id = "youtube"
@@ -67,9 +66,10 @@ id = "facebook"
 layout = "cover-2.7x1"
 width = 820
 height = 312
-verified_on = ""
+verified_on = "2026-10-13"
 source = "https://www.facebook.com/help/125379114252045"
-verify_note = "官方帮助页无法自动读取；第三方资料一致为桌面 820x312、手机 640x360，待人工核对"
+verify_note = "官方帮助页无法自动读取；按通用规格：桌面 820x312（手机端显示 640x360 裁切）"
+basis = "common"
 
 [[social.cover]]
 id = "linkedin"
@@ -116,14 +116,80 @@ id = "xiaohongshu"
 layout = "cover-3x4"
 width = 1080
 height = 1440
-source = ""
-verify_note = "未找到官方规格页；第三方资料：图文笔记竖版 3:4，常用 1080x1440"
+verify_note = "未找到官方规格页；按通用规格：图文笔记竖版 3:4，1080x1440"
+basis = "common"
+verified_on = "2026-10-13"
 
 [[social.cover]]
 id = "douyin"
 layout = "cover-9x16"
 width = 1080
 height = 1920
-source = ""
-verify_note = "未找到官方规格页；第三方资料：竖版 9:16，常用 1080x1920，底部与右侧有界面遮挡"
+verify_note = "未找到官方规格页；按通用规格：竖版 9:16，1080x1920，底部与右侧有界面遮挡"
+basis = "common"
+verified_on = "2026-10-13"
 
+# ── 国内平台（无官方规格页，按通用规格；导出时按版式铺满后居中裁切）──
+
+[[social.cover]]
+id = "wechat-mp"
+layout = "cover-2.7x1"
+width = 900
+height = 383
+basis = "common"
+verified_on = "2026-10-13"
+verify_note = "微信公众号首条封面，通用规格 900x383（2.35:1），由 2.7:1 版式左右各裁约 6.5%"
+
+[[social.cover]]
+id = "wechat-mp-thumb"
+layout = "avatar"
+width = 500
+height = 500
+basis = "common"
+verified_on = "2026-10-13"
+verify_note = "微信公众号次条封面为 1:1（常见说法 200x200 或 300x300），按 500x500 高分辨率导出"
+
+[[social.cover]]
+id = "weibo"
+layout = "cover-3x1"
+width = 980
+height = 300
+basis = "common"
+verified_on = "2026-10-13"
+verify_note = "微博主页封面，通用规格 980x300（另有 920x300 的说法），由 3:1 版式上下各裁约 4%"
+
+[[social.cover]]
+id = "wechat-channels"
+layout = "cover-3x4"
+width = 1080
+height = 1260
+basis = "common"
+verified_on = "2026-10-13"
+verify_note = "视频号竖版封面，通用规格 6:7 即 1080x1260（不是 3:4），由 3:4 版式上下各裁约 6%"
+
+[[social.cover]]
+id = "kuaishou"
+layout = "cover-9x16"
+width = 1080
+height = 1920
+basis = "common"
+verified_on = "2026-10-13"
+verify_note = "快手竖版封面，按竖屏视频通用规格 9:16，1080x1920"
+
+[[social.cover]]
+id = "bilibili"
+layout = "cover-6x1"
+width = 1920
+height = 320
+basis = "generic"
+verified_on = "2026-10-13"
+verify_note = "B 站空间头图未找到官方或可靠的通用尺寸，按通用宽幅横幅 6:1 导出，上传时以平台裁切预览为准"
+
+[[social.cover]]
+id = "zhihu"
+layout = "cover-3x1"
+width = 1500
+height = 500
+basis = "generic"
+verified_on = "2026-10-13"
+verify_note = "知乎个人主页背景图未找到官方或可靠的通用尺寸，按通用宽幅 3:1 导出，上传时以平台裁切预览为准"

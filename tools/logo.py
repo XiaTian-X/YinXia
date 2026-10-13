@@ -90,6 +90,7 @@ SYSTEM_FILE_PATTERNS = [re.compile(p) for p in (
     r"config/[a-z0-9-]+\.toml",
     r"templates/[a-z0-9-]+\.(md|svg|toml|gitignore)",
     r"tools/[a-z0-9_]+\.py", r"tools/requirements\.txt",
+    r"tests/[a-z0-9_]+\.py",
 )]
 # 项目仓库根目录允许的文件；项目目录内的文件见 PROJECT_FILE_PATTERNS
 PROJECTS_ROOT_FILES = {"PROJECTS.md", ".gitignore"}
@@ -1408,6 +1409,19 @@ def profile_warnings(prof: dict, enabled: list[str] | None = None) -> list[str]:
     def chk(name: str, item: dict):
         if item.get("generic"):
             return  # 通用比例，不对应具体平台
+        basis = item.get("basis", "official")
+        if basis not in ("official", "common", "generic"):
+            out.append(f"导出规格 {name} 的 basis 只能是 official、common 或 generic")
+        if basis != "official":
+            # 无官方规格时按通用规格：须写明依据，按年复核
+            if not item.get("verify_note"):
+                out.append(f"导出规格 {name} 采用{'通用' if basis == 'common' else '泛用'}规格，须在 verify_note 中写明依据")
+            v = item.get("verified_on", "")
+            if not v:
+                out.append(f"导出规格 {name} 缺少复核日期 verified_on")
+            elif dt.date.fromisoformat(v) < limit:
+                out.append(f"导出规格 {name} 的通用规格超过 12 个月未复核，建议检查平台是否已公布官方规格")
+            return
         v = item.get("verified_on", "")
         if not v:
             note = item.get("verify_note")
@@ -1694,6 +1708,17 @@ def cmd_check(a) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 命令：selftest
+# ---------------------------------------------------------------------------
+def cmd_selftest(a) -> None:
+    """运行 tests/ 下的自动化测试（每个测试在临时目录中搭建隔离工作区，不触碰真实仓库）。"""
+    cmd = [sys.executable, "-m", "unittest", *(a.tests or ["discover", "-s", str(ROOT / "tests")])]
+    if a.verbose:
+        cmd.append("-v")
+    sys.exit(subprocess.run(cmd, cwd=ROOT / "tests").returncode)
+
+
+# ---------------------------------------------------------------------------
 # 命令：setup
 # ---------------------------------------------------------------------------
 def cmd_setup(a) -> None:
@@ -1819,6 +1844,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--scope", choices=["all", "system", "projects"], default="all",
                    help="检查范围：all（默认）、system（系统仓库提交）、projects（项目仓库提交）")
     s.set_defaults(fn=cmd_check)
+
+    s = sub.add_parser("selftest", help="运行系统自动化测试（修改系统后、提交前运行）")
+    s.add_argument("tests", nargs="*", help="只运行指定测试，如 test_unit 或 test_guards.DocsTest")
+    s.add_argument("-v", "--verbose", action="store_true")
+    s.set_defaults(fn=cmd_selftest)
 
     s = sub.add_parser("index", help="重新生成 PROJECTS.md")
     s.set_defaults(fn=cmd_index)

@@ -71,6 +71,7 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 | `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug>` | 文字转路径（默认应用字距调整，`--no-kern` 关闭） |
 | `./logo fonts [fetch] [id…]` | 查看字体状态 / 从官方地址下载并校验 |
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
+| `./logo selftest [测试名]` | 运行系统自动化测试 |
 
 ## 规则如何被强制执行
 
@@ -94,4 +95,24 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 
 ## 导出规格
 
-所有尺寸在 [config/export-profiles.toml](config/export-profiles.toml)，每个平台登记尺寸、安全区/遮挡区、官方来源 `source` 与核对日期 `verified_on`；超过 12 个月未核对会提醒。尚未登记的平台列在 `[social] pending`。
+所有尺寸在 [config/export-profiles.toml](config/export-profiles.toml)。每个平台登记尺寸、使用的版式、核对日期，并用 `basis` 标明依据：
+
+| basis | 含义 | 要求 |
+|---|---|---|
+| `official`（默认） | 已按官方文档核实 | 必须有 `source` 官方链接 |
+| `common` | 平台无官方规格页，采用业内通用规格 | 必须在 `verify_note` 写明依据 |
+| `generic` | 连通用规格也没有，按通用比例导出 | 必须在 `verify_note` 说明 |
+
+任何规格超过 12 个月未复核都会提醒。封面导出时按版式铺满后居中裁切，所以一个版式可服务多个相近比例的平台。
+
+目前登记 17 个平台：YouTube、X、LinkedIn、Open Graph、GitHub（官方）；Facebook、小红书、抖音、微信公众号首条/次条、微博、视频号、快手（通用）；B 站空间头图、知乎主页背景（泛用）；另有 4:3、3:4 通用比例。
+
+## 自动化测试
+
+修改系统（`tools/`、`templates/`、`config/`、钩子）后、提交前运行：
+
+```bash
+./logo selftest
+```
+
+测试在临时目录里为每个用例搭建隔离的工作区（系统仓库 + 项目仓库，Git 配置与个人全局配置隔离），经由真实的 `./logo` 命令与提交钩子验证；不访问网络、不触碰真实仓库。`./logo selftest test_unit` 只跑毫秒级的单元测试。缺少 `resvg`/`magick` 时导出测试自动跳过，未下载 Inter 时字距测试自动跳过。

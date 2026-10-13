@@ -15,9 +15,42 @@
 !/config/
 !/templates/
 !/tools/
+!/tests/
 # 因此被忽略的包括：/projects/（独立的项目仓库）、/.cache/（预览与下载缓存）、/.venv/，以及根目录的任何其他文件
 
-# ── 第二层：放行的目录内仍然排除 ──
+# ── 第二层：放行的目录内，只放行规定的文件类型（与 SYSTEM_FILE_PATTERNS 对应）──
+/tools/*
+!/tools/*.py
+!/tools/requirements.txt
+/tests/*
+!/tests/*.py
+/templates/*
+!/templates/*.md
+!/templates/*.svg
+!/templates/*.toml
+!/templates/*.gitignore
+/config/*
+!/config/*.toml
+/.githooks/*
+!/.githooks/pre-commit
+!/.githooks/projects/
+/.githooks/projects/*
+!/.githooks/projects/pre-commit
+/assets/*
+!/assets/fonts/
+/assets/fonts/*
+!/assets/fonts/fonts.toml
+!/assets/fonts/*/
+/assets/fonts/*/*
+!/assets/fonts/*/LICENSE*
+!/assets/fonts/*/OFL*
+/.claude/*
+!/.claude/settings.json
+!/.claude/commands/
+!/.claude/agents/
+!/.claude/skills/
+
+# ── 第三层：任何位置都排除（放在最后，优先于上面的放行）──
 
 # 系统与编辑器杂物
 .DS_Store
@@ -63,7 +96,7 @@ id_ed25519*
 # Claude Code 个人设置（共享的 .claude/settings.json 可以提交）
 .claude/settings.local.json
 
-# 字体文件不进 Git：由 ./logo fonts fetch 按 assets/fonts/fonts.toml 从官方地址下载并校验 sha256
+# 字体文件不进 Git（上面的白名单已排除，此处再明确一次）：由 ./logo fonts fetch 按 fonts.toml 下载并校验
 assets/fonts/**/*.otf
 assets/fonts/**/*.ttf
 assets/fonts/**/*.ttc
