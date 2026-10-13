@@ -170,6 +170,23 @@ class PreviewAndModesTest(unittest.TestCase):
         self.assertEqual(logo.dark_background(light), "#111111")
 
 
+class AppBackgroundTest(unittest.TestCase):
+    class P:
+        palette = {"primary": "#00897B", "ink": "#1A1A1A"}
+
+        def __init__(self, export):
+            self.cfg = {"export": export}
+
+    def test_resolution_and_alias(self):
+        self.assertEqual(logo.app_background(self.P({"app_background": "ink"})), "#1A1A1A")
+        self.assertEqual(logo.app_background(self.P({"android_background": "primary"})), "#00897B")  # 旧名兼容
+        self.assertEqual(logo.app_background(self.P({"app_background": "ink", "android_background": "primary"})),
+                         "#1A1A1A")  # 新名优先
+        for bad in ({}, {"app_background": "nope"}):
+            with self.assertRaises(logo.LogoError):
+                logo.app_background(self.P(bad))
+
+
 class ProfileWarningsTest(unittest.TestCase):
     TODAY = dt.date.today().isoformat()
 

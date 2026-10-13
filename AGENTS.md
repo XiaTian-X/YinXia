@@ -12,7 +12,7 @@
 - **密钥绝不入库**：`.env`、私钥、证书、凭据文件以及任何 API key/token 都不得出现在两个仓库的提交中；系统仓库的 `.gitignore` 是白名单，钩子还会按文件名与内容扫描拦截。需要密钥时放在仓库之外或环境变量中。
 - **目录纪律**：两个仓库里都只允许出现规定结构内的文件。描摹中间件、临时脚本、测试输出一律放 `.cache/`（已被 Git 忽略）或用完删除，绝不提交到根目录或项目目录。
 - **SVG 规范**：使用 viewBox；禁止 hardcoded width/height；所有文字使用 `./logo outline --project <slug>` 转曲；颜色必须来自 `project.toml` 色板的十六进制值；不准用外链/位图/脚本/事件属性（`onload` 等）/CSS 外部资源（`@import`、`url(http…)`）。
-- **字体**：只用 `assets/fonts/fonts.toml` 登记过的字体；项目用到时同时写入 `[fonts] used` 与 fonts.toml 的 `used_by`。字体文件绝不提交到 Git（`.otf/.ttf` 等已忽略，钩子也会拦截），需要时用 `./logo fonts fetch` 从登记的官方地址下载并校验。
+- **字体**：只用 `assets/fonts/fonts.toml` 登记过的字体；用 `./logo outline --project <slug>` 转曲时会自动写入项目的 `[fonts] used`（check 会按 SVG 实际用到的字体核对）。非开源字体须先用 `./logo fonts review <id>` 完成授权复核，“允许用于 Logo/商标”“允许转曲”均为“是”方可使用。字体文件绝不提交到 Git（`.otf/.ttf` 等已忽略，钩子也会拦截），需要时用 `./logo fonts fetch` 从登记的官方地址下载并校验。
 - **追溯**：设计依据的图片（含用户参考图）用 `./logo concept` 登记，版本用 `--inspired-by` 引用；选定方向、定稿等关键取舍用 `./logo decision` 记录，发布的 `release.md` 必须引用决策记录；用户的评审意见追加进对应的 `notes.md` / `release.md`。
 - **文档完整**：新建文档提交前必须填完模板占位（“（…）”提示与空字段），因为提交后只能追加；`guide.md` 是交付物，未填完不能导出。
 - **检查**：每次提交前 `./logo check` 必须通过（两个仓库各有 pre-commit 钩子强制执行）；提醒（⚠）要在回复中告知用户。

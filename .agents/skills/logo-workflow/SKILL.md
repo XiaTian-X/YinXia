@@ -62,10 +62,13 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 ## 文字转曲
 1. `./logo fonts` 查看已登记字体及是否已下载；未下载时 `./logo fonts fetch <id>`（从官方地址下载并校验 sha256）。
    **字体文件不进 Git**，只提交 fonts.toml 登记与授权原文。
-2. 新字体入库：只用 OFL/Apache 等开源字体（非开源免费商用字体需先写授权复核决策），授权原文存入 `assets/fonts/<目录>/`，
+2. 新字体入库：优先 OFL/Apache 等开源字体，授权原文存入 `assets/fonts/<目录>/`，
    在 fonts.toml 登记全部字段（含 sha256、download_url、压缩包内路径 archive_member、retrieved_on），
    之后用 `./logo fonts fetch <id>` 下载并校验。新字体下载前须征得用户同意。
-3. 项目使用某字体时：写入 `project.toml` 的 `[fonts] used`，并在 fonts.toml 的 `used_by` 中加入项目 slug。
+   非开源的免费商用字体（tier = "free-commercial"）还须 `./logo fonts review <id>` 创建并填完授权复核，
+   “允许用于 Logo / 商标”“允许转曲”都为“是”才能使用。
+3. 项目使用某字体：转曲时带上 `--project <slug>`，字体会自动写入该项目的 `[fonts] used`；
+   `./logo fonts` 可查看每款字体被哪些项目使用。
 4. 转曲：`./logo outline --font <id> --text "TEXT" --size 120 --fill "#HEX" --project <slug>`，将输出粘贴至 svg。
    默认应用字体自带的字距调整（与 HarfBuzz 排版一致）；需要逐字等距时加 `--no-kern`。
    已入库：`inter`（英文）、`source-han-sans-sc-bold`（思源黑体 SC Bold，中文）。

@@ -21,7 +21,8 @@ class FontsFetchTest(unittest.TestCase):
         self.ws.write("assets/fonts/testfont/LICENSE.txt", "OFL\n")
         self.register(hashlib.sha256(FAKE_FONT).hexdigest())
 
-    def register(self, sha: str, member: str = "fonts/TestFont-Regular.ttf", url: str | None = None):
+    def register(self, sha: str, member: str = "fonts/TestFont-Regular.ttf", url: str | None = None,
+                 tier: str = "open-source"):
         toml = self.ws.root / "assets" / "fonts" / "fonts.toml"
         base = toml.read_text(encoding="utf-8").split("\n# --test--")[0]
         toml.write_text(base + f'''
@@ -34,13 +35,12 @@ file          = "testfont/TestFont-Regular.ttf"
 version       = "1.0"
 license       = "OFL-1.1"
 license_file  = "testfont/LICENSE.txt"
-tier          = "open-source"
+tier          = "{tier}"
 official_url  = "https://example.com/testfont"
 download_url  = "{url or self.zip.as_uri()}"
 archive_member = "{member}"
 sha256        = "{sha}"
 retrieved_on  = "2026-10-13"
-used_by       = []
 ''', encoding="utf-8")
 
     @property
@@ -89,6 +89,42 @@ used_by       = []
         r = self.ws.logo("fonts", "fetch", "testfont", ok=False)
         self.assertNotEqual(r.returncode, 0)
         self.assertFalse(self.dest.exists())
+
+
+class LicenseReviewTest(FontsFetchTest):
+    def review(self):
+        return self.ws.root / "assets" / "fonts" / "testfont" / "LICENSE-REVIEW.md"
+
+    def check_errors(self) -> str:
+        return "\n".join(ln for ln in self.ws.logo("check", ok=False).stdout.splitlines() if ln.startswith("✗"))
+
+    def test_review_lifecycle(self):
+        self.register(hashlib.sha256(FAKE_FONT).hexdigest(), tier="free-commercial")
+        self.assertIn("须有授权复核", self.check_errors())
+        self.assertIn("已创建授权复核", self.ws.logo("fonts", "review", "testfont").stdout)
+        self.assertIn("模板占位未填写", self.check_errors())
+        self.assertNotEqual(self.ws.logo("fonts", "review", "testfont", ok=False).returncode, 0)  # 不覆盖
+        def fill(logo_ok: str, outline_ok: str):
+            text = self.review().read_text(encoding="utf-8")
+            for old, new in (("- **授权名称**：", "- **授权名称**：Test EULA"),
+                             ("- **授权原文链接**：", "- **授权原文链接**：https://example.com/eula"),
+                             ("- **复核日期**：", "- **复核日期**：2026-10-13"),
+                             ("- **允许用于 Logo / 商标**：（是 / 否）", f"- **允许用于 Logo / 商标**：{logo_ok}"),
+                             ("- **允许转曲（文字转路径）**：（是 / 否）", f"- **允许转曲（文字转路径）**：{outline_ok}"),
+                             ("- **限制与义务**：（如署名、不得单独售卖字体文件等；无则写“无”）", "- **限制与义务**：无"),
+                             ("（引用授权原文中支撑上述判断的条款原文）", "第 2 条：允许商业使用。"),
+                             ("（是否准入，以及使用限制）", "准入。")):
+                text = text.replace(old, new)
+            self.review().write_text(text, encoding="utf-8")
+        original = self.review().read_text(encoding="utf-8")
+        fill("是", "否")
+        self.assertIn("“允许转曲（文字转路径）”须为“是”", self.check_errors())
+        self.review().write_text(original, encoding="utf-8")
+        fill("是（含商标注册）", "是")
+        self.assertEqual(self.check_errors(), "")
+
+    def test_open_source_needs_no_review(self):
+        self.assertNotIn("授权复核", self.ws.logo("check").stdout)
 
 
 if __name__ == "__main__":

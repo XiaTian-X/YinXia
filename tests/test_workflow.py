@@ -4,6 +4,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 import unittest
 
 from helpers import FONT_BINARIES, HAS_RENDER, PRIMARY, TRIANGLE, Workspace, fill_doc, logo
@@ -152,8 +153,9 @@ class ExportTest(unittest.TestCase):
         before = (final / "manifest.json").read_bytes()
         toml = self.p / "project.toml"
         original = toml.read_text(encoding="utf-8")
-        toml.write_text(original.replace('android_background = "primary"', 'android_background = "nope"'),
-                        encoding="utf-8")
+        broken = original.replace('app_background = "primary"', 'app_background = "nope"')
+        self.assertNotEqual(broken, original)  # 确认真的改坏了配置
+        toml.write_text(broken, encoding="utf-8")
         try:
             r = ws.logo("export", "demo", ok=False)
             self.assertNotEqual(r.returncode, 0)
@@ -161,6 +163,25 @@ class ExportTest(unittest.TestCase):
             self.assertFalse((self.p / ".final-build").exists())
         finally:
             toml.write_text(original, encoding="utf-8")
+
+    def test_app_icons_use_brand_background(self):
+        final = self.p / "final" / "png"
+        for f in ("ios/AppIcon-1024.png", "android/play-store-512.png", "favicon/apple-touch-icon.png"):
+            corner = subprocess.run(["magick", str(final / f), "-format", "%[hex:p{1,1}]", "info:"],
+                                    capture_output=True, text=True, check=True).stdout
+            self.assertEqual(corner.strip()[:6].upper(), PRIMARY[1:], f)  # 透明处铺的是 app_background，不是白色
+        self.assertIn("app-icon.svg 含透明区域", self.ws.logo("check").stdout)
+
+    def test_opaque_app_icon_not_warned(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#00897B"/></svg>'
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as td:
+            f = Path(td) / "app-icon.svg"
+            f.write_text(svg, encoding="utf-8")
+            self.assertIsNone(logo.app_icon_transparency_warning(f))
+            f.write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+            self.assertIsNotNone(logo.app_icon_transparency_warning(f))
 
     def test_android_safe_zone_warning(self):
         ldir = self.p / "releases" / "r1" / "layouts"

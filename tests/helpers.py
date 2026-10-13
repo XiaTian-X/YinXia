@@ -55,8 +55,9 @@ class Workspace:
         self.tmp = Path(tempfile.mkdtemp(prefix="logo-test-"))
         self.root = self.tmp / "ws"
         self.root.mkdir()
-        files = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z"], capture_output=True,
-                               check=True).stdout.decode().split("\0")
+        # 已跟踪 + 未忽略的新文件：测试反映“即将提交”的工作区，而不只是上一次提交
+        files = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                               capture_output=True, check=True).stdout.decode().split("\0")
         for rel in filter(None, files):
             src, dst = REPO / rel, self.root / rel
             if src.is_file():
@@ -90,6 +91,15 @@ class Workspace:
         if ok and r.returncode != 0:
             raise AssertionError(f"./logo {' '.join(args)} 失败：\n{r.stdout}\n{r.stderr}")
         return r
+
+    def py(self, code: str) -> str:
+        """用工作区自己的 tools/logo.py 执行一段 Python（变量 logo 可用），返回标准输出。"""
+        r = subprocess.run([str(self.root / ".venv" / "bin" / "python"), "-c",
+                            f"import sys; sys.path.insert(0, 'tools'); import logo\n{code}"],
+                           cwd=self.root, env=self.env, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise AssertionError(r.stderr)
+        return r.stdout
 
     def git(self, repo: str, *args: str, ok: bool = True) -> subprocess.CompletedProcess:
         path = self.projects if repo == "projects" else self.root

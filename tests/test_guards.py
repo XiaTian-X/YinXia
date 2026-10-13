@@ -107,6 +107,46 @@ class DocsTest(GuardBase):
         self.assertCommitted(self.ws.commit("projects", "[demo] brief"))  # brief 可随时修改，只提醒不拦截
 
 
+class FontUsageTest(GuardBase):
+    OUTLINED = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">\n'
+                '<!-- outline: font={f} size=100 tracking=0 kern=on text="A" bbox=0,0,1,1 advance=1 -->\n'
+                f'<path fill="{PRIMARY}" d="M10 90 50 10 90 90Z"/></svg>\n')
+
+    def test_undeclared_font_blocked(self):
+        v2 = self.ws.new_version(svg=self.OUTLINED.format(f="inter"))
+        self.assertBlocked(self.ws.commit("projects", "x"), "SVG 中用字体 inter 转曲", "未声明")
+        self.ws.py("logo.Project('demo').add_font('inter')")
+        self.assertCommitted(self.ws.commit("projects", "[demo] A-v002"))
+        self.assertIn("使用：demo", self.ws.logo("fonts", "list", "inter").stdout)
+
+    def test_unknown_font_blocked(self):
+        self.ws.new_version(svg=self.OUTLINED.format(f="comic-sans"))
+        self.assertBlocked(self.ws.commit("projects", "x"), "comic-sans 未在 fonts.toml 登记")
+
+    def test_declared_but_unused_warns(self):
+        self.ws.py("logo.Project('demo').add_font('inter')")
+        out = self.ws.logo("check").stdout
+        self.assertIn("声明了 inter，但没有 SVG 用它转曲", out)
+        self.assertNotIn("used_by", out)  # 不再有跨仓库的 used_by 反查
+
+    def test_add_font_edits_toml(self):
+        toml = self.p / "project.toml"
+        self.assertEqual(self.ws.py("print(logo.Project('demo').add_font('inter'))").strip(), "True")
+        self.assertEqual(self.ws.py("print(logo.Project('demo').add_font('inter'))").strip(), "False")
+        self.ws.py("logo.Project('demo').add_font('source-han-sans-sc-bold')")
+        self.assertIn('used = ["inter", "source-han-sans-sc-bold"]', toml.read_text(encoding="utf-8"))
+        text = toml.read_text(encoding="utf-8")
+        toml.write_text(text.replace('used = ["inter", "source-han-sans-sc-bold"]',
+                                     'used = [\n  "inter",\n  "source-han-sans-sc-bold",\n]'), encoding="utf-8")  # 多行数组
+        self.ws.py("logo.Project('demo').add_font('x-font')")
+        self.assertEqual(self.ws.py("print(logo.Project('demo').cfg['fonts']['used'])").strip(),
+                         "['inter', 'source-han-sans-sc-bold', 'x-font']")
+        text = toml.read_text(encoding="utf-8")
+        toml.write_text(text[:text.index("[fonts]")] + text[text.index("[layouts]"):], encoding="utf-8")  # 无 [fonts] 表
+        self.ws.py("logo.Project('demo').add_font('inter')")
+        self.assertEqual(self.ws.py("print(logo.Project('demo').cfg['fonts']['used'])").strip(), "['inter']")
+
+
 class StructureAndSecretsTest(GuardBase):
     PROJECT_JUNK = ["notes.txt", ".env", "demo/trace.py", "demo/.final-build/a.png",
                     "demo/directions/A-mountain/v001/debug.png", "demo/directions/A-mountain/v001/trace.py",

@@ -15,7 +15,6 @@ download_url  = "https://github.com/rsms/inter/releases/download/v4.0/Inter-4.0.
 archive_member = "extras/ttf/Inter-Regular.ttf"
 sha256        = "64f8be6e55c37e32ef03da99714bf3aa58b8f2099bfe4f759a7578e3b8291123"
 retrieved_on  = "2026-10-09"
-used_by       = ["acme"]
 
 [[font]]
 id            = "source-han-sans-sc-bold"
@@ -31,4 +30,3 @@ download_url  = "https://github.com/adobe-fonts/source-han-sans/releases/downloa
 archive_member = "OTF/SimplifiedChinese/SourceHanSansSC-Bold.otf"
 sha256        = "df2b90f5bcc6d01dfc964cec5f6d535d6b6aebd26ed7fd79a9c1b3f2112fcb6b"
 retrieved_on  = "2026-10-13"
-used_by       = []

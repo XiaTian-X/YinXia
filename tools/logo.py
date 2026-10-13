@@ -47,6 +47,8 @@ SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 VERSION_ID_RE = re.compile(r"^([A-Z])-v(\d{3})$")
 RELEASE_RE = re.compile(r"^r(\d+)$")
 CONCEPT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+LICENSE_REVIEW_NAME = "LICENSE-REVIEW.md"  # 非开源字体的授权复核记录，放在字体目录内
+LICENSE_REVIEW_REQUIRED = ("允许用于 Logo / 商标", "允许转曲（文字转路径）")
 FONT_BINARY_RE = re.compile(r"\.(otf|ttf|ttc|woff2?)$", re.I)  # 字体文件不进 Git
 HEX6_RE = re.compile(r"^#[0-9A-F]{6}$")
 HEX_IN_TEXT_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
@@ -136,6 +138,7 @@ DOC_TEMPLATES = [
     (re.compile(r"^[^/]+/decisions/\d{3}-[^/]+\.md$"), "decision.md"),
     (re.compile(r"^[^/]+/concepts/\d{3}-[^/]+\.md$"), "concept.md"),
 ]
+OUTLINE_FONT_RE = re.compile(r"<!--\s*outline:\s*font=([A-Za-z0-9_-]+)")  # ./logo outline 写入的来源注释
 DECISION_REF_RE = re.compile(r"decisions/(\d{3}-[a-z0-9-]+\.md)")
 CONCEPT_REF_RE = re.compile(r"concepts/(\d{3}-[a-z0-9-]+\.md)")
 
@@ -321,6 +324,43 @@ class Project:
             raise LogoError(f"发布不存在：{rid}")
         return p
 
+    def add_font(self, font_id: str) -> bool:
+        """把字体写入 project.toml 的 [fonts] used（保留其余内容）；已存在时返回 False。"""
+        used = list(self.cfg.get("fonts", {}).get("used", []))
+        if font_id in used:
+            return False
+        line = "used = [" + ", ".join(f'"{x}"' for x in used + [font_id]) + "]"
+        text = self.toml_path.read_text(encoding="utf-8")
+        m = re.search(r"^\[fonts\]\s*$", text, re.M)
+        if not m:
+            text = text.rstrip("\n") + f"\n\n[fonts]\n{line}\n"
+        else:
+            nxt = re.search(r"^\[", text[m.end():], re.M)
+            end = m.end() + nxt.start() if nxt else len(text)
+            section = text[m.end():end]
+            used_re = re.compile(r"^used\s*=\s*\[[^\]]*\]", re.M)  # 数组可能跨多行
+            if used_re.search(section):
+                section = used_re.sub(line, section, count=1)
+            else:
+                section = "\n" + line + section
+            text = text[:m.end()] + section + text[end:]
+        self.toml_path.write_text(text, encoding="utf-8")
+        return True
+
+    def svg_fonts(self, staged: bool = False) -> dict[str, list[str]]:
+        """项目各版本与发布版式中经 outline 转曲的字体 → 出现的文件（依据 outline 注释）。"""
+        files = [v / "logo.svg" for d in self.directions() for v in self.versions_in(d)]
+        files += [f for rd in self.releases() for f in sorted((rd / "layouts").glob("*.svg"))]
+        found: dict[str, list[str]] = {}
+        for f in files:
+            if not f.exists():
+                continue
+            data = staged_bytes(f) if staged else None
+            text = (data if data is not None else f.read_bytes()).decode("utf-8", errors="ignore")
+            for fid in sorted(set(OUTLINE_FONT_RE.findall(text))):
+                found.setdefault(fid, []).append(rel(f))
+        return found
+
     def concept_ref(self, ref: str) -> str:
         """把 001 / 001-mountain 解析为 concepts/001-mountain.md，概念图未登记时报错。"""
         m = re.fullmatch(r"(\d{3})(-[a-z0-9-]+)?", ref)
@@ -414,6 +454,23 @@ def avatar_safe_warning(ldir: Path, av: dict) -> str | None:
     return None
 
 
+def app_icon_warnings(p: Project, ldir: Path, prof: dict) -> list[str]:
+    """iOS / Google Play 所用 App 图标版式的透明检查，以及品牌底色配置检查。"""
+    enabled = p.cfg.get("export", {}).get("profiles", [])
+    layouts = {prof[k]["layout" if k == "ios" else "legacy_layout"] for k in ("ios", "android") if k in enabled}
+    if not layouts:
+        return []
+    out = []
+    try:
+        app_background(p)
+    except LogoError as e:
+        out.append(str(e))
+    for name in sorted(layouts):
+        if (ldir / f"{name}.svg").exists() and (w := app_icon_transparency_warning(ldir / f"{name}.svg")):
+            out.append(w)
+    return out
+
+
 def release_structure_warnings(p: Project, ldir: Path, prof: dict) -> list[str]:
     """检查发布中各标志版式（及 Android 单色层所用版式）的单色/反白结构；内容相同的版式只检查一次。"""
     cfg = p.cfg
@@ -436,6 +493,35 @@ def release_structure_warnings(p: Project, ldir: Path, prof: dict) -> list[str]:
         if (w := structure_warning(label, lambda m, n=first: layout_mode_text(p, ldir, n, m), ms, hint)):
             out.append(w)
     return out
+
+
+def app_background(p: Project) -> str:
+    """App 图标类产物的品牌底色（[export] app_background，兼容旧名 android_background），须为色板中的色名。"""
+    ex = p.cfg.get("export", {})
+    key = ex.get("app_background") or ex.get("android_background")
+    if not key:
+        raise LogoError("[export] 缺少 app_background（填色板中的色名，用作 iOS/Google Play/Android 图标底色）")
+    if key not in p.palette:
+        raise LogoError(f"[export] app_background 必须是色板中的色名，当前：{key!r}")
+    return p.palette[key]
+
+
+def flatten(png: Path, color: str) -> Path:
+    """把透明处铺成指定底色并去掉透明通道（App Store / Google Play 要求不透明）。"""
+    run(["magick", str(png), "-background", color, "-alpha", "remove", "-alpha", "off", str(png)])
+    return png
+
+
+def app_icon_transparency_warning(svg: Path) -> str | None:
+    """App 图标版式应自带铺满的不透明底色；有透明像素时返回提醒。"""
+    with tempfile.TemporaryDirectory() as td:
+        png = render_fit(svg, Path(td) / "a.png", 256)
+        min_alpha = float(run(["magick", str(png), "-alpha", "extract", "-format", "%[fx:minima]", "info:"],
+                              capture=True).strip() or 1)
+    if min_alpha < 0.99:
+        return (f"{rel(svg)} 含透明区域：iOS/Google Play 图标须不透明，导出时会用 app_background 铺底；"
+                "建议在版式中自带铺满画布的底色")
+    return None
 
 
 def render_android_foreground(p: Project, ldir: Path, ap: dict, mode: str, out: Path) -> Path:
@@ -803,9 +889,6 @@ def cmd_outline(a) -> None:
         p = Project(a.project)
         if a.fill.upper() not in set(p.palette.values()):
             raise LogoError(f"--fill {a.fill.upper()} 不在 {a.project} 的色板中")
-        if a.font not in p.cfg.get("fonts", {}).get("used", []):
-            print(f"⚠ 字体 {a.font} 尚未写入 {a.project} 的 [fonts] used，"
-                  "请补上并在 fonts.toml 的 used_by 中登记", file=sys.stderr)
     else:
         print("⚠ 未指定 --project，无法校验填充色是否在色板中", file=sys.stderr)
     font = TTFont(path, fontNumber=entry.get("font_number", 0))
@@ -852,6 +935,8 @@ def cmd_outline(a) -> None:
     else:
         print(comment)
         print(path_el)
+    if a.project and Project(a.project).add_font(a.font):
+        print(f"已将字体 {a.font} 写入 {a.project} 的 [fonts] used", file=sys.stderr)
 
 
 def font_status(entry: dict) -> str:
@@ -902,12 +987,26 @@ def cmd_fonts(a) -> None:
         if unknown:
             raise LogoError(f"字体未登记：{', '.join(unknown)}")
         fonts = [f for f in fonts if f.get("id") in a.ids]
+    if a.action == "review":
+        if len(fonts) != 1 or not a.ids:
+            raise LogoError("用法：./logo fonts review <字体 id>")
+        f = fonts[0]
+        dest = license_review_path(f)
+        write_new(dest, render_template("font-license-review.md", id=f["id"], family=f.get("family", ""),
+                                        weight=f.get("weight", "")))
+        print(f"已创建授权复核：{rel(dest)}（填写后由 check 校验；两项“允许”须为“是”）")
+        return
     if a.action == "fetch":
         for f in fonts:
             print(f"{f['id']}: {fetch_font(f)}")
         return
+    usage: dict[str, set[str]] = {}
+    if projects_repo_ready():
+        for p in all_projects():
+            for fid in set(p.cfg.get("fonts", {}).get("used", [])) | set(p.svg_fonts()):
+                usage.setdefault(fid, set()).add(p.slug)
     for f in fonts:
-        used = ", ".join(f.get("used_by", [])) or "—"
+        used = ", ".join(sorted(usage.get(f["id"], set()))) or "—"
         print(f"{f['id']:<28} {f.get('family', '')} {f.get('weight', '')}  [{font_status(f)}]  使用：{used}")
 
 
@@ -1152,8 +1251,7 @@ def build_export(p: Project, cfg: dict, rid: str, rdir: Path, ldir: Path, root_v
         if fp.get("apple_touch_layout"):
             f = render_fit(layout_svg(fp["apple_touch_layout"], "color"), png / "favicon" / "apple-touch-icon.png",
                            fp["apple_touch_size"])
-            run(["magick", str(f), "-background", "white", "-alpha", "remove", "-alpha", "off", str(f)])
-            outputs.append(f)
+            outputs.append(flatten(f, app_background(p)))
 
     if "ios" in enabled:
         ip = prof["ios"]
@@ -1161,7 +1259,7 @@ def build_export(p: Project, cfg: dict, rid: str, rdir: Path, ldir: Path, root_v
         for s in ip["sizes"]:
             f = render_fit(src, png / "ios" / f"AppIcon-{s}.png", s)
             if ip.get("opaque", True):
-                run(["magick", str(f), "-background", "white", "-alpha", "remove", "-alpha", "off", str(f)])
+                flatten(f, app_background(p))
             outputs.append(f)
 
     if "android" in enabled:
@@ -1170,17 +1268,15 @@ def build_export(p: Project, cfg: dict, rid: str, rdir: Path, ldir: Path, root_v
         for dens, s in ap["mipmap"].items():
             outputs.append(render_fit(legacy, png / "android" / f"mipmap-{dens}" / "ic_launcher.png", s))
         play = render_fit(legacy, png / "android" / f"play-store-{ap['play_store_size']}.png", ap["play_store_size"])
-        run(["magick", str(play), "-background", "white", "-alpha", "remove", "-alpha", "off", str(play)])
+        flatten(play, app_background(p))
         outputs.append(play)
         size = ap["adaptive_size"]
         ex = cfg.get("export", {})
-        bg_key = ex.get("android_background", "")
-        if bg_key not in p.palette:
-            raise LogoError(f"[export] android_background 必须是色板中的色名，当前：{bg_key!r}")
+        bg_color = app_background(p)
         adir = png / "android" / "adaptive"
         bg = adir / "ic_launcher_background.png"
         adir.mkdir(parents=True, exist_ok=True)
-        run(["magick", "-size", f"{size}x{size}", f"xc:{p.palette[bg_key]}", str(bg)])
+        run(["magick", "-size", f"{size}x{size}", f"xc:{bg_color}", str(bg)])
         outputs.append(bg)
         for mode, fname in ((ex.get("android_foreground_mode", "color"), "ic_launcher_foreground.png"),
                             ("mono", "ic_launcher_monochrome.png")):
@@ -1189,6 +1285,7 @@ def build_export(p: Project, cfg: dict, rid: str, rdir: Path, ldir: Path, root_v
         if (w := android_safe_warning(adir / "ic_launcher_foreground.png", ap)):
             warnings.append(w)
     warnings.extend(release_structure_warnings(p, ldir, prof))
+    warnings.extend(app_icon_warnings(p, ldir, prof))
 
     if "social" in enabled:
         sp = prof["social"]
@@ -1370,9 +1467,19 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
         errors.append(f"{r}: 阶段为 {stage}，但没有 current_release")
 
     font_ids = {f.get("id") for f in load_fonts()}
-    for fid in cfg.get("fonts", {}).get("used", []):
+    declared = cfg.get("fonts", {}).get("used", [])
+    for fid in declared:
         if fid not in font_ids:
             errors.append(f"{r}: 使用了未登记的字体 {fid}")
+    actual = p.svg_fonts(staged)
+    for fid, files in sorted(actual.items()):
+        if fid not in font_ids:
+            errors.append(f"{files[0]}: 转曲所用字体 {fid} 未在 fonts.toml 登记")
+        elif fid not in declared:
+            errors.append(f"{r}: SVG 中用字体 {fid} 转曲（如 {files[0]}），但 [fonts] used 未声明")
+    for fid in declared:
+        if fid in font_ids and fid not in actual:
+            warnings.append(f"{r}: [fonts] used 声明了 {fid}，但没有 SVG 用它转曲（依据 outline 生成的注释判断）")
     palette = set(vals)
     for d in p.directions():
         if not re.fullmatch(r"[A-Z]-[a-z0-9-]+", d.name):
@@ -1421,6 +1528,7 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
                 if (w := avatar_safe_warning(ldir, prof["social"]["avatar"])):
                     warnings.append(w)
             warnings.extend(release_structure_warnings(p, ldir, prof))
+            warnings.extend(app_icon_warnings(p, ldir, prof))
             ap = prof.get("android", {})
             if "android" in enabled and (ldir / f"{ap.get('adaptive_foreground_layout')}.svg").exists():
                 with tempfile.TemporaryDirectory() as td:
@@ -1467,8 +1575,30 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
                                 "请重新导出以补全追溯链")
 
 
-def check_fonts(errors: list[str], warnings: list[str], projects: list[Project] | None) -> None:
-    """projects 为 None 表示项目仓库不在场（单独克隆系统仓库），跳过 used_by 反查。"""
+def license_review_path(entry: dict) -> Path:
+    return FONTS_DIR / Path(entry["file"]).parent / LICENSE_REVIEW_NAME
+
+
+def license_review_errors(entry: dict) -> list[str]:
+    """非开源字体的授权复核：文件存在、模板填完、两项“允许”均为“是”。"""
+    f = license_review_path(entry)
+    if not f.exists():
+        return [f"非开源字体须有授权复核 {rel(f)}（./logo fonts review {entry.get('id')} 创建）"]
+    text = f.read_text(encoding="utf-8")
+    lines = {ln.strip() for ln in text.splitlines()}
+    holes = [ph for ph in template_placeholders("font-license-review.md") if ph in lines]
+    if holes:
+        return [f"{rel(f)} 还有 {len(holes)} 处模板占位未填写（如“{holes[0]}”）"]
+    out = []
+    for label in LICENSE_REVIEW_REQUIRED:
+        m = re.search(rf"^\s*-\s*\*\*{re.escape(label)}\*\*\s*[:：]\s*(\S*)", text, re.M)
+        if not m or not m.group(1).startswith("是"):
+            out.append(f"{rel(f)}：“{label}”须为“是”，否则不得使用该字体")
+    return out
+
+
+def check_fonts(errors: list[str], warnings: list[str]) -> None:
+    """检查字体登记表（使用情况由各项目的 [fonts] used 与 SVG 内容推导，不在此登记）。"""
     if not FONTS_TOML.exists():
         return
     seen = set()
@@ -1484,8 +1614,8 @@ def check_fonts(errors: list[str], warnings: list[str], projects: list[Project] 
                 errors.append(f"{where}: 缺少字段 {key}")
         if f.get("tier") not in ("open-source", "free-commercial"):
             errors.append(f"{where}: tier 必须是 open-source 或 free-commercial")
-        if f.get("tier") == "free-commercial" and not f.get("license_review"):
-            errors.append(f"{where}: 非开源字体必须填写 license_review（指向授权复核决策记录）")
+        if f.get("tier") == "free-commercial" and f.get("file"):
+            errors.extend(f"{where}: {e}" for e in license_review_errors(f))
         if f.get("file"):
             fp = FONTS_DIR / f["file"]
             if not fp.exists():
@@ -1494,22 +1624,6 @@ def check_fonts(errors: list[str], warnings: list[str], projects: list[Project] 
                 errors.append(f"{where}: sha256 与文件不符")
         if f.get("license_file") and not (FONTS_DIR / f["license_file"]).exists():
             errors.append(f"{where}: 授权文件不存在")
-    # used_by 反查必须与各项目的 [fonts] used 双向一致
-    if projects is None:
-        return
-    by_font = {f.get("id"): set(f.get("used_by", [])) for f in load_fonts()}
-    slugs = {p.slug for p in projects}
-    for p in projects:
-        for fid in p.cfg.get("fonts", {}).get("used", []):
-            if fid in by_font and p.slug not in by_font[fid]:
-                errors.append(f"fonts.toml [{fid}]: used_by 缺少 {p.slug}（该项目 [fonts] used 中声明了此字体）")
-    for fid, users in by_font.items():
-        for slug in sorted(users):
-            if slug not in slugs:
-                # 系统仓库可能搭配不同的项目仓库使用，只提醒不拦截
-                warnings.append(f"fonts.toml [{fid}]: used_by 中的项目 {slug} 不在当前项目仓库中")
-            elif fid not in Project(slug).cfg.get("fonts", {}).get("used", []):
-                errors.append(f"fonts.toml [{fid}]: used_by 含 {slug}，但该项目 [fonts] used 未声明此字体")
 
 
 def profile_warnings(prof: dict, enabled: list[str] | None = None) -> list[str]:
@@ -1593,15 +1707,15 @@ def check_immutability(staged: bool, errors: list[str]) -> None:
 
 @functools.lru_cache(maxsize=None)
 def template_placeholders(template_name: str) -> tuple[str, ...]:
-    """模板中必须被替换的占位行：含（提示）或以冒号结尾的空字段；“追加区”下的行与 {{变量}} 行除外。"""
+    """模板中必须被替换的占位行：含（提示）或以冒号结尾的空字段；“追加区”、{{变量}} 行与 > 说明除外。"""
     out, in_append = [], False
     for line in (TEMPLATES / template_name).read_text(encoding="utf-8").splitlines():
         s = line.strip()
         if s.startswith("#"):
             in_append = "追加" in s
             continue
-        if not s or in_append or "{{" in s:
-            continue
+        if not s or in_append or "{{" in s or s.startswith(">"):
+            continue  # 空行、追加区、变量行与“>”引用的说明文字都不是占位
         if "（" in s or re.search(r"[:：]$", s):
             out.append(s)
     return tuple(out)
@@ -1797,7 +1911,7 @@ def cmd_check(a) -> None:
             # 系统提交不因项目仓库工作区里未完成的内容被拦截，但要让人看到
             warnings.extend(f"[项目仓库] {e}" for e in perr)
     if not a.slug:
-        check_fonts(errors, warnings, projects)
+        check_fonts(errors, warnings)
         if scope != "projects":
             check_stray_files("system", errors, warnings)
             check_secrets("system", a.staged, errors)
@@ -1923,13 +2037,14 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--size", type=float, default=100, help="字号（SVG 单位）")
     s.add_argument("--tracking", type=float, default=0, help="字间距（SVG 单位）")
     s.add_argument("--fill", required=True, help="填充色（须在项目色板中）")
-    s.add_argument("--project", help="项目短名：校验填充色在色板中、字体已在 [fonts] used 中声明")
+    s.add_argument("--project", help="项目短名：校验填充色在色板中，并把字体自动写入该项目的 [fonts] used")
     s.add_argument("--no-kern", action="store_true", help="不应用字体自带的字距调整（kerning）")
     s.add_argument("--svg", help="输出为独立 SVG 文件；不填则输出 <path> 片段")
     s.set_defaults(fn=cmd_outline)
 
-    s = sub.add_parser("fonts", help="查看已登记字体，或从官方地址下载并校验（字体文件不进 Git）")
-    s.add_argument("action", nargs="?", choices=["list", "fetch"], default="list")
+    s = sub.add_parser("fonts", help="查看已登记字体、下载并校验（字体文件不进 Git）、创建授权复核")
+    s.add_argument("action", nargs="?", choices=["list", "fetch", "review"], default="list",
+                   help="list 查看；fetch 下载并校验；review 为非开源字体创建授权复核记录")
     s.add_argument("ids", nargs="*", help="字体 id（默认全部）")
     s.set_defaults(fn=cmd_fonts)
 

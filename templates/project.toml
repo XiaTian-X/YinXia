@@ -39,5 +39,6 @@ logo = ["primary", "horizontal", "icon", "wordmark-cn", "wordmark-en"]
 
 [export]
 profiles = ["general", "favicon", "ios", "android", "social"]
-android_background = "primary"
+# iOS / Google Play / Apple 触控图标 / Android 自适应背景层的品牌底色（色板中的色名）；旧名 android_background 仍兼容
+app_background = "primary"
 android_foreground_mode = "reversed"
