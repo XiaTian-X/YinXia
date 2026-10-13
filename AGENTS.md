@@ -9,6 +9,7 @@
   - `concepts/NNN-*.png|jpg|webp`：概念图原样保存。
 - **只追加文件**：`notes.md`、`direction.md`、`release.md`、`guide.md`（releases 下）、`decisions/*.md`、`concepts/*.md`，已有内容不得修改，只能在末尾追加评审记录。
 - **`final/` 是纯产物**：只能由 `./logo export` 生成，禁止手改或放入文件（由 `manifest.json` 校验）。
+- **密钥绝不入库**：`.env`、私钥、证书、凭据文件以及任何 API key/token 都不得出现在两个仓库的提交中；系统仓库的 `.gitignore` 是白名单，钩子还会按文件名与内容扫描拦截。需要密钥时放在仓库之外或环境变量中。
 - **目录纪律**：两个仓库里都只允许出现规定结构内的文件。描摹中间件、临时脚本、测试输出一律放 `.cache/`（已被 Git 忽略）或用完删除，绝不提交到根目录或项目目录。
 - **SVG 规范**：使用 viewBox；禁止 hardcoded width/height；所有文字使用 `./logo outline --project <slug>` 转曲；颜色必须来自 `project.toml` 色板的十六进制值；不准用外链/位图/脚本/事件属性（`onload` 等）/CSS 外部资源（`@import`、`url(http…)`）。
 - **字体**：只用 `assets/fonts/fonts.toml` 登记过的字体；项目用到时同时写入 `[fonts] used` 与 fonts.toml 的 `used_by`。字体文件绝不提交到 Git（`.otf/.ttf` 等已忽略，钩子也会拦截），需要时用 `./logo fonts fetch` 从登记的官方地址下载并校验。

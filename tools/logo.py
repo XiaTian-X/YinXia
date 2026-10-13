@@ -80,15 +80,38 @@ APPEND_ONLY_PATTERNS = [
     re.compile(r"^[^/]+/concepts/[^/]+\.md$"),
 ]
 
-# 两个仓库中允许出现的文件（相对各自根目录）；其余文件一律视为结构外杂物
-ALLOWED_ROOT_FILES = {
-    "system": {"AGENTS.md", "CLAUDE.md", "README.md", "logo", ".gitignore"},
-    "projects": {"PROJECTS.md", ".gitignore"},
-}
-ALLOWED_ROOT_DIRS = {
-    "system": {".agents", ".claude", ".githooks", "assets", "config", "templates", "tools"},
-    "projects": set(),
-}
+# 系统仓库允许提交的文件（相对仓库根目录，精确到目录与文件类型）；与 .gitignore 的白名单保持一致
+SYSTEM_FILE_PATTERNS = [re.compile(p) for p in (
+    r"\.gitignore", r"AGENTS\.md", r"CLAUDE\.md", r"README\.md", r"logo",
+    r"\.agents/skills/[a-z0-9-]+/[A-Za-z0-9_./-]+\.(md|py|sh|toml|json)",
+    r"\.claude/settings\.json", r"\.claude/(commands|agents|skills)/[A-Za-z0-9_./-]+\.md",
+    r"\.githooks/pre-commit", r"\.githooks/projects/pre-commit",
+    r"assets/fonts/fonts\.toml", r"assets/fonts/[a-z0-9-]+/(LICENSE|OFL)[A-Za-z0-9_.-]*\.(txt|md)",
+    r"config/[a-z0-9-]+\.toml",
+    r"templates/[a-z0-9-]+\.(md|svg|toml|gitignore)",
+    r"tools/[a-z0-9_]+\.py", r"tools/requirements\.txt",
+)]
+# 项目仓库根目录允许的文件；项目目录内的文件见 PROJECT_FILE_PATTERNS
+PROJECTS_ROOT_FILES = {"PROJECTS.md", ".gitignore"}
+
+# 密钥与凭据：文件名特征，以及内容特征（私钥、各平台访问令牌）
+SECRET_NAME_RE = re.compile(
+    r"^(\.env(\..+)?|.*\.(pem|key|p12|pfx|jks|keystore|gpg)|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?"
+    r"|\.netrc|\.npmrc|\.pypirc)$", re.I)
+# 仅用于系统仓库：项目仓库的文件名来自用户输入（如 001-secret-garden.md），按关键词判断会误伤
+SECRET_KEYWORD_RE = re.compile(r"credential|secret", re.I)
+PROJECTS_GITIGNORE_TEMPLATE = TEMPLATES / "projects.gitignore"
+BINARY_SUFFIX_RE = re.compile(r"\.(png|jpe?g|webp|gif|ico|otf|ttf|ttc|woff2?|zip)$", re.I)
+SECRET_CONTENT_RE = re.compile("|".join((
+    r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----",  # 各类私钥
+    r"\bAKIA[0-9A-Z]{16}\b",                     # AWS Access Key
+    r"\bgh[pousr]_[A-Za-z0-9]{36,}",              # GitHub token
+    r"\bgithub_pat_[A-Za-z0-9_]{60,}",            # GitHub fine-grained token
+    r"\bsk-ant-[A-Za-z0-9_-]{20,}",               # Anthropic API key
+    r"\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}",          # OpenAI 风格 API key
+    r"\bxox[abprs]-[A-Za-z0-9-]{10,}",            # Slack token
+    r"\bAIza[0-9A-Za-z_-]{35}",                   # Google API key
+)))
 PROJECT_FILE_PATTERNS = [re.compile(p) for p in (
     r"project\.toml",
     r"brief\.md",
@@ -1513,6 +1536,10 @@ def check_hooks(warnings: list[str]) -> None:
     """钩子缺失时 git 会静默跳过检查，这里显式提醒。"""
     expected = {"system": (".githooks", ROOT / ".githooks" / "pre-commit"),
                 "projects": ("../.githooks/projects", ROOT / ".githooks" / "projects" / "pre-commit")}
+    gi = PROJECTS / ".gitignore"
+    if projects_repo_ready() and (not gi.exists() or gi.read_text(encoding="utf-8")
+                                  != PROJECTS_GITIGNORE_TEMPLATE.read_text(encoding="utf-8")):
+        warnings.append("projects/.gitignore 与系统模板不一致，运行 ./logo setup 更新后在项目仓库提交")
     for repo, (hooks_path, script) in expected.items():
         if repo == "projects" and not projects_repo_ready():
             continue
@@ -1523,14 +1550,53 @@ def check_hooks(warnings: list[str]) -> None:
 
 def path_allowed(path: str, scope: str) -> bool:
     """path 是否属于 scope（system/projects）仓库规定的目录结构。"""
+    if scope == "system":
+        return any(pt.fullmatch(path) for pt in SYSTEM_FILE_PATTERNS)
     parts = path.split("/")
     if len(parts) == 1:
-        return path in ALLOWED_ROOT_FILES[scope]
-    if parts[0] in ALLOWED_ROOT_DIRS[scope]:
-        return True
-    if scope == "projects" and SLUG_RE.match(parts[0]):
+        return path in PROJECTS_ROOT_FILES
+    if SLUG_RE.match(parts[0]):
         return any(pt.fullmatch("/".join(parts[1:])) for pt in PROJECT_FILE_PATTERNS)
     return False
+
+
+def check_secrets(scope: str, staged: bool, errors: list[str]) -> None:
+    """拦截疑似密钥/凭据：文件名特征 + 文本内容特征。
+
+    staged=True 时只扫描本次提交新增或修改的文件（读暂存区内容）；否则扫描所有已跟踪与未忽略的文件。
+    """
+    if git("rev-parse", "--git-dir", check=False, repo=scope).returncode != 0:
+        return
+    prefix = "projects/" if scope == "projects" else ""
+    root = PROJECTS if scope == "projects" else ROOT
+
+    def ls(*args: str) -> list[str]:
+        return [x for x in git(*args, repo=scope).stdout.decode("utf-8").split("\0") if x]
+
+    if staged:
+        paths = ls("diff", "--cached", "--name-only", "--diff-filter=ACMR", "-z")
+    else:
+        paths = ls("ls-files", "-z", "--cached", "--others", "--exclude-standard")
+    for path in sorted(set(paths)):
+        name = path.rsplit("/", 1)[-1]
+        if SECRET_NAME_RE.match(name) or (scope == "system" and SECRET_KEYWORD_RE.search(name)):
+            errors.append(f"{prefix}{path}: 文件名疑似密钥/凭据，禁止提交")
+            continue
+        if BINARY_SUFFIX_RE.search(path):
+            continue  # 图片、字体等二进制文件不做文本扫描
+        if staged:
+            data = git("show", f":{path}", check=False, repo=scope).stdout
+        else:
+            f = root / path
+            if not f.is_file() or f.stat().st_size > 5 << 20:
+                continue
+            data = f.read_bytes()
+        if b"\0" in data[:8192]:
+            continue  # 二进制文件（图片等）不做文本扫描
+        text = data.decode("utf-8", errors="ignore")
+        m = SECRET_CONTENT_RE.search(text)
+        if m:  # 不回显匹配内容，避免把密钥片段打印到终端或日志
+            errors.append(f"{prefix}{path}: 第 {text.count(chr(10), 0, m.start()) + 1} 行疑似包含密钥，禁止提交")
 
 
 def check_stray_files(scope: str, errors: list[str], warnings: list[str]) -> None:
@@ -1599,6 +1665,7 @@ def cmd_check(a) -> None:
                 (perr if staged else warnings).append(msg)
             check_stray_files("projects", perr, warnings)
             check_new_docs(staged, perr, warnings)
+            check_secrets("projects", staged, perr)
         if scope != "system":
             check_immutability(staged, perr)
             errors.extend(perr)
@@ -1609,6 +1676,7 @@ def cmd_check(a) -> None:
         check_fonts(errors, warnings, projects)
         if scope != "projects":
             check_stray_files("system", errors, warnings)
+            check_secrets("system", a.staged, errors)
         if not a.staged:
             check_hooks(warnings)
         try:
@@ -1635,8 +1703,11 @@ def cmd_setup(a) -> None:
     if not projects_repo_ready():
         run(["git", "init", "-q", str(PROJECTS)])
         print("已初始化项目仓库 projects/")
-    if not (PROJECTS / ".gitignore").exists():
-        (PROJECTS / ".gitignore").write_text(".DS_Store\n", encoding="utf-8")
+    gi = PROJECTS / ".gitignore"
+    want = PROJECTS_GITIGNORE_TEMPLATE.read_text(encoding="utf-8")
+    if not gi.exists() or gi.read_text(encoding="utf-8") != want:
+        gi.write_text(want, encoding="utf-8")
+        print("已写入 projects/.gitignore（白名单模板），请在项目仓库提交")
     # 相对路径以项目仓库根目录为基准，钩子脚本随系统仓库一起版本管理
     run(["git", "-C", str(PROJECTS), "config", "core.hooksPath", "../.githooks/projects"])
     print("已启用项目仓库钩子（.githooks/projects/pre-commit）")

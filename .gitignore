@@ -1,7 +1,67 @@
-.DS_Store
+# 系统仓库 .gitignore —— 白名单模式。
+# 与 tools/logo.py 的 SYSTEM_FILE_PATTERNS 保持一致；钩子会再按精确规则与密钥扫描把关。
 
-# 项目数据在独立的 Git 仓库中（projects/.git），系统仓库不跟踪
-/projects/
+# ── 第一层：根目录默认忽略一切，只放行系统必需的文件与目录 ──
+/*
+!/.gitignore
+!/AGENTS.md
+!/CLAUDE.md
+!/README.md
+!/logo
+!/.agents/
+!/.claude/
+!/.githooks/
+!/assets/
+!/config/
+!/templates/
+!/tools/
+# 因此被忽略的包括：/projects/（独立的项目仓库）、/.cache/（预览与下载缓存）、/.venv/，以及根目录的任何其他文件
+
+# ── 第二层：放行的目录内仍然排除 ──
+
+# 系统与编辑器杂物
+.DS_Store
+Thumbs.db
+*~
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Python 缓存
+__pycache__/
+*.py[cod]
+
+# 临时文件、日志、未完成的下载
+*.tmp
+*.temp
+*.bak
+*.orig
+*.log
+*.part
+
+# 密钥与凭据
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.gpg
+id_rsa*
+id_dsa*
+id_ecdsa*
+id_ed25519*
+*credential*
+*secret*
+.netrc
+.npmrc
+.pypirc
+
+# Claude Code 个人设置（共享的 .claude/settings.json 可以提交）
+.claude/settings.local.json
 
 # 字体文件不进 Git：由 ./logo fonts fetch 按 assets/fonts/fonts.toml 从官方地址下载并校验 sha256
 assets/fonts/**/*.otf
@@ -9,11 +69,3 @@ assets/fonts/**/*.ttf
 assets/fonts/**/*.ttc
 assets/fonts/**/*.woff
 assets/fonts/**/*.woff2
-
-# 预览、对比图、参考线等过程产物（可随时由 ./logo preview/compare/export 重建）
-.cache/
-
-# Python 虚拟环境与缓存
-.venv
-__pycache__/
-*.pyc
