@@ -12,6 +12,8 @@
 - **色彩倾向**：
 
 ## 字体策略
+> 字体须先登记在 `assets/fonts/fonts.toml`，并写入 `project.toml` 的 `[fonts] used` 与 fonts.toml 的 `used_by`。
+
 - **图形**：
-- **中文**：
-- **英文**：
+- **中文**：（fonts.toml id，例如 `source-han-sans-sc-bold`）
+- **英文**：（fonts.toml id，例如 `inter`）

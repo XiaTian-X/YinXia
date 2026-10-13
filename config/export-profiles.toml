@@ -15,6 +15,7 @@ layout = "app-icon"
 sizes = [1024]
 opaque = true
 verified_on = "2026-10-09"
+source = "https://developer.apple.com/design/human-interface-guidelines/app-icons"
 
 [android]
 legacy_layout = "app-icon"
@@ -23,6 +24,7 @@ adaptive_foreground_layout = "icon"
 adaptive_size = 432
 adaptive_safe_ratio = 0.5
 verified_on = "2026-10-09"
+source = "https://developer.android.com/develop/ui/views/launch/icon_design_adaptive"
 [android.mipmap]
 mdpi = 48
 hdpi = 72
@@ -31,11 +33,14 @@ xxhdpi = 144
 xxxhdpi = 192
 
 [social]
+# 尚未登记具体尺寸的平台；补齐（尺寸 + 安全区 + 官方来源 + 核对日期）后从此列表移除
+pending = ["微信公众号封面（约 2.35:1）", "微博封面", "哔哩哔哩空间头图", "视频号封面", "快手封面", "知乎封面"]
 [social.avatar]
 layout = "avatar"
 sizes = [400, 800, 1080]
 safe_radius_ratio = 0.8
 verified_on = "2026-10-09"
+source = "" # 各平台头像均为方图圆裁，暂无单一官方出处，待补
 
 [[social.cover]]
 id = "youtube"
@@ -44,6 +49,7 @@ width = 2560
 height = 1440
 safe = [507, 509, 1546, 423] # Desktop and mobile minimum safe area
 verified_on = "2026-10-09"
+source = "https://support.google.com/youtube/answer/2972003"
 
 [[social.cover]]
 id = "x"
@@ -52,6 +58,7 @@ width = 1500
 height = 500
 occlusions = [[0, 200, 400, 300]] # profile picture area roughly
 verified_on = "2026-10-09"
+source = "https://help.x.com/en/managing-your-account/common-issues-when-uploading-media"
 
 [[social.cover]]
 id = "facebook"
@@ -59,6 +66,7 @@ layout = "cover-2.7x1"
 width = 820
 height = 312
 verified_on = "2026-10-09"
+source = "https://www.facebook.com/help/125379114252045"
 
 [[social.cover]]
 id = "linkedin"
@@ -66,6 +74,7 @@ layout = "cover-6x1"
 width = 1128
 height = 191
 verified_on = "2026-10-09"
+source = "https://www.linkedin.com/help/linkedin/answer/a563309"
 
 [[social.cover]]
 id = "og"
@@ -73,6 +82,7 @@ layout = "cover-og"
 width = 1200
 height = 630
 verified_on = "2026-10-09"
+source = "https://developers.facebook.com/docs/sharing/webmasters/images"
 
 [[social.cover]]
 id = "ratio-4x3"
@@ -80,6 +90,7 @@ layout = "cover-4x3"
 width = 1600
 height = 1200
 verified_on = "2026-10-09"
+generic = true # 通用比例，不对应具体平台，不做来源核对
 
 [[social.cover]]
 id = "ratio-3x4"
@@ -87,3 +98,28 @@ layout = "cover-3x4"
 width = 1200
 height = 1600
 verified_on = "2026-10-09"
+generic = true # 通用比例，不对应具体平台，不做来源核对
+
+[[social.cover]]
+id = "github"
+layout = "cover-og"
+width = 1280
+height = 640
+verified_on = "" # 待按官方文档核实
+source = "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/customizing-your-repositorys-social-media-preview"
+
+[[social.cover]]
+id = "xiaohongshu"
+layout = "cover-3x4"
+width = 1080
+height = 1440
+verified_on = "" # 待按官方文档核实
+source = ""
+
+[[social.cover]]
+id = "douyin"
+layout = "cover-9x16"
+width = 1080
+height = 1920
+verified_on = "" # 待按官方文档核实
+source = ""

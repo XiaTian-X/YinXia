@@ -1,3 +1,4 @@
+# [state] 只能通过 ./logo state / version / release / export 修改；其余配置（色板、版式、导出）可手工维护
 [project]
 name = "{{name}}"
 slug = "{{slug}}"
@@ -31,7 +32,8 @@ ink = "#FFFFFF"
 used = []
 
 [layouts]
-logo = ["primary", "horizontal", "icon"]
+# 含中英文字标的项目保留 wordmark-cn / wordmark-en；纯图形项目删去即可
+logo = ["primary", "horizontal", "icon", "wordmark-cn", "wordmark-en"]
 
 [export]
 profiles = ["general", "favicon", "ios", "android", "social"]

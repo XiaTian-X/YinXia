@@ -43,6 +43,7 @@ ET.register_namespace("xlink", XLINK_NS)
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 VERSION_ID_RE = re.compile(r"^([A-Z])-v(\d{3})$")
 RELEASE_RE = re.compile(r"^r(\d+)$")
+CONCEPT_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 HEX6_RE = re.compile(r"^#[0-9A-F]{6}$")
 HEX_IN_TEXT_RE = re.compile(r"#[0-9A-Fa-f]{6}\b")
 STAGES = ["briefing", "exploring", "iterating", "releasing", "delivered", "paused"]
@@ -62,7 +63,9 @@ FORBIDDEN_TAGS = {
 FROZEN_PATTERNS = [
     re.compile(r"^projects/[^/]+/directions/[^/]+/v\d{3}/logo\.svg$"),
     re.compile(r"^projects/[^/]+/releases/r\d+/layouts/[^/]+\.svg$"),
+    re.compile(r"^projects/[^/]+/concepts/\d{3}-[^/]+\.(png|jpe?g|webp)$"),
 ]
+
 APPEND_ONLY_PATTERNS = [
     re.compile(r"^projects/[^/]+/directions/[^/]+/v\d{3}/notes\.md$"),
     re.compile(r"^projects/[^/]+/directions/[^/]+/direction\.md$"),
@@ -70,6 +73,25 @@ APPEND_ONLY_PATTERNS = [
     re.compile(r"^projects/[^/]+/decisions/[^/]+\.md$"),
     re.compile(r"^projects/[^/]+/concepts/[^/]+\.md$"),
 ]
+
+# 仓库中允许出现的文件（相对仓库根目录）；其余文件一律视为结构外杂物
+ALLOWED_ROOT_FILES = {"AGENTS.md", "CLAUDE.md", "README.md", "PROJECTS.md", "logo", ".gitignore"}
+ALLOWED_ROOT_DIRS = {".agents", ".claude", ".githooks", "assets", "config", "templates", "tools"}
+PROJECT_FILE_PATTERNS = [re.compile(p) for p in (
+    r"project\.toml",
+    r"brief\.md",
+    r"(concepts|directions|decisions|releases)/\.gitkeep",
+    r"concepts/\d{3}-[a-z0-9-]+\.(md|png|jpe?g|webp)",
+    r"directions/[A-Z]-[a-z0-9-]+/direction\.md",
+    r"directions/[A-Z]-[a-z0-9-]+/v\d{3}/(logo\.svg|notes\.md)",
+    r"decisions/\d{3}-[a-z0-9-]+\.md",
+    r"releases/r\d+/(release|guide)\.md",
+    r"releases/r\d+/layouts/[a-z0-9.-]+\.svg",
+    r"final/.+",  # 由 manifest.json 单独校验
+)]
+
+# release.md 头部字段（模板写法 “- **基于**: A-v001”）到元数据键名的映射
+RELEASE_META_KEYS = {"基于": "based_on", "日期": "date", "based_on": "based_on", "date": "date"}
 
 
 class LogoError(Exception):
@@ -240,6 +262,23 @@ class Project:
             raise LogoError(f"发布不存在：{rid}")
         return p
 
+    def release_root_version(self, rid: str) -> str:
+        """沿 based_on 链（r3 → r2 → A-v004）找到发布最终基于的设计版本。"""
+        seen = set()
+        cur = rid
+        while RELEASE_RE.fullmatch(cur):
+            if cur in seen:
+                raise LogoError(f"发布 {rid} 的 based_on 存在循环引用")
+            seen.add(cur)
+            based = load_release_meta(self.release_dir(cur)).get("based_on", "")
+            if not based:
+                raise LogoError(f"releases/{cur}/release.md 缺少“基于”字段")
+            if RELEASE_RE.fullmatch(based) and int(based[1:]) >= int(cur[1:]):
+                raise LogoError(f"releases/{cur} 只能基于更早的发布，收到：{based}")
+            cur = based
+        self.version_dir(cur)  # 校验存在
+        return cur
+
     # -- 目标解析（预览用）-------------------------------------------------------
     def resolve_target(self, target: str) -> Path:
         if VERSION_ID_RE.match(target):
@@ -277,6 +316,34 @@ def svg_viewbox(path: Path) -> tuple[float, float, float, float]:
 def recolor_svg(src: Path, mapping: dict[str, str]) -> str:
     text = src.read_text(encoding="utf-8")
     return HEX_IN_TEXT_RE.sub(lambda m: mapping.get(m.group(0).upper(), m.group(0)), text)
+
+
+def layout_mode_text(p: Project, ldir: Path, name: str, mode: str) -> str:
+    """某版式在某配色下的 SVG 文本：优先使用手工覆盖文件 name.mode.svg，否则按色板自动换色。"""
+    override = ldir / f"{name}.{mode}.svg"
+    if mode != "color" and override.exists():
+        return override.read_text(encoding="utf-8")
+    return recolor_svg(ldir / f"{name}.svg", p.mode_map(mode))
+
+
+def avatar_safe_warning(ldir: Path, av: dict) -> str | None:
+    """检查头像图形是否超出圆形安全区；返回提醒文字，没有问题时返回 None。"""
+    layout = ldir / f"{av['layout']}.svg"
+    if not layout.exists():
+        return None
+    try:
+        stripped = strip_element_by_id(layout, "background")
+    except ET.ParseError:
+        return None  # XML 错误已由 check_svg 报告
+    if stripped is None:
+        return f"{rel(layout)} 没有 id=\"background\" 的底色元素，无法做圆形安全区检查"
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td) / "fg.svg"
+        t.write_text(stripped, encoding="utf-8")
+        val = alpha_outside_circle(render_fit(t, Path(td) / "fg.png", 400), av["safe_radius_ratio"])
+    if val > 0.05:
+        return f"{rel(layout)} 图形超出圆形安全区（半径 {av['safe_radius_ratio']}），在圆形裁切下可能被切掉"
+    return None
 
 
 def strip_element_by_id(src: Path, element_id: str) -> str | None:
@@ -320,9 +387,9 @@ def render_cover(svg: Path, out: Path, width: int, height: int) -> Path:
 
 
 def alpha_outside_circle(png: Path, radius_ratio: float) -> float:
-    """返回圆形安全区之外的最大不透明度（0~1）。"""
+    """返回圆形安全区之外的最大不透明度（0~1）。radius_ratio 是相对于内切圆半径的比例。"""
     w, h = (int(x) for x in run(["magick", "identify", "-format", "%w %h", str(png)], capture=True).split())
-    cx, cy, r = w / 2, h / 2, min(w, h) * radius_ratio
+    cx, cy, r = w / 2, h / 2, min(w, h) / 2 * radius_ratio
     with tempfile.TemporaryDirectory() as td:
         mask = Path(td) / "mask.png"
         run(["magick", "-size", f"{w}x{h}", "xc:white", "-fill", "black",
@@ -375,16 +442,17 @@ def cmd_version(a) -> None:
     num = int(existing[-1].name[1:]) + 1 if existing else 1
     vid = f"{letter}-v{num:03d}"
     base = a.based_on or (None if a.blank else p.latest_version_id(ddir))
+    base_svg = p.version_dir(base) / "logo.svg" if base else None  # 先校验，避免留下半成品目录
     vdir = ddir / f"v{num:03d}"
     vdir.mkdir(parents=True)
-    if base:
-        shutil.copyfile(p.version_dir(base) / "logo.svg", vdir / "logo.svg")
+    if base_svg:
+        shutil.copyfile(base_svg, vdir / "logo.svg")
     else:
         shutil.copyfile(TEMPLATES / "blank.svg", vdir / "logo.svg")
     write_new(vdir / "notes.md", render_template(
         "version-notes.md", id=vid, based_on=base or "（无，全新起稿）", direction=ddir.name, date=today()))
     stage = p.cfg["state"].get("stage")
-    if stage in ("briefing", "exploring") and p.cfg["state"].get("selected_direction"):
+    if stage in ("briefing", "exploring", "delivered") and p.cfg["state"].get("selected_direction"):
         p.set_state(stage="iterating")
     print(f"已创建版本：{vid} → {rel(vdir)}")
     print("提示：完成 logo.svg 与 notes.md 后再提交；提交后该版本即冻结")
@@ -395,6 +463,8 @@ def cmd_concept(a) -> None:
     src = Path(a.image)
     if not src.exists():
         raise LogoError(f"图片不存在：{src}")
+    if src.suffix.lower() not in CONCEPT_SUFFIXES:
+        raise LogoError(f"概念图只支持 {', '.join(sorted(CONCEPT_SUFFIXES))}，收到：{src.suffix}")
     cdir = p.dir / "concepts"
     nums = [int(m.group(1)) for f in cdir.glob("*.md") if (m := re.match(r"(\d{3})-", f.name))]
     num = max(nums, default=0) + 1
@@ -428,12 +498,12 @@ def cmd_release(a) -> None:
     layouts = rdir / "layouts"
     src = a.based_on
     if RELEASE_RE.fullmatch(src):
+        root_version = p.release_root_version(src)
+        # 只继承版式；guide.md 为只追加文件，新发布重新起稿，避免误继承
         shutil.copytree(p.release_dir(src) / "layouts", layouts)
-        for extra in ("guide.md",):
-            if (p.release_dir(src) / extra).exists():
-                pass  # guide.md 为只追加文件，新发布重新起稿，避免误继承
     elif VERSION_ID_RE.match(src):
         p.version_dir(src)  # 校验存在
+        root_version = src
         layouts.mkdir(parents=True)
     else:
         raise LogoError("--from 需要版本号（A-v004）或发布号（r1）")
@@ -443,8 +513,10 @@ def cmd_release(a) -> None:
         layouts="\n".join(f"- [ ] `{n}.svg`" for n in required)))
     write_new(rdir / "guide.md", render_template("release-guide.md", id=rid, name=p.cfg["project"]["name"]))
     (p.dir / "releases" / ".gitkeep").unlink(missing_ok=True)
-    p.set_state(stage="releasing", current_release=rid)
-    print(f"已创建发布：{rid} → {rel(rdir)}")
+    # 发布即确认定稿：选定方向/版本与发布的来源保持一致（唯一事实来源仍是 project.toml）
+    p.set_state(stage="releasing", current_release=rid,
+                selected_direction=root_version.split("-")[0], selected_version=root_version)
+    print(f"已创建发布：{rid} → {rel(rdir)}（定稿版本：{root_version}）")
     print("需要的版式：" + ", ".join(required))
 
 
@@ -514,6 +586,15 @@ def cmd_outline(a) -> None:
         raise LogoError(f"字体校验值不匹配：{rel(path)}，文件可能被替换或修改")
     if not HEX6_RE.match(a.fill.upper()):
         raise LogoError("--fill 必须是 6 位十六进制颜色，且应在项目色板中")
+    if a.project:
+        p = Project(a.project)
+        if a.fill.upper() not in set(p.palette.values()):
+            raise LogoError(f"--fill {a.fill.upper()} 不在 {a.project} 的色板中")
+        if a.font not in p.cfg.get("fonts", {}).get("used", []):
+            print(f"⚠ 字体 {a.font} 尚未写入 {a.project} 的 [fonts] used，"
+                  "请补上并在 fonts.toml 的 used_by 中登记", file=sys.stderr)
+    else:
+        print("⚠ 未指定 --project，无法校验填充色是否在色板中", file=sys.stderr)
     font = TTFont(path, fontNumber=entry.get("font_number", 0))
     gs = font.getGlyphSet()
     cmap = font.getBestCmap()
@@ -536,7 +617,8 @@ def cmd_outline(a) -> None:
         raise LogoError(f"字体 {a.font} 不包含这些字符：{''.join(missing)}")
     d = pen.getCommands()
     bounds = bpen.bounds or (0, 0, 0, 0)
-    comment = (f"<!-- outline: font={a.font} size={a.size} tracking={a.tracking} text=\"{a.text}\" "
+    safe_text = a.text.replace("--", "‐‐")  # XML 注释中不允许出现 “--”
+    comment = (f"<!-- outline: font={a.font} size={a.size} tracking={a.tracking} text=\"{safe_text}\" "
                f"bbox={','.join(fmt_num(b) for b in bounds)} advance={fmt_num(x)} -->")
     path_el = f'<path fill="{a.fill.upper()}" d="{d}"/>'
     if a.svg:
@@ -674,6 +756,7 @@ def cmd_export(a) -> None:
         raise LogoError("未指定发布号，且 project.toml 中没有 current_release")
     rdir = p.release_dir(rid)
     ldir = rdir / "layouts"
+    root_version = p.release_root_version(rid)  # 追溯链不完整时拒绝导出
     need = required_layouts(p)
     missing = [n for n in need if not (ldir / f"{n}.svg").exists()]
     if missing:
@@ -702,11 +785,7 @@ def cmd_export(a) -> None:
         out = final / "svg" / (f"{prefix}-{name}-{mode}.svg" if name in logo_layouts else f"{prefix}-{name}.svg")
         if out.exists():
             return out
-        override = ldir / f"{name}.{mode}.svg"
-        if mode != "color" and override.exists():
-            shutil.copyfile(override, out)
-        else:
-            out.write_text(recolor_svg(ldir / f"{name}.svg", p.mode_map(mode)), encoding="utf-8")
+        out.write_text(layout_mode_text(p, ldir, name, mode), encoding="utf-8")
         outputs.append(out)
         return out
 
@@ -777,7 +856,7 @@ def cmd_export(a) -> None:
                             ("mono", "ic_launcher_monochrome.png")):
             with tempfile.TemporaryDirectory() as td:
                 tmp_svg = Path(td) / "fg.svg"
-                tmp_svg.write_text(recolor_svg(ldir / f"{fg_layout}.svg", p.mode_map(mode)), encoding="utf-8")
+                tmp_svg.write_text(layout_mode_text(p, ldir, fg_layout, mode), encoding="utf-8")
                 f = render_fit(tmp_svg, adir / fname, inner)
             run(["magick", str(f), "-background", "none", "-gravity", "center", "-extent", f"{size}x{size}", str(f)])
             outputs.append(f)
@@ -788,16 +867,8 @@ def cmd_export(a) -> None:
         src = layout_svg(av["layout"], "color")
         for s in av["sizes"]:
             outputs.append(render_fit(src, png / "social" / "avatar" / f"{prefix}-avatar@{s}.png", s))
-        stripped = strip_element_by_id(ldir / f"{av['layout']}.svg", "background")
-        if stripped is None:
-            warnings.append(f"{av['layout']}.svg 没有 id=\"background\" 的底色元素，跳过圆形安全区检查")
-        else:
-            with tempfile.TemporaryDirectory() as td:
-                t = Path(td) / "fg.svg"
-                t.write_text(stripped, encoding="utf-8")
-                val = alpha_outside_circle(render_fit(t, Path(td) / "fg.png", 400), av["safe_radius_ratio"])
-            if val > 0.05:
-                warnings.append(f"头像图形超出圆形安全区（半径 {av['safe_radius_ratio']}），在圆形裁切下可能被切掉")
+        if (w := avatar_safe_warning(ldir, av)):
+            warnings.append(w)
         guides = CACHE / p.slug / "guides"
         for c in sp.get("cover", []):
             src = layout_svg(c["layout"], "color")
@@ -834,17 +905,20 @@ def cmd_export(a) -> None:
         head = run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture=True).strip()
     except LogoError:
         pass
-    release_cfg = load_release_meta(rdir)
     manifest = {
         "project": p.slug,
         "release": rid,
-        "based_on": release_cfg.get("based_on", ""),
+        "based_on": load_release_meta(rdir).get("based_on", ""),
+        "design_version": root_version,
         "generated_on": today(),
         "git_head": head,
         "files": {o.relative_to(final).as_posix(): sha256_file(o) for o in sorted(set(outputs))},
     }
     (final / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(f"已导出 {len(manifest['files'])} 个文件 → {rel(final)}")
+    print(f"已导出 {len(manifest['files'])} 个文件 → {rel(final)}（{rid} ← {root_version}）")
+    if rid == cfg["state"].get("current_release"):
+        p.set_state(stage="delivered")
+        print("项目阶段已更新为 delivered；请运行 ./logo index 并提交")
     for w in warnings:
         print(f"⚠ {w}")
     for w in profile_warnings(prof, enabled):
@@ -852,13 +926,14 @@ def cmd_export(a) -> None:
 
 
 def load_release_meta(rdir: Path) -> dict:
+    """解析 release.md 头部字段，兼容 “- **基于**: A-v001” 与 “- based_on: A-v001” 两种写法。"""
     meta = {}
     f = rdir / "release.md"
     if f.exists():
         for line in f.read_text(encoding="utf-8").splitlines():
-            m = re.match(r"^- (\w+):\s*(.*)$", line)
-            if m:
-                meta.setdefault(m.group(1), m.group(2).strip())
+            m = re.match(r"^-\s+\**\s*([^*:：]+?)\s*\**\s*[:：]\s*(.*)$", line)
+            if m and m.group(1) in RELEASE_META_KEYS:
+                meta.setdefault(RELEASE_META_KEYS[m.group(1)], m.group(2).strip().strip("`"))
     return meta
 
 
@@ -876,10 +951,19 @@ def check_color_value(val: str, palette: set[str], where: str, errors: list[str]
     errors.append(f"{where}: 颜色 “{v}” 不合规（只允许色板中的 6 位十六进制、none 或 url(#…)）")
 
 
-def check_svg(path: Path, palette: set[str], errors: list[str], warnings: list[str]) -> None:
+def staged_bytes(path: Path) -> bytes | None:
+    """返回文件在 Git 暂存区中的内容；不在暂存区时返回 None。"""
+    r = git("show", f":{rel(path)}", check=False)
+    return r.stdout if r.returncode == 0 else None
+
+
+def check_svg(path: Path, palette: set[str], errors: list[str], warnings: list[str],
+              staged: bool = False) -> None:
+    """检查 SVG 规范；staged=True 时检查暂存区里将被提交的内容，而不是工作区。"""
     r = rel(path)
+    data = staged_bytes(path) if staged else None
     try:
-        root = ET.parse(path).getroot()
+        root = ET.fromstring(data) if data is not None else ET.parse(path).getroot()
     except ET.ParseError as e:
         errors.append(f"{r}: XML 解析失败：{e}")
         return
@@ -908,7 +992,7 @@ def check_svg(path: Path, palette: set[str], errors: list[str], warnings: list[s
                 check_color_value(v, palette, f"{r} <style {prop}>", errors)
 
 
-def check_project(p: Project, errors: list[str], warnings: list[str]) -> None:
+def check_project(p: Project, errors: list[str], warnings: list[str], staged: bool = False) -> None:
     try:
         cfg = p.cfg
     except LogoError as e:
@@ -926,15 +1010,26 @@ def check_project(p: Project, errors: list[str], warnings: list[str]) -> None:
     if len(vals) != len(set(vals)):
         warnings.append(f"{r}: 色板中存在重复色值，配色模式映射可能产生歧义")
     st = cfg.get("state", {})
-    if st.get("stage") not in STAGES:
+    stage = st.get("stage")
+    if stage not in STAGES:
         errors.append(f"{r}: stage 必须是 {', '.join(STAGES)} 之一")
+    valid = set()
     for key, fn in (("selected_direction", p.direction), ("selected_version", p.version_dir),
                     ("current_release", p.release_dir)):
         if st.get(key):
             try:
                 fn(st[key])
+                valid.add(key)
             except LogoError as e:
                 errors.append(f"{r}: {key} 无效：{e}")
+
+    # 状态之间必须互相一致（R5：唯一事实来源不能自相矛盾）
+    sel_dir, sel_ver, cur_rel = st.get("selected_direction"), st.get("selected_version"), st.get("current_release")
+    if {"selected_direction", "selected_version"} <= valid and sel_ver.split("-")[0] != sel_dir:
+        errors.append(f"{r}: selected_version {sel_ver} 不属于 selected_direction {sel_dir}")
+    if stage in ("releasing", "delivered") and not cur_rel:
+        errors.append(f"{r}: 阶段为 {stage}，但没有 current_release")
+
     font_ids = {f.get("id") for f in load_fonts()}
     for fid in cfg.get("fonts", {}).get("used", []):
         if fid not in font_ids:
@@ -943,22 +1038,58 @@ def check_project(p: Project, errors: list[str], warnings: list[str]) -> None:
     for d in p.directions():
         if not re.fullmatch(r"[A-Z]-[a-z0-9-]+", d.name):
             errors.append(f"{rel(d)}: 方向目录应命名为 A-name")
+        if not (d / "direction.md").exists():
+            errors.append(f"{rel(d)}: 缺少 direction.md")
         for v in p.versions_in(d):
             for need in ("logo.svg", "notes.md"):
                 if not (v / need).exists():
                     errors.append(f"{rel(v)}: 缺少 {need}")
             if (v / "logo.svg").exists():
-                check_svg(v / "logo.svg", palette, errors, warnings)
+                check_svg(v / "logo.svg", palette, errors, warnings, staged)
+
+    modes = cfg.get("color_modes", {}).get("modes", ["color"])
+    release_versions: dict[str, str] = {}
     for rd in p.releases():
-        for f in sorted((rd / "layouts").glob("*.svg")) if (rd / "layouts").exists() else []:
-            check_svg(f, palette, errors, warnings)
+        try:
+            release_versions[rd.name] = p.release_root_version(rd.name)
+        except LogoError as e:
+            errors.append(f"{rel(rd)}: 追溯链断裂：{e}")
+        ldir = rd / "layouts"
+        for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
+            check_svg(f, palette, errors, warnings, staged)
+            m = re.fullmatch(r"(.+)\.([a-z]+)", f.stem)  # 手工配色覆盖文件 name.mode.svg（cover-2.7x1 不算）
+            if m:
+                base, mode = m.groups()
+                if not (ldir / f"{base}.svg").exists():
+                    errors.append(f"{rel(f)}: 覆盖文件没有对应的基础版式 {base}.svg")
+                if mode == "color" or mode not in modes:
+                    errors.append(f"{rel(f)}: 覆盖文件的配色 {mode} 不在 [color_modes] modes 中（color 不可覆盖）")
+
+    if cur_rel in release_versions:
+        root = release_versions[cur_rel]
+        if sel_ver and sel_ver != root:
+            warnings.append(f"{r}: 选定版本 {sel_ver} 尚未发布（当前发布 {cur_rel} 基于 {root}）；"
+                            f"确认定稿后运行 ./logo release {p.slug} --from {sel_ver}")
+        ldir = p.release_dir(cur_rel) / "layouts"
+        try:
+            missing = [n for n in required_layouts(p) if not (ldir / f"{n}.svg").exists()]
+            if missing:
+                warnings.append(f"{rel(ldir)}: 缺少现行导出配置要求的版式 {', '.join(missing)}，"
+                                "需新建发布补齐后才能导出")
+            if "social" in cfg.get("export", {}).get("profiles", []):
+                if (w := avatar_safe_warning(ldir, load_profiles()["social"]["avatar"])):
+                    warnings.append(w)
+        except LogoError as e:
+            warnings.append(f"{rel(ldir)}: 无法完成版式检查：{e}")
+
     final = p.dir / "final"
     if final.exists():
         mf = final / "manifest.json"
         if not mf.exists():
             errors.append(f"{rel(final)}: 缺少 manifest.json，final/ 只能由 ./logo export 生成")
         else:
-            files = json.loads(mf.read_text(encoding="utf-8")).get("files", {})
+            manifest = json.loads(mf.read_text(encoding="utf-8"))
+            files = manifest.get("files", {})
             for name, digest in files.items():
                 f = final / name
                 if not f.exists():
@@ -967,11 +1098,17 @@ def check_project(p: Project, errors: list[str], warnings: list[str]) -> None:
                     errors.append(f"{rel(f)}: 内容与清单不符（final/ 禁止手改，请重新导出）")
             listed = set(files) | {"manifest.json"}
             for f in final.rglob("*"):
-                if f.is_file() and f.relative_to(final).as_posix() not in listed:
+                if f.is_file() and f.name != ".DS_Store" and f.relative_to(final).as_posix() not in listed:
                     errors.append(f"{rel(f)}: 不在导出清单中（final/ 禁止手动放入文件）")
+            if manifest.get("release") != cur_rel:
+                warnings.append(f"{rel(mf)}: final/ 由 {manifest.get('release') or '?'} 导出，"
+                                f"与 current_release {cur_rel or '（空）'} 不一致，请重新导出")
+            elif not manifest.get("based_on") or not manifest.get("design_version"):
+                warnings.append(f"{rel(mf)}: 清单缺少 based_on/design_version（旧版工具导出），"
+                                "请重新导出以补全追溯链")
 
 
-def check_fonts(errors: list[str], warnings: list[str]) -> None:
+def check_fonts(errors: list[str], warnings: list[str], projects: list[Project]) -> None:
     if not FONTS_TOML.exists():
         return
     seen = set()
@@ -997,6 +1134,19 @@ def check_fonts(errors: list[str], warnings: list[str]) -> None:
                 errors.append(f"{where}: sha256 与文件不符")
         if f.get("license_file") and not (FONTS_DIR / f["license_file"]).exists():
             errors.append(f"{where}: 授权文件不存在")
+    # used_by 反查必须与各项目的 [fonts] used 双向一致
+    by_font = {f.get("id"): set(f.get("used_by", [])) for f in load_fonts()}
+    slugs = {p.slug for p in projects}
+    for p in projects:
+        for fid in p.cfg.get("fonts", {}).get("used", []):
+            if fid in by_font and p.slug not in by_font[fid]:
+                errors.append(f"fonts.toml [{fid}]: used_by 缺少 {p.slug}（该项目 [fonts] used 中声明了此字体）")
+    for fid, users in by_font.items():
+        for slug in sorted(users):
+            if slug not in slugs:
+                errors.append(f"fonts.toml [{fid}]: used_by 中的项目 {slug} 不存在")
+            elif fid not in Project(slug).cfg.get("fonts", {}).get("used", []):
+                errors.append(f"fonts.toml [{fid}]: used_by 含 {slug}，但该项目 [fonts] used 未声明此字体")
 
 
 def profile_warnings(prof: dict, enabled: list[str] | None = None) -> list[str]:
@@ -1004,11 +1154,15 @@ def profile_warnings(prof: dict, enabled: list[str] | None = None) -> list[str]:
     limit = dt.date.today() - dt.timedelta(days=365)
 
     def chk(name: str, item: dict):
+        if item.get("generic"):
+            return  # 通用比例，不对应具体平台
         v = item.get("verified_on", "")
         if not v:
             out.append(f"导出规格 {name} 尚未按官方文档核实")
         elif dt.date.fromisoformat(v) < limit:
             out.append(f"导出规格 {name} 核实已超过 12 个月（{v}），建议复核")
+        if not item.get("source"):
+            out.append(f"导出规格 {name} 缺少官方规格来源链接 source")
 
     for key in ("ios", "android"):
         if key in prof and (enabled is None or key in enabled):
@@ -1050,6 +1204,33 @@ def check_immutability(staged: bool, errors: list[str]) -> None:
                 errors.append(f"{path}: 只允许在末尾追加内容，已有内容不能修改")
 
 
+def path_allowed(path: str) -> bool:
+    parts = path.split("/")
+    if len(parts) == 1:
+        return path in ALLOWED_ROOT_FILES
+    if parts[0] in ALLOWED_ROOT_DIRS:
+        return True
+    if parts[0] == "projects" and len(parts) >= 3 and SLUG_RE.match(parts[1]):
+        return any(pt.fullmatch("/".join(parts[2:])) for pt in PROJECT_FILE_PATTERNS)
+    return False
+
+
+def check_stray_files(errors: list[str], warnings: list[str]) -> None:
+    """拦截目录结构之外的文件（描摹中间件、临时脚本等）。已纳入/暂存的文件报错，未跟踪的文件提醒。"""
+    if git("rev-parse", "--git-dir", check=False).returncode != 0:
+        return
+
+    def ls(*args: str) -> set[str]:
+        return {x for x in git("ls-files", "-z", *args).stdout.decode("utf-8").split("\0") if x}
+
+    tracked = ls("--cached")
+    untracked = ls("--others", "--exclude-standard")
+    for path in sorted(tracked | untracked):
+        if not path_allowed(path):
+            msg = f"{path}: 不在规定的目录结构中（临时文件请放 .cache/，或删除）"
+            (errors if path in tracked else warnings).append(msg)
+
+
 def build_index() -> str:
     lines = ["# 项目看板", "", "<!-- 由 ./logo index 自动生成，请勿手改 -->", "",
              "| 项目 | 名称 | 阶段 | 方向数 | 选定方向 | 选定版本 | 当前发布 | 更新 |",
@@ -1076,9 +1257,10 @@ def cmd_check(a) -> None:
     warnings: list[str] = []
     projects = [Project(a.slug)] if a.slug else all_projects()
     for p in projects:
-        check_project(p, errors, warnings)
+        check_project(p, errors, warnings, a.staged)
     if not a.slug:
-        check_fonts(errors, warnings)
+        check_fonts(errors, warnings, projects)
+        check_stray_files(errors, warnings)
         try:
             warnings.extend(profile_warnings(load_profiles()))
         except LogoError as e:
@@ -1174,6 +1356,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--size", type=float, default=100, help="字号（SVG 单位）")
     s.add_argument("--tracking", type=float, default=0, help="字间距（SVG 单位）")
     s.add_argument("--fill", required=True, help="填充色（须在项目色板中）")
+    s.add_argument("--project", help="项目短名：校验填充色在色板中、字体已在 [fonts] used 中声明")
     s.add_argument("--svg", help="输出为独立 SVG 文件；不填则输出 <path> 片段")
     s.set_defaults(fn=cmd_outline)
 
