@@ -1,0 +1,5 @@
+#!/bin/bash
+# 项目仓库（projects/）提交前检查；由 ./logo setup 设置为项目仓库的 core.hooksPath
+set -e
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+"$ROOT/.venv/bin/python" "$ROOT/tools/logo.py" check --staged --scope projects

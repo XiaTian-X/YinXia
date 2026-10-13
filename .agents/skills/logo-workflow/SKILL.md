@@ -5,7 +5,8 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 
 # Logo Workflow
 
-> 所有命令都在仓库根目录执行。首次使用先运行 `./logo setup`（创建 .venv、安装依赖、启用 pre-commit 钩子）。
+> 所有 `./logo` 命令都在仓库根目录执行。首次使用先运行 `./logo setup`（创建 .venv、安装依赖、初始化项目仓库并启用两个仓库的钩子）。
+> 设计工作一律提交到**项目仓库** `projects/`（`git -C projects …`）；根目录的系统仓库只在修改系统本身时提交。
 > 任何中间产物（描摹、调试图、脚本）都放 `.cache/<slug>/`，不要放到根目录或项目目录。
 
 ## 1. 新建项目
@@ -31,7 +32,7 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 8. 选定方向时：`./logo decision <slug> select-direction-<x> --title "选定方向 X"`，写明取舍理由；
    然后 `./logo state <slug> selected_direction=<字母> selected_version=<字母>-vNNN`。
 9. `./logo index && ./logo check`
-10. 提交：`git add -A && git commit -m "[<slug>] <字母>-vNNN: <说明>"`。提交后该版本冻结。
+10. 提交：`git -C projects add -A && git -C projects commit -m "[<slug>] <字母>-vNNN: <说明>"`。提交后该版本冻结。
 
 ## 4. 定稿发布
 1. 定稿决策：`./logo decision <slug> finalize-<字母>-vNNN`（为什么这个版本可以定稿）。
@@ -42,8 +43,8 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
    - 单色/反白自动换色效果不好时，可提供覆盖文件 `<版式>.mono.svg` / `<版式>.reversed.svg`。
 4. 在 `release.md` 的“决策依据”中链接决策记录；完善 `guide.md`（最小尺寸、留白、错误用法）。
 5. 预览：`./logo preview <slug> rN`（全部版式）或 `./logo preview <slug> rN/icon`。
-6. `./logo index && ./logo check`，提交：`git commit -m "[<slug>] release rN"`
-7. 导出：`./logo export <slug>`（生成 final/，阶段自动变为 delivered），然后 `./logo index`、`./logo check`、提交 `"[<slug>] export rN"`。
+6. `./logo index && ./logo check`，提交：`git -C projects add -A && git -C projects commit -m "[<slug>] release rN"`
+7. 导出：`./logo export <slug>`（生成 final/，阶段自动变为 delivered），然后 `./logo index`、`./logo check`，在项目仓库提交 `"[<slug>] export rN"`。
 
 ## 5. 检查结果的处理
 - ✗ 错误：必须修复后才能提交（钩子会拦截）。

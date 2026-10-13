@@ -1,3 +1,4 @@
 #!/bin/bash
+# 系统仓库提交前检查
 set -e
-"$(dirname "$0")/../.venv/bin/python" "$(dirname "$0")/../tools/logo.py" check --staged
+"$(dirname "$0")/../.venv/bin/python" "$(dirname "$0")/../tools/logo.py" check --staged --scope system

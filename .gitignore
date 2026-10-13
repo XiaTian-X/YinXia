@@ -1,5 +1,8 @@
 .DS_Store
 
+# 项目数据在独立的 Git 仓库中（projects/.git），系统仓库不跟踪
+/projects/
+
 # 预览、对比图、参考线等过程产物（可随时由 ./logo preview/compare/export 重建）
 .cache/
 
