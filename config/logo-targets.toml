@@ -1,0 +1,39 @@
+# Logo 资产的按需生成目标（./logo export <slug> [目标…]）。
+# 图形来自发布中的 icon.svg（缺省时 primary.svg）；App 图标与头像默认按 [compose] 规则自动排版，
+# 发布中放 app-icon.svg / avatar.svg 时改用手工覆盖。规格依据与复核日期规则同封面（basis/source/verified_on）。
+
+[compose]
+app_icon_content = 0.64  # App 图标：品牌底色铺满，图形占画布边长的比例
+avatar_content = 0.56    # 头像：圆形安全区半径 0.8 内接正方形 ≈ 0.566，取 0.56 保证圆形裁切不切到图形
+
+[favicon]
+sizes = [16, 32, 48]
+ico_sizes = [16, 32, 48]
+apple_touch_size = 180   # Apple 触控图标：与 App 图标同样排版（不透明）
+
+[ios]
+sizes = [1024]
+verified_on = "2026-10-13"
+source = "https://developer.apple.com/design/human-interface-guidelines/app-icons" # 版面 1024x1024，背景层须不透明
+
+[android]
+play_store_size = 512
+adaptive_size = 432
+adaptive_safe_zone = 0.6111 # 官方安全区 66dp / 108dp 画布
+adaptive_safe_ratio = 0.5 # 前景图形缩放到 54dp（官方：Logo 至少 48dp、不超过 66dp）
+play_store_source = "https://developer.android.com/distribute/google-play/resources/icon-design-specifications"
+verified_on = "2026-10-13"
+source = "https://developer.android.com/develop/ui/views/launch/icon_design_adaptive"
+[android.mipmap]
+mdpi = 48
+hdpi = 72
+xhdpi = 96
+xxhdpi = 144
+xxxhdpi = 192
+
+[avatar]
+sizes = [400, 800, 1080]
+safe_radius_ratio = 0.8
+basis = "common"
+verified_on = "2026-10-13"
+verify_note = "各平台头像普遍为方图圆裁，无单一官方出处；按 1:1 高分辨率导出"

@@ -16,7 +16,7 @@
 !/*/directions/
 !/*/decisions/
 !/*/releases/
-!/*/final/
+# dist/（./logo export / render 的按需产物）与其他目录不在白名单内，一律忽略
 
 /*/concepts/*
 !/*/concepts/.gitkeep

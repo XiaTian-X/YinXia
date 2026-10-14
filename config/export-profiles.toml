@@ -1,47 +1,7 @@
-[general]
-sizes = [64, 128, 256, 512, 1024]
-# modes = ["color", "mono", "reversed"] # 默认取项目自身的 color_modes
-
-[favicon]
-layout = "icon"
-sizes = [16, 32, 48]
-ico_sizes = [16, 32, 48]
-apple_touch_layout = "icon"
-apple_touch_size = 180
-
-[ios]
-layout = "app-icon"
-sizes = [1024]
-opaque = true
-verified_on = "2026-10-13"
-source = "https://developer.apple.com/design/human-interface-guidelines/app-icons" # 版面 1024x1024，背景层须不透明
-
-[android]
-legacy_layout = "app-icon"
-play_store_size = 512
-adaptive_foreground_layout = "icon"
-adaptive_size = 432
-adaptive_safe_zone = 0.6111 # 官方安全区 66dp / 108dp 画布
-adaptive_safe_ratio = 0.5 # 图形缩放到 54dp（官方：Logo 至少 48dp、不超过 66dp；66dp 安全区由 check 校验）
-play_store_source = "https://developer.android.com/distribute/google-play/resources/icon-design-specifications"
-verified_on = "2026-10-13"
-source = "https://developer.android.com/develop/ui/views/launch/icon_design_adaptive"
-[android.mipmap]
-mdpi = 48
-hdpi = 72
-xhdpi = 96
-xxhdpi = 144
-xxxhdpi = 192
+# 封面平台登记（第二期迁往 config/cover-platforms.toml，由独立的封面模块使用）。
+# Logo 资产的目标见 config/logo-targets.toml。
 
 [social]
-[social.avatar]
-layout = "avatar"
-sizes = [400, 800, 1080]
-safe_radius_ratio = 0.8
-verified_on = "2026-10-13"
-basis = "common"
-verify_note = "各平台头像普遍为方图圆裁，无单一官方出处；按 1:1 高分辨率导出"
-
 [[social.cover]]
 id = "youtube"
 layout = "cover-16x9"

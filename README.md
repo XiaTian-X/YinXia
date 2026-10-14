@@ -29,7 +29,7 @@
 | 项目仓库 | `projects/`（系统仓库忽略它） | 各项目目录、`PROJECTS.md` | `git -C projects commit …` |
 
 系统可以单独分享或克隆；单独克隆时 `./logo check` 会跳过项目相关检查，运行 `./logo setup` 即可新建空的项目仓库。
-每次导出的 `final/manifest.json` 同时记录 `git_head`（项目仓库）与 `system_head`（生成它的系统版本）。
+每次导出的 `dist/<发布号>/manifest.json` 记录 `git_head`（项目仓库）、`system_head`（系统版本）与 `renderer`（resvg 版本）。
 
 ## 目录结构
 
@@ -42,14 +42,14 @@ projects/                     # 项目仓库根目录（独立 .git）
     ├── concepts/             # 灵感位图 + 同名 .md（提示词、来源）
     ├── directions/           # 并行方向 A/B/C，每个版本 vNNN/{logo.svg, notes.md}
     ├── decisions/            # 关键取舍记录
-    ├── releases/rN/          # 定稿发布：release.md、guide.md、layouts/*.svg
-    └── final/                # 由 ./logo export 生成的交付文件（勿手改）
+    ├── releases/rN/          # 定稿发布：release.md、guide.md、layouts/（必需 primary.svg）
+    └── dist/                 # ./logo export / render 的按需产物（被忽略，不提交）
 ```
 
 ## 追溯链
 
 ```text
-final/manifest.json ──release──▶ releases/rN/release.md ──基于──▶ directions/X/vNNN ──基于──▶ … ──▶ concepts/
+dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于──▶ directions/X/vNNN ──基于──▶ … ──▶ concepts/
                                          └──决策依据──▶ decisions/NNN-*.md ──▶ brief.md
 ```
 
@@ -67,7 +67,8 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 | `./logo decision <slug> select-direction-a` | 新建决策记录 |
 | `./logo state <slug> [key=value…]` | 查看/更新状态 |
 | `./logo release <slug> --from A-v004` | 新建发布 |
-| `./logo export <slug>` | 从当前发布生成 `final/` |
+| `./logo export <slug> [目标…]` | 按需生成 svg / favicon / ios / android / avatar 到 `dist/`（不提交） |
+| `./logo render <slug> [版式] --mode mono --size 800` | 生成任意版式、配色、尺寸的单张图 |
 | `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug>` | 文字转路径（默认应用字距调整，`--no-kern` 关闭） |
 | `./logo fonts [fetch\|review] [id…]` | 查看字体状态与使用方 / 下载并校验 / 为非开源字体创建授权复核 |
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
@@ -81,7 +82,7 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 - SVG 不合规（缺 viewBox、写死宽高、`<text>`/位图/脚本/事件属性、外部引用与 CSS 外部资源、色板外颜色）；
 - 新建文档仍留有模板占位；发布未引用决策记录；版本引用了未登记的概念图；
 - 状态自相矛盾（选定版本不属于选定方向、发布阶段却没有当前发布）、发布的追溯链断裂；
-- `final/` 被手改或混入文件；
+- 发布缺少主版 `primary.svg`；`final/` 等生成物被提交；
 - 字体未登记、校验值不符；SVG 中转曲用到的字体未在项目 `[fonts] used` 声明；非开源字体缺少或未通过授权复核（`LICENSE-REVIEW.md`）；字体文件被提交到系统仓库；
 - 目录结构外的文件（临时文件请放 `.cache/`）；系统仓库按目录和文件类型精确限定（如 `tools/` 只收 `*.py`）；
 - 疑似密钥：文件名（`.env`、`*.pem`、`*.key`、`id_rsa`、`*credential*` 等）或内容（私钥、AWS/GitHub/Anthropic/OpenAI/Slack/Google 令牌）。
@@ -89,23 +90,25 @@ final/manifest.json ──release──▶ releases/rN/release.md ──基于�
 系统仓库的 `.gitignore` 采用白名单：根目录默认忽略一切，只放行系统文件；放行的目录内仍忽略临时文件、日志、编辑器杂物、密钥与字体文件。
 项目仓库的 `.gitignore` 同样是白名单，逐层只放行规定的项目文件（由 `./logo setup` 从 `templates/projects.gitignore` 生成，与模板不一致时 `check` 会提醒）。
 
-同时会提醒（不拦截）：选定版本尚未发布、`final/` 与当前发布不一致、当前发布缺少导出所需版式、头像超出圆形安全区、Android 图标超出 66dp 安全区、App 图标版式含透明区域（导出时用 `app_background` 品牌底色铺底）、单色/反白版丢失内部细节（糊成一块）、brief.md 未填完、平台导出规格未核实或缺少来源。
+同时会提醒（不拦截）：选定版本尚未发布、手工头像超出圆形安全区、Android 图标超出 66dp 安全区、手工 App 图标含透明区域、自动排版的图标中图形与底色几乎无法区分、单色/反白版丢失内部细节（糊成一块）、brief.md 未填完、平台导出规格未核实或缺少来源。
 
-`./logo export` 先在临时目录生成全部文件，成功后才整体替换 `final/`；发布的 `guide.md` 未填完时拒绝导出。
+`./logo export` 先在临时目录生成点名的目标，全部成功后才逐个替换 `dist/` 中对应目录（其他目标保留）；只用 resvg 渲染，同一发布再导出逐字节相同；发布的 `guide.md` 未填完时拒绝导出。
 
-## 导出规格
+## Logo 资产与封面
 
-所有尺寸在 [config/export-profiles.toml](config/export-profiles.toml)。每个平台登记尺寸、使用的版式、核对日期，并用 `basis` 标明依据：
+**Logo 资产**由发布中的主版 SVG 按规则推导，配置在 [config/logo-targets.toml](config/logo-targets.toml)：
 
-| basis | 含义 | 要求 |
+| 目标 | 产物 | 来源 |
 |---|---|---|
-| `official`（默认） | 已按官方文档核实 | 必须有 `source` 官方链接 |
-| `common` | 平台无官方规格页，采用业内通用规格 | 必须在 `verify_note` 写明依据 |
-| `generic` | 连通用规格也没有，按通用比例导出 | 必须在 `verify_note` 说明 |
+| `svg` | 各标志版式 × 彩色/单色/反白 | 按色板换色（可用 `<版式>.mono.svg` 等手工覆盖） |
+| `favicon` | 16/32/48 PNG、`.ico`、180 Apple 触控图标 | `icon`（缺省 `primary`）；触控图标同 App 图标排版 |
+| `ios` | 1024 不透明 | 自动排版：`app_background` 铺满，图形占 64%（或 `app-icon.svg`） |
+| `android` | 5 种密度、Play 512、自适应背景/前景/单色层 | 同上；前景层按 66dp 安全区 |
+| `avatar` | 400/800/1080 | 自动排版：图形缩进圆形安全区，占 56%（或 `avatar.svg`） |
 
-任何规格超过 12 个月未复核都会提醒。封面导出时按版式铺满后居中裁切，所以一个版式可服务多个相近比例的平台。
+规格用 `basis` 标明依据：`official`（须有官方 `source`）、`common`（业内通用，须写 `verify_note`）、`generic`（泛用比例，须写理由）；超过 12 个月未复核会提醒。
 
-目前登记 17 个平台：YouTube、X、LinkedIn、Open Graph、GitHub（官方）；Facebook、小红书、抖音、微信公众号首条/次条、微博、视频号、快手（通用）；B 站空间头图、知乎主页背景（泛用）；另有 4:3、3:4 通用比例。
+**封面**是含 Logo 的品牌物料（构图、文案、图像），生成逻辑与 Logo 资产不同，由独立的封面模块管理（开发中）；平台登记暂存于 [config/export-profiles.toml](config/export-profiles.toml)。
 
 ## 自动化测试
 

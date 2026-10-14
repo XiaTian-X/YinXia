@@ -2,13 +2,13 @@
 
 - **两个 Git 仓库**：仓库根目录是**系统仓库**（`tools/`、`templates/`、`config/`、`assets/`、规则文档）；`projects/` 是独立的**项目仓库**（各项目与 `PROJECTS.md`）。设计工作只提交到项目仓库：`git -C projects add -A && git -C projects commit -m "[<slug>] …"`；只有修改系统本身时才在根目录提交，且系统改动与项目改动绝不混在同一次提交里。
 - **唯一操作入口**：项目创建、方向、版本、概念图、决策记录、发布、状态流转、导出，必须通过 `./logo`，绝不允许手动建文件夹。
-- **状态唯一来源**：`project.toml` 的 `[state]` 只能由 `./logo state / version / release / export` 修改，禁止手改；`[palette]`、`[color_modes]`、`[fonts]`、`[layouts]`、`[export]` 属于项目配置，可以手工维护。
+- **状态唯一来源**：`project.toml` 的 `[state]` 只能由 `./logo state / version / release / export` 修改，禁止手改；`[palette]`、`[color_modes]`、`[fonts]`、`[export]` 属于项目配置，可以手工维护。
 - **不可变性 (Immutability)**：以下文件提交后绝不允许修改或删除——
   - `directions/*/vNNN/logo.svg`：要改就用 `./logo version` 产生新版本；
   - `releases/rN/layouts/*.svg`：要改就用 `./logo release --from rN` 产生新发布；
   - `concepts/NNN-*.png|jpg|webp`：概念图原样保存。
 - **只追加文件**：`notes.md`、`direction.md`、`release.md`、`guide.md`（releases 下）、`decisions/*.md`、`concepts/*.md`，已有内容不得修改，只能在末尾追加评审记录。
-- **`final/` 是纯产物**：只能由 `./logo export` 生成，禁止手改或放入文件（由 `manifest.json` 校验）。
+- **交付物按需生成、不提交**：发布只需主版 `primary.svg`（可选 `icon.svg`、横版/字标与 `app-icon.svg`/`avatar.svg` 手工覆盖）；各目标由 `./logo export` / `./logo render` 生成到 `projects/<slug>/dist/`（被忽略、不提交），结果可重复。封面属于品牌物料，不在 Logo 资产流程内（由独立的封面模块管理）。
 - **密钥绝不入库**：`.env`、私钥、证书、凭据文件以及任何 API key/token 都不得出现在两个仓库的提交中；系统仓库的 `.gitignore` 是白名单，钩子还会按文件名与内容扫描拦截。需要密钥时放在仓库之外或环境变量中。
 - **目录纪律**：两个仓库里都只允许出现规定结构内的文件。描摹中间件、临时脚本、测试输出一律放 `.cache/`（已被 Git 忽略）或用完删除，绝不提交到根目录或项目目录。
 - **SVG 规范**：使用 viewBox；禁止 hardcoded width/height；所有文字使用 `./logo outline --project <slug>` 转曲；颜色必须来自 `project.toml` 色板的十六进制值；不准用外链/位图/脚本/事件属性（`onload` 等）/CSS 外部资源（`@import`、`url(http…)`）。

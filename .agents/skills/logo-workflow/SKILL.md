@@ -46,18 +46,26 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 1. 定稿决策：`./logo decision <slug> finalize-<字母>-vNNN`（为什么这个版本可以定稿）。
 2. 创建发布：`./logo release <slug> --from <字母>-vNNN`（自动把 selected_version/direction 同步为该版本）。
    基于上一个发布修订版式：`./logo release <slug> --from rN`。
-3. 补全版式：按命令输出的清单，在 `releases/rN/layouts/` 补齐所有 svg：
-   - `avatar.svg` 的底色元素须带 `id="background"`，图形放在圆形安全区内（check 会检测）；
-   - 单色/反白自动换色效果不好时，可提供覆盖文件 `<版式>.mono.svg` / `<版式>.reversed.svg`。
+3. 放入版式（`releases/rN/layouts/`）：
+   - **必需** `primary.svg`（主版）；
+   - 可选 `icon.svg`（纯图形，用于小尺寸与图标类目标，缺省时用 primary）、`horizontal.svg` / `wordmark-cn.svg` / `wordmark-en.svg`（带文字的组合版）；
+   - App 图标、头像、Android 图标默认由主版**自动排版**（品牌底色 `app_background` + 图形配色 `icon_mode`）；
+     效果不满意时才放手工覆盖 `app-icon.svg` / `avatar.svg`（avatar 的底色元素须带 `id="background"`）；
+   - 单色/反白自动换色效果不好时，可提供 `<版式>.mono.svg` / `<版式>.reversed.svg`。
 4. 提交前必须：在 `release.md` 的“决策依据”中写明并引用 `decisions/NNN-*.md`（钩子校验存在）；
-   填完 `guide.md`（标志结构、最小尺寸、安全留白、错误用法）——它会原样进入交付物，未填完时 `export` 会拒绝。
-5. 预览：`./logo preview <slug> rN`（全部版式）或 `./logo preview <slug> rN/icon`。
+   填完 `guide.md`（标志结构、最小尺寸、安全留白、错误用法）——它会进入交付物，未填完时 `export` 会拒绝。
+5. 预览：`./logo preview <slug> rN`（全部版式 + 自动排版的 App 图标与头像）或 `./logo preview <slug> rN/icon`。
 6. `./logo index && ./logo check`，提交：`git -C projects add -A && git -C projects commit -m "[<slug>] release rN"`
-7. 导出：`./logo export <slug>`（生成 final/，阶段自动变为 delivered），然后 `./logo index`、`./logo check`，在项目仓库提交 `"[<slug>] export rN"`。
+7. 按需生成交付物（不提交）：
+   - `./logo export <slug>`：生成项目 `[export] targets` 声明的目标（svg、favicon、ios、android、avatar）；
+   - `./logo export <slug> ios avatar`：只生成点名的目标；`--list` 查看可用与已声明的目标；
+   - `./logo render <slug> [版式] --mode mono --size 800`：任意版式、配色、尺寸的单张图；
+   - 产物在 `projects/<slug>/dist/<发布号>/`，附 `manifest.json`（来源、渲染器版本、sha256）；需要交付时把该目录发给对方。
+   - 需要标记交付时：`./logo state <slug> stage=delivered` 并提交。
 
 ## 5. 检查结果的处理
 - ✗ 错误：必须修复后才能提交（钩子会拦截）。
-- ⚠ 提醒：在回复中如实告诉用户，例如“选定版本尚未发布”“final/ 与当前发布不一致”“平台规格待核实”。
+- ⚠ 提醒：在回复中如实告诉用户，例如“选定版本尚未发布”“自动排版的图标中图形与底色几乎无法区分”“平台规格待核实”。
 
 ## 文字转曲
 1. `./logo fonts` 查看已登记字体及是否已下载；未下载时 `./logo fonts fetch <id>`（从官方地址下载并校验 sha256）。

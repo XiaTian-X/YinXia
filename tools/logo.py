@@ -13,9 +13,9 @@ import datetime as dt
 import functools
 import hashlib
 import json
-import math
 import re
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -32,7 +32,8 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = ROOT / "projects"  # 独立的项目 Git 仓库（系统仓库中被忽略）
 TEMPLATES = ROOT / "templates"
 CONFIG = ROOT / "config"
-PROFILES_TOML = CONFIG / "export-profiles.toml"
+PROFILES_TOML = CONFIG / "export-profiles.toml"  # 封面平台登记（第二期迁走）
+TARGETS_TOML = CONFIG / "logo-targets.toml"
 CACHE = ROOT / ".cache"
 FONTS_DIR = ROOT / "assets" / "fonts"
 FONTS_TOML = FONTS_DIR / "fonts.toml"
@@ -125,7 +126,6 @@ PROJECT_FILE_PATTERNS = [re.compile(p) for p in (
     r"decisions/\d{3}-[a-z0-9-]+\.md",
     r"releases/r\d+/(release|guide)\.md",
     r"releases/r\d+/layouts/[a-z0-9.-]+\.svg",
-    r"final/.+",  # 由 manifest.json 单独校验
 )]
 
 # 项目文档与其模板（用于检测未填写的模板占位）
@@ -151,6 +151,19 @@ STRUCTURE_RENDER_SIZE = 256
 STRUCTURE_CACHE = CACHE / "structure-cache.json"
 MODE_NAMES = {"color": "彩色", "mono": "单色", "reversed": "反白"}
 STRUCTURE_PALETTE_HINT = "在 [color_modes.mono] 中把部分颜色映射为 #FFFFFF、在 [color_modes.reversed] 中映射为 #000000，作为留白保留细节"
+
+RELEASE_LAYOUT_CHECKLIST = "\n".join((
+    "- [ ] `primary.svg`（必需：主版）",
+    "- [ ] `icon.svg`（可选：纯图形版，用于小尺寸与图标类目标；缺省时用 primary）",
+    "- [ ] `horizontal.svg` / `wordmark-cn.svg` / `wordmark-en.svg`（可选：带文字的组合版）",
+    "- [ ] `app-icon.svg` / `avatar.svg`（可选：自动排版不满意时的手工覆盖）",
+))
+
+# Logo 资产：标志版式（svg 目标与单色结构检查的对象）与按需生成的目标
+LOGO_LAYOUTS = ("primary", "icon", "horizontal", "wordmark-cn", "wordmark-en")
+TARGET_NAMES = ("svg", "favicon", "ios", "android", "avatar")
+LEGACY_PROFILE_TARGETS = {"general": "svg", "favicon": "favicon", "ios": "ios", "android": "android",
+                          "social": "avatar"}  # 旧写法 [export] profiles 的换算
 
 # release.md 头部字段（模板写法 “- **基于**: A-v001”）到元数据键名的映射
 RELEASE_META_KEYS = {"基于": "based_on", "日期": "date", "based_on": "based_on", "date": "date"}
@@ -412,15 +425,6 @@ def all_projects() -> list[Project]:
 # ---------------------------------------------------------------------------
 # SVG 工具
 # ---------------------------------------------------------------------------
-def svg_viewbox(path: Path) -> tuple[float, float, float, float]:
-    root = ET.parse(path).getroot()
-    vb = root.get("viewBox")
-    if not vb:
-        raise LogoError(f"{rel(path)} 缺少 viewBox")
-    parts = [float(x) for x in re.split(r"[\s,]+", vb.strip())]
-    return parts[0], parts[1], parts[2], parts[3]
-
-
 def recolor_svg(src: Path, mapping: dict[str, str]) -> str:
     text = src.read_text(encoding="utf-8")
     return HEX_IN_TEXT_RE.sub(lambda m: mapping.get(m.group(0).upper(), m.group(0)), text)
@@ -434,9 +438,108 @@ def layout_mode_text(p: Project, ldir: Path, name: str, mode: str) -> str:
     return recolor_svg(ldir / f"{name}.svg", p.mode_map(mode))
 
 
+def load_targets() -> dict:
+    return load_toml(TARGETS_TOML)
+
+
+def project_targets(p: Project) -> list[str]:
+    """项目声明的生成目标：[export] targets；旧写法 profiles 自动换算（general→svg，social→avatar）。"""
+    ex = p.cfg.get("export", {})
+    if "targets" in ex:
+        names = list(ex["targets"])
+    else:
+        names = [LEGACY_PROFILE_TARGETS[x] for x in ex.get("profiles", []) if x in LEGACY_PROFILE_TARGETS]
+    unknown = [t for t in names if t not in TARGET_NAMES]
+    if unknown:
+        raise LogoError(f"[export] targets 含未知目标：{', '.join(unknown)}（可选：{', '.join(TARGET_NAMES)}）")
+    return [t for t in TARGET_NAMES if t in names]
+
+
+def release_logo_layouts(ldir: Path) -> list[str]:
+    """发布中存在的标志版式（svg 目标与单色结构检查的对象），按固定顺序。"""
+    return [n for n in LOGO_LAYOUTS if (ldir / f"{n}.svg").exists()]
+
+
+def mark_layout(ldir: Path) -> str:
+    """图标类目标所用的图形：icon.svg，缺省时用主版 primary.svg。"""
+    return "icon" if (ldir / "icon.svg").exists() else "primary"
+
+
+def compose_svg(src_text: str, content: float, background: str | None, canvas: int = 1000) -> str:
+    """把源 SVG 装进方形外框：可选铺满底色，图形等比缩放进居中、边长为 content 比例的方框。"""
+    root = ET.fromstring(src_text)
+    if not root.get("viewBox"):
+        raise LogoError("自动排版需要源 SVG 带 viewBox")
+    inner = canvas * content
+    off = (canvas - inner) / 2
+    for k, v in (("x", off), ("y", off), ("width", inner), ("height", inner)):
+        root.set(k, fmt_num(v))
+    root.set("preserveAspectRatio", "xMidYMid meet")
+    outer = ET.Element(f"{{{SVG_NS}}}svg", {"viewBox": f"0 0 {canvas} {canvas}"})
+    if background:
+        ET.SubElement(outer, f"{{{SVG_NS}}}rect", {"width": str(canvas), "height": str(canvas), "fill": background})
+    outer.append(root)
+    return ET.tostring(outer, encoding="unicode")
+
+
+def solid_svg(color: str, canvas: int = 100) -> str:
+    return (f'<svg xmlns="{SVG_NS}" viewBox="0 0 {canvas} {canvas}">'
+            f'<rect width="{canvas}" height="{canvas}" fill="{color}"/></svg>')
+
+
+def icon_mode(p: Project) -> str:
+    """自动排版图标里图形的配色（[export] icon_mode，兼容旧名 android_foreground_mode）。"""
+    ex = p.cfg.get("export", {})
+    return ex.get("icon_mode") or ex.get("android_foreground_mode") or "color"
+
+
+def app_icon_text(p: Project, ldir: Path) -> str:
+    """App 图标（iOS / Google Play / Android 旧版 / Apple 触控）：手工覆盖 app-icon.svg，否则自动排版。"""
+    if (ldir / "app-icon.svg").exists():
+        return (ldir / "app-icon.svg").read_text(encoding="utf-8")
+    comp = load_targets()["compose"]
+    return compose_svg(layout_mode_text(p, ldir, mark_layout(ldir), icon_mode(p)), comp["app_icon_content"],
+                       app_background(p))
+
+
+def avatar_text(p: Project, ldir: Path) -> str:
+    """头像：手工覆盖 avatar.svg，否则品牌底色铺满、图形缩进圆形安全区。"""
+    if (ldir / "avatar.svg").exists():
+        return (ldir / "avatar.svg").read_text(encoding="utf-8")
+    comp = load_targets()["compose"]
+    return compose_svg(layout_mode_text(p, ldir, mark_layout(ldir), icon_mode(p)), comp["avatar_content"],
+                       app_background(p))
+
+
+def android_foreground_text(p: Project, ldir: Path, mode: str) -> str:
+    """Android 自适应图标前景层 / 单色层：透明画布，图形缩放到中心 adaptive_safe_ratio 区域。"""
+    ap = load_targets()["android"]
+    return compose_svg(layout_mode_text(p, ldir, mark_layout(ldir), mode), ap["adaptive_safe_ratio"], None)
+
+
+def render_text(svg_text: str, out: Path, size: int, background: str | None = None) -> Path:
+    """把 SVG 文本渲染为 size×size 的 PNG（只用 resvg，输出可重复、不含时间等元数据）。"""
+    with tempfile.TemporaryDirectory() as td:
+        svg = Path(td) / "s.svg"
+        svg.write_text(svg_text, encoding="utf-8")
+        return render_fit(svg, out, size, background)
+
+
+def write_ico(pngs: list[Path], out: Path) -> Path:
+    """把多张 PNG 打包为 .ico（ICO 允许直接内嵌 PNG），不依赖外部工具。"""
+    data = [f.read_bytes() for f in pngs]
+    entries, offset = b"", 6 + 16 * len(data)
+    for d in data:
+        w, h = struct.unpack(">II", d[16:24])
+        entries += struct.pack("<BBBBHHII", w % 256, h % 256, 0, 0, 1, 32, len(d), offset)
+        offset += len(d)
+    out.write_bytes(struct.pack("<HHH", 0, 1, len(data)) + entries + b"".join(data))
+    return out
+
+
 def avatar_safe_warning(ldir: Path, av: dict) -> str | None:
-    """检查头像图形是否超出圆形安全区；返回提醒文字，没有问题时返回 None。"""
-    layout = ldir / f"{av['layout']}.svg"
+    """检查手工头像 avatar.svg 的图形是否超出圆形安全区（自动排版的头像天生合规）。"""
+    layout = ldir / "avatar.svg"
     if not layout.exists():
         return None
     try:
@@ -454,43 +557,64 @@ def avatar_safe_warning(ldir: Path, av: dict) -> str | None:
     return None
 
 
-def app_icon_warnings(p: Project, ldir: Path, prof: dict) -> list[str]:
-    """iOS / Google Play 所用 App 图标版式的透明检查，以及品牌底色配置检查。"""
-    enabled = p.cfg.get("export", {}).get("profiles", [])
-    layouts = {prof[k]["layout" if k == "ios" else "legacy_layout"] for k in ("ios", "android") if k in enabled}
-    if not layouts:
-        return []
+def target_warnings(p: Project, ldir: Path) -> list[str]:
+    """按项目声明的目标检查发布：品牌底色配置、手工覆盖文件、Android 安全区、单色结构。"""
+    targets = project_targets(p)
     out = []
-    try:
-        app_background(p)
-    except LogoError as e:
-        out.append(str(e))
-    for name in sorted(layouts):
-        if (ldir / f"{name}.svg").exists() and (w := app_icon_transparency_warning(ldir / f"{name}.svg")):
+    if set(targets) & {"favicon", "ios", "android", "avatar"}:
+        try:
+            app_background(p)
+        except LogoError as e:
+            out.append(str(e))
+            return out
+    if set(targets) & {"ios", "android", "favicon"} and (ldir / "app-icon.svg").exists():
+        if (w := app_icon_transparency_warning(ldir / "app-icon.svg")):
             out.append(w)
+    if "avatar" in targets and (w := avatar_safe_warning(ldir, load_targets()["avatar"])):
+        out.append(w)
+    auto = [(n, f) for n, f, ts in (("app-icon", app_icon_text, {"ios", "android", "favicon"}),
+                                    ("avatar", avatar_text, {"avatar"}))
+            if set(targets) & ts and not (ldir / f"{n}.svg").exists()]
+    mode = icon_mode(p)
+    users = [n for n, _ in auto] + (["Android 前景层"] if "android" in targets else [])
+    if users and mode != "color":  # 自动排版用非彩色图形时，图形在该配色下是否糊成一块
+        mark = mark_layout(ldir)
+        if (w := structure_warning(f"{rel(ldir)}: 自动排版的 {'、'.join(users)}（icon_mode={mode}）",
+                                   lambda m: layout_mode_text(p, ldir, mark, m), ["color", mode],
+                                   f"可改 [export] icon_mode = \"color\"，或提供 {mark}.{mode}.svg / app-icon.svg 手工覆盖")):
+            out.append(w)
+    for name, make in auto:
+        if interior_edge_pixels(make(p, ldir)) < STRUCTURE_MIN_INTERIOR:
+            out.append(f"{rel(ldir)}: 自动排版的 {name} 中图形与底色几乎无法区分（icon_mode={icon_mode(p)}，"
+                       f"app_background={app_background(p)}）；请换 [export] icon_mode 或 app_background，"
+                       f"或提供 {name}.svg 手工覆盖")
+    if "android" in targets:
+        with tempfile.TemporaryDirectory() as td:
+            fg = render_text(android_foreground_text(p, ldir, icon_mode(p)), Path(td) / "fg.png",
+                             load_targets()["android"]["adaptive_size"])
+            if (w := android_safe_warning(fg, load_targets()["android"])):
+                out.append(f"{rel(ldir)}: {w}")
+    out.extend(release_structure_warnings(p, ldir, targets))
     return out
 
 
-def release_structure_warnings(p: Project, ldir: Path, prof: dict) -> list[str]:
-    """检查发布中各标志版式（及 Android 单色层所用版式）的单色/反白结构；内容相同的版式只检查一次。"""
-    cfg = p.cfg
-    modes = cfg.get("color_modes", {}).get("modes", ["color"])
-    targets = {n: modes for n in cfg.get("layouts", {}).get("logo", [])}
-    ap = prof.get("android", {})
-    if "android" in cfg.get("export", {}).get("profiles", []) and ap.get("adaptive_foreground_layout"):
-        fg = ap["adaptive_foreground_layout"]
-        targets[fg] = sorted(set(targets.get(fg, [])) | {"color", "mono"})  # Android 13+ 主题图标使用单色层
+def release_structure_warnings(p: Project, ldir: Path, targets: list[str]) -> list[str]:
+    """检查发布中各标志版式（及 Android 单色层所用图形）的单色/反白结构；内容相同的版式只检查一次。"""
+    modes = p.cfg.get("color_modes", {}).get("modes", ["color"])
+    checks = {n: modes for n in release_logo_layouts(ldir)}
+    if "android" in targets:
+        fg = mark_layout(ldir)
+        checks[fg] = sorted(set(checks.get(fg, [])) | {"color", "mono"})  # Android 13+ 主题图标使用单色层
     groups: dict[tuple, list[str]] = {}  # 内容与配色模式都相同的版式合并为一组，只检查一次
-    for name, ms in targets.items():
-        if (ldir / f"{name}.svg").exists():
-            key = (tuple(ms), tuple(layout_mode_text(p, ldir, name, m) for m in ms))
-            groups.setdefault(key, []).append(name)
+    for name, ms in checks.items():
+        key = (tuple(ms), tuple(layout_mode_text(p, ldir, name, m) for m in ms))
+        groups.setdefault(key, []).append(name)
     out = []
     for (ms, _), names in groups.items():
         first = names[0]
         label = rel(ldir / f"{first}.svg") + (f"（同内容：{'、'.join(names[1:])}）" if names[1:] else "")
         hint = f"可提供 {first}.mono.svg / {first}.reversed.svg 等手工配色文件，或{STRUCTURE_PALETTE_HINT}"
-        if (w := structure_warning(label, lambda m, n=first: layout_mode_text(p, ldir, n, m), ms, hint)):
+        if (w := structure_warning(label, lambda m, n=first: layout_mode_text(p, ldir, n, m), list(ms), hint)):
             out.append(w)
     return out
 
@@ -500,39 +624,22 @@ def app_background(p: Project) -> str:
     ex = p.cfg.get("export", {})
     key = ex.get("app_background") or ex.get("android_background")
     if not key:
-        raise LogoError("[export] 缺少 app_background（填色板中的色名，用作 iOS/Google Play/Android 图标底色）")
+        raise LogoError("[export] 缺少 app_background（填色板中的色名，用作 App 图标、头像与 Android 背景层的底色）")
     if key not in p.palette:
         raise LogoError(f"[export] app_background 必须是色板中的色名，当前：{key!r}")
     return p.palette[key]
 
 
-def flatten(png: Path, color: str) -> Path:
-    """把透明处铺成指定底色并去掉透明通道（App Store / Google Play 要求不透明）。"""
-    run(["magick", str(png), "-background", color, "-alpha", "remove", "-alpha", "off", str(png)])
-    return png
-
-
 def app_icon_transparency_warning(svg: Path) -> str | None:
-    """App 图标版式应自带铺满的不透明底色；有透明像素时返回提醒。"""
+    """手工 App 图标应自带铺满的不透明底色；有透明像素时返回提醒。"""
     with tempfile.TemporaryDirectory() as td:
         png = render_fit(svg, Path(td) / "a.png", 256)
         min_alpha = float(run(["magick", str(png), "-alpha", "extract", "-format", "%[fx:minima]", "info:"],
                               capture=True).strip() or 1)
     if min_alpha < 0.99:
         return (f"{rel(svg)} 含透明区域：iOS/Google Play 图标须不透明，导出时会用 app_background 铺底；"
-                "建议在版式中自带铺满画布的底色")
+                "建议在版式中自带铺满画布的底色，或删除它改用自动排版")
     return None
-
-
-def render_android_foreground(p: Project, ldir: Path, ap: dict, mode: str, out: Path) -> Path:
-    """按自适应图标规格生成前景层：图形缩放进中心区域，再扩展到整层画布（透明）。"""
-    size = ap["adaptive_size"]
-    with tempfile.TemporaryDirectory() as td:
-        tmp_svg = Path(td) / "fg.svg"
-        tmp_svg.write_text(layout_mode_text(p, ldir, ap["adaptive_foreground_layout"], mode), encoding="utf-8")
-        render_fit(tmp_svg, out, round(size * ap["adaptive_safe_ratio"]))
-    run(["magick", str(out), "-background", "none", "-gravity", "center", "-extent", f"{size}x{size}", str(out)])
-    return out
 
 
 def android_safe_warning(png: Path, ap: dict) -> str | None:
@@ -619,16 +726,6 @@ def render(svg: Path, out: Path, width: int | None = None, height: int | None = 
 
 def render_fit(svg: Path, out: Path, box: int, background: str | None = None) -> Path:
     return render(svg, out, box, box, background)
-
-
-def render_cover(svg: Path, out: Path, width: int, height: int) -> Path:
-    """按"铺满后居中裁切"方式渲染到精确尺寸。"""
-    _, _, vw, vh = svg_viewbox(svg)
-    aspect = vw / vh
-    rw = max(width, math.ceil(height * aspect))
-    render(svg, out, width=rw)
-    run(["magick", str(out), "-gravity", "center", "-crop", f"{width}x{height}+0+0", "+repage", str(out)])
-    return out
 
 
 def alpha_outside_circle(png: Path, radius_ratio: float) -> float:
@@ -756,17 +853,15 @@ def cmd_release(a) -> None:
         layouts.mkdir(parents=True)
     else:
         raise LogoError("--from 需要版本号（A-v004）或发布号（r1）")
-    required = required_layouts(p)
     write_new(rdir / "release.md", render_template(
-        "release.md", id=rid, based_on=src, date=today(),
-        layouts="\n".join(f"- [ ] `{n}.svg`" for n in required)))
+        "release.md", id=rid, based_on=src, date=today(), layouts=RELEASE_LAYOUT_CHECKLIST))
     write_new(rdir / "guide.md", render_template("release-guide.md", id=rid, name=p.cfg["project"]["name"]))
     (p.dir / "releases" / ".gitkeep").unlink(missing_ok=True)
     # 发布即确认定稿：选定方向/版本与发布的来源保持一致（唯一事实来源仍是 project.toml）
     p.set_state(stage="releasing", current_release=rid,
                 selected_direction=root_version.split("-")[0], selected_version=root_version)
     print(f"已创建发布：{rid} → {rel(rdir)}（定稿版本：{root_version}）")
-    print("需要的版式：" + ", ".join(required))
+    print("必需版式：primary.svg（其余可选，见 release.md 清单）；完成后用 ./logo preview 查看自动排版效果")
 
 
 def cmd_state(a) -> None:
@@ -1061,11 +1156,21 @@ def cmd_preview(a) -> None:
         layouts = sorted((rdir / "layouts").glob("*.svg"))
         if not layouts:
             raise LogoError(f"{a.target} 还没有任何版式")
+        ldir = rdir / "layouts"
+        known = set(LOGO_LAYOUTS) | {"app-icon", "avatar"}  # 旧发布中的 cover-* 不属于 Logo 资产，不再预览
+        items = [(f.stem, f.read_text(encoding="utf-8")) for f in layouts if f.stem.split(".")[0] in known]
+        try:  # 未手工覆盖时，附上自动排版的 App 图标与头像，导出前即可查看效果
+            if not (ldir / "app-icon.svg").exists():
+                items.append(("app-icon（自动排版）", app_icon_text(p, ldir)))
+            if not (ldir / "avatar.svg").exists():
+                items.append(("avatar（自动排版）", avatar_text(p, ldir)))
+        except LogoError as e:
+            print(f"⚠ 无法预览自动排版：{e}")
         with tempfile.TemporaryDirectory() as td:
             cells = []
-            for f in layouts:
-                png = render_fit(f, Path(td) / f"{f.stem}.png", 360)
-                cell = Path(td) / f"cell-{f.stem}.png"
+            for i, (label, text) in enumerate(items):
+                png = render_text(text, Path(td) / f"{i}.png", 360)
+                cell = Path(td) / f"cell-{i}.png"
                 run(["magick", str(png), "-background", "white", "-gravity", "center",
                      "-extent", "400x400", str(cell)])
                 cells.append(cell)
@@ -1074,7 +1179,7 @@ def cmd_preview(a) -> None:
             run(["magick", "montage", *map(str, cells), "-tile", "4x", "-geometry", "+6+6",
                  "-background", "#DDDDDD", str(out)])
         print(f"预览：{rel(out)}")
-        print("顺序（从左到右、从上到下）：" + ", ".join(f.stem for f in layouts))
+        print("顺序（从左到右、从上到下）：" + ", ".join(label for label, _ in items))
         return
     svg = p.resolve_target(a.target)
     label = a.target.replace("/", "_")
@@ -1117,231 +1222,164 @@ def cmd_compare(a) -> None:
 # 命令：export
 # ---------------------------------------------------------------------------
 def load_profiles() -> dict:
+    """封面平台登记（第二期迁往封面模块）。"""
     return load_toml(PROFILES_TOML)
 
 
-def required_layouts(p: Project) -> list[str]:
-    cfg = p.cfg
-    prof = load_profiles()
-    enabled = cfg.get("export", {}).get("profiles", [])
-    need = list(cfg.get("layouts", {}).get("logo", []))
-
-    def add(name):
-        if name and name not in need:
-            need.append(name)
-
-    if "favicon" in enabled:
-        add(prof["favicon"]["layout"])
-        add(prof["favicon"].get("apple_touch_layout"))
-    if "ios" in enabled:
-        add(prof["ios"]["layout"])
-    if "android" in enabled:
-        add(prof["android"]["legacy_layout"])
-        add(prof["android"]["adaptive_foreground_layout"])
-    if "social" in enabled:
-        add(prof["social"]["avatar"]["layout"])
-        for c in prof["social"].get("cover", []):
-            add(c["layout"])
-    return need
+def resvg_version() -> str:
+    return run(["resvg", "--version"], capture=True).strip()
 
 
-def cmd_export(a) -> None:
-    p = Project(a.slug)
-    cfg = p.cfg
-    rid = a.release or cfg["state"].get("current_release")
+def export_release(p: Project, rid: str | None) -> tuple[str, Path, str]:
+    """解析并校验要导出的发布：返回 (发布号, 版式目录, 定稿版本)。"""
+    rid = rid or p.cfg["state"].get("current_release")
     if not rid:
         raise LogoError("未指定发布号，且 project.toml 中没有 current_release")
     rdir = p.release_dir(rid)
     ldir = rdir / "layouts"
     root_version = p.release_root_version(rid)  # 追溯链不完整时拒绝导出
-    guide_rel = f"{p.slug}/releases/{rid}/guide.md"
-    if not (rdir / "guide.md").exists():
-        raise LogoError(f"{rid} 缺少 guide.md（交付物的一部分）")
-    holes = unfilled_placeholders(guide_rel, (rdir / "guide.md").read_text(encoding="utf-8"))
-    if holes:
-        raise LogoError(f"{rid}/guide.md 是交付物的一部分，还有 {len(holes)} 处模板占位未填写（如“{holes[0]}”）；"
-                        "guide.md 只能追加，请新建发布并在提交前填完")
-    need = required_layouts(p)
-    missing = [n for n in need if not (ldir / f"{n}.svg").exists()]
-    if missing:
-        raise LogoError(f"{rid} 缺少版式：{', '.join(missing)}")
-
-    errors, warnings = [], []
+    if not (ldir / "primary.svg").exists():
+        raise LogoError(f"{rid} 缺少主版 primary.svg")
+    errors: list[str] = []
     for f in sorted(ldir.glob("*.svg")):
-        check_svg(f, layout_palette(p, f, set(p.palette.values())), errors, warnings)
+        check_svg(f, layout_palette(p, f, set(p.palette.values())), errors, [])
     if errors:
         raise LogoError("版式未通过检查：\n  " + "\n  ".join(errors))
-
-    prof = load_profiles()
-    enabled = cfg.get("export", {}).get("profiles", [])
-    prefix = p.slug
-    # 先生成到临时目录，全部成功后再整体替换 final/，中途失败不会留下残缺的交付物
-    final = p.dir / ".final-build"
-    if final.exists():
-        shutil.rmtree(final)
-    (final / "svg").mkdir(parents=True)
-    try:
-        manifest = build_export(p, cfg, rid, rdir, ldir, root_version, need, final, prefix, prof, enabled, warnings)
-    except BaseException:
-        shutil.rmtree(final, ignore_errors=True)
-        raise
-    # 先把旧 final/ 挪开再换入新目录，任何时刻都不会出现缺失或半成品的 final/
-    target, old = p.dir / "final", p.dir / ".final-old"
-    if old.exists():
-        shutil.rmtree(old)
-    if target.exists():
-        target.rename(old)
-    final.rename(target)
-    shutil.rmtree(old, ignore_errors=True)
-    print(f"已导出 {len(manifest['files'])} 个文件 → {rel(target)}（{rid} ← {root_version}）")
-    if rid == cfg["state"].get("current_release"):
-        p.set_state(stage="delivered")
-        print("项目阶段已更新为 delivered；请运行 ./logo index 并提交")
-    for w in warnings:
-        print(f"⚠ {w}")
-    for w in profile_warnings(prof, enabled):
-        print(f"⚠ {w}")
+    return rid, ldir, root_version
 
 
-def build_export(p: Project, cfg: dict, rid: str, rdir: Path, ldir: Path, root_version: str, need: list[str],
-                 final: Path, prefix: str, prof: dict, enabled: list[str], warnings: list[str]) -> dict:
-    """在 final 目录中生成全部交付文件与 manifest.json，返回 manifest。"""
-    outputs: list[Path] = []
-    modes = cfg.get("color_modes", {}).get("modes", ["color"])
-    logo_layouts = cfg.get("layouts", {}).get("logo", [])
-    special = [n for n in need if n not in logo_layouts]
-
-    def layout_svg(name: str, mode: str) -> Path:
-        """返回某版式某配色的最终 SVG（优先使用手工覆盖文件 name.mode.svg）。"""
-        out = final / "svg" / (f"{prefix}-{name}-{mode}.svg" if name in logo_layouts else f"{prefix}-{name}.svg")
-        if out.exists():
-            return out
-        out.write_text(layout_mode_text(p, ldir, name, mode), encoding="utf-8")
-        outputs.append(out)
-        return out
-
-    for name in logo_layouts:
-        for mode in modes:
-            layout_svg(name, mode)
-    for name in special:
-        layout_svg(name, "color")
-
-    png = final / "png"
-    gp = prof["general"]
-    if "general" in enabled:
-        for name in logo_layouts:
-            for mode in gp.get("modes", modes):
-                for w in gp["sizes"]:
-                    outputs.append(render(layout_svg(name, mode), png / "general" / f"{prefix}-{name}-{mode}@{w}.png",
-                                          width=w))
-
-    if "favicon" in enabled:
-        fp = prof["favicon"]
-        src = layout_svg(fp["layout"], "color")
-        icos = []
-        for s in fp["sizes"]:
-            f = render_fit(src, png / "favicon" / f"favicon-{s}.png", s)
-            outputs.append(f)
-            if s in fp.get("ico_sizes", []):
-                icos.append(f)
-        if icos:
-            ico = png / "favicon" / "favicon.ico"
-            run(["magick", *map(str, icos), str(ico)])
-            outputs.append(ico)
-        if fp.get("apple_touch_layout"):
-            f = render_fit(layout_svg(fp["apple_touch_layout"], "color"), png / "favicon" / "apple-touch-icon.png",
-                           fp["apple_touch_size"])
-            outputs.append(flatten(f, app_background(p)))
-
-    if "ios" in enabled:
-        ip = prof["ios"]
-        src = layout_svg(ip["layout"], "color")
-        for s in ip["sizes"]:
-            f = render_fit(src, png / "ios" / f"AppIcon-{s}.png", s)
-            if ip.get("opaque", True):
-                flatten(f, app_background(p))
-            outputs.append(f)
-
-    if "android" in enabled:
-        ap = prof["android"]
-        legacy = layout_svg(ap["legacy_layout"], "color")
+def build_target(p: Project, ldir: Path, target: str, out: Path) -> None:
+    """在 out 目录中生成一个目标的全部文件（只用 resvg 与标准库，结果可重复）。"""
+    out.mkdir(parents=True)
+    t = load_targets()
+    slug = p.slug
+    if target == "svg":
+        for name in release_logo_layouts(ldir):
+            for mode in p.cfg.get("color_modes", {}).get("modes", ["color"]):
+                (out / f"{slug}-{name}-{mode}.svg").write_text(layout_mode_text(p, ldir, name, mode), encoding="utf-8")
+    elif target == "favicon":
+        fp = t["favicon"]
+        mark = layout_mode_text(p, ldir, mark_layout(ldir), "color")
+        pngs = {s: render_text(mark, out / f"favicon-{s}.png", s) for s in fp["sizes"]}
+        write_ico([pngs[s] for s in fp["ico_sizes"]], out / "favicon.ico")
+        render_text(app_icon_text(p, ldir), out / "apple-touch-icon.png", fp["apple_touch_size"], app_background(p))
+    elif target == "ios":
+        for s in t["ios"]["sizes"]:
+            render_text(app_icon_text(p, ldir), out / f"AppIcon-{s}.png", s, app_background(p))  # 不透明
+    elif target == "android":
+        ap, bg = t["android"], app_background(p)
+        icon = app_icon_text(p, ldir)
         for dens, s in ap["mipmap"].items():
-            outputs.append(render_fit(legacy, png / "android" / f"mipmap-{dens}" / "ic_launcher.png", s))
-        play = render_fit(legacy, png / "android" / f"play-store-{ap['play_store_size']}.png", ap["play_store_size"])
-        flatten(play, app_background(p))
-        outputs.append(play)
+            render_text(icon, out / f"mipmap-{dens}" / "ic_launcher.png", s)
+        render_text(icon, out / f"play-store-{ap['play_store_size']}.png", ap["play_store_size"], bg)
         size = ap["adaptive_size"]
-        ex = cfg.get("export", {})
-        bg_color = app_background(p)
-        adir = png / "android" / "adaptive"
-        bg = adir / "ic_launcher_background.png"
-        adir.mkdir(parents=True, exist_ok=True)
-        run(["magick", "-size", f"{size}x{size}", f"xc:{bg_color}", str(bg)])
-        outputs.append(bg)
-        for mode, fname in ((ex.get("android_foreground_mode", "color"), "ic_launcher_foreground.png"),
-                            ("mono", "ic_launcher_monochrome.png")):
-            f = render_android_foreground(p, ldir, ap, mode, adir / fname)
-            outputs.append(f)
-        if (w := android_safe_warning(adir / "ic_launcher_foreground.png", ap)):
-            warnings.append(w)
-    warnings.extend(release_structure_warnings(p, ldir, prof))
-    warnings.extend(app_icon_warnings(p, ldir, prof))
+        render_text(solid_svg(bg), out / "adaptive" / "ic_launcher_background.png", size)
+        render_text(android_foreground_text(p, ldir, icon_mode(p)), out / "adaptive" / "ic_launcher_foreground.png", size)
+        render_text(android_foreground_text(p, ldir, "mono"), out / "adaptive" / "ic_launcher_monochrome.png", size)
+    elif target == "avatar":
+        av = avatar_text(p, ldir)
+        for s in t["avatar"]["sizes"]:
+            render_text(av, out / f"{slug}-avatar@{s}.png", s)
+    else:
+        raise LogoError(f"未知目标：{target}")
 
-    if "social" in enabled:
-        sp = prof["social"]
-        av = sp["avatar"]
-        src = layout_svg(av["layout"], "color")
-        for s in av["sizes"]:
-            outputs.append(render_fit(src, png / "social" / "avatar" / f"{prefix}-avatar@{s}.png", s))
-        if (w := avatar_safe_warning(ldir, av)):
-            warnings.append(w)
-        guides = CACHE / p.slug / "guides"
-        for c in sp.get("cover", []):
-            src = layout_svg(c["layout"], "color")
-            f = render_cover(src, png / "social" / "covers" / f"{c['id']}-{c['width']}x{c['height']}.png",
-                             c["width"], c["height"])
-            outputs.append(f)
-            draws = []
-            for x, y, w, h in c.get("occlusions", []):
-                draws += ["-fill", "rgba(255,0,0,0.35)", "-stroke", "none", "-draw", f"rectangle {x},{y} {x + w},{y + h}"]
-            if c.get("safe"):
-                x, y, w, h = c["safe"]
-                draws += ["-fill", "none", "-stroke", "#00FF00", "-strokewidth", "3",
-                          "-draw", f"rectangle {x},{y} {x + w},{y + h}"]
-            if draws:
-                guides.mkdir(parents=True, exist_ok=True)
-                run(["magick", str(f), *draws, str(guides / f"{c['id']}.png")])
 
-    # 指南与清单
+def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist: Path) -> dict:
+    """写入 guide.md（发布指南 + 色板附录）与覆盖 dist/<发布>/ 全部文件的 manifest.json。"""
     guide_src = rdir / "guide.md"
-    guide = final / "guide.md"
     pal_rows = "\n".join(f"| {k} | `{v}` |" for k, v in p.palette.items())
-    guide.write_text(
-        "<!-- 由 ./logo export 自动生成，请勿手改；内容来源："
-        f"{rel(guide_src)} 与 project.toml -->\n\n"
-        + (guide_src.read_text(encoding="utf-8") if guide_src.exists() else "")
-        + f"\n\n---\n\n## 附录 A：色板（自动生成）\n\n| 色名 | 色值 |\n|---|---|\n{pal_rows}\n"
-        + "\n## 附录 B：文件清单（自动生成）\n\n"
-        + "\n".join(f"- `{o.relative_to(final).as_posix()}`" for o in sorted(set(outputs)))
-        + "\n",
-        encoding="utf-8")
-    outputs.append(guide)
+    (dist / "guide.md").write_text(
+        f"<!-- 由 ./logo export 生成；内容来源：{rel(guide_src)} 与 project.toml -->\n\n"
+        + guide_src.read_text(encoding="utf-8")
+        + f"\n\n---\n\n## 附录：色板（自动生成）\n\n| 色名 | 色值 |\n|---|---|\n{pal_rows}\n", encoding="utf-8")
+
     def short_head(repo: str) -> str:
         r = git("rev-parse", "--short", "HEAD", check=False, repo=repo)
         return r.stdout.decode().strip() if r.returncode == 0 else ""
 
+    files = sorted(f for f in dist.rglob("*") if f.is_file() and f.name != "manifest.json")
     manifest = {
         "project": p.slug,
         "release": rid,
         "based_on": load_release_meta(rdir).get("based_on", ""),
         "design_version": root_version,
-        "generated_on": today(),
         "git_head": short_head("projects"),  # 项目仓库：设计内容的版本
         "system_head": short_head("system"),  # 系统仓库：生成它的工具版本
-        "files": {o.relative_to(final).as_posix(): sha256_file(o) for o in sorted(set(outputs))},
+        "renderer": resvg_version(),          # 渲染器版本：重新生成出现像素差异时据此排查
+        "targets": sorted(d.name for d in dist.iterdir() if d.is_dir() and d.name in TARGET_NAMES),
+        "files": {f.relative_to(dist).as_posix(): sha256_file(f) for f in files},
     }
-    (final / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest
+
+
+def cmd_export(a) -> None:
+    p = Project(a.slug)
+    if a.list:
+        declared = project_targets(p)
+        for t in TARGET_NAMES:
+            print(f"{t:<8} {'已声明' if t in declared else '—'}")
+        return
+    rid, ldir, root_version = export_release(p, a.release)
+    rdir = ldir.parent
+    if not (rdir / "guide.md").exists():
+        raise LogoError(f"{rid} 缺少 guide.md（交付物的一部分）")
+    holes = unfilled_placeholders(f"{p.slug}/releases/{rid}/guide.md", (rdir / "guide.md").read_text(encoding="utf-8"))
+    if holes:
+        raise LogoError(f"{rid}/guide.md 是交付物的一部分，还有 {len(holes)} 处模板占位未填写（如“{holes[0]}”）；"
+                        "guide.md 只能追加，请新建发布并在提交前填完")
+    targets = a.targets or project_targets(p)
+    unknown = [t for t in targets if t not in TARGET_NAMES]
+    if unknown:
+        raise LogoError(f"未知目标：{', '.join(unknown)}（可选：{', '.join(TARGET_NAMES)}）")
+    if not targets:
+        raise LogoError("没有要生成的目标：在 [export] targets 中声明，或在命令中点名，如 ./logo export demo ios")
+    dist = p.dir / "dist" / rid
+    build = p.dir / "dist" / f".build-{rid}"
+    if build.exists():
+        shutil.rmtree(build)
+    try:
+        for t in targets:  # 全部目标都生成成功后才替换，任何一个失败都不动已有产物
+            build_target(p, ldir, t, build / t)
+    except BaseException:
+        shutil.rmtree(build, ignore_errors=True)
+        raise
+    dist.mkdir(parents=True, exist_ok=True)
+    for t in targets:  # 逐个目标替换：只动本次生成的目标，其他目标的旧产物保留
+        old = dist / f".old-{t}"
+        if (dist / t).exists():
+            (dist / t).rename(old)
+        (build / t).rename(dist / t)
+        shutil.rmtree(old, ignore_errors=True)
+    shutil.rmtree(build, ignore_errors=True)
+    manifest = write_dist_extras(p, rid, rdir, root_version, dist)
+    print(f"已生成 {', '.join(targets)} → {rel(dist)}（{rid} ← {root_version}；目录内共 {len(manifest['files'])} 个文件，不提交）")
+    for w in target_warnings(p, ldir):
+        print(f"⚠ {w}")
+
+
+def cmd_render(a) -> None:
+    """按需生成单张图：任意标志版式（或 app-icon / avatar 的排版结果）、配色与尺寸。"""
+    p = Project(a.slug)
+    rid, ldir, _ = export_release(p, a.release)
+    name = a.layout
+    if name == "app-icon":
+        text = app_icon_text(p, ldir)
+    elif name == "avatar":
+        text = avatar_text(p, ldir)
+    elif (ldir / f"{name}.svg").exists() and name in LOGO_LAYOUTS:
+        text = layout_mode_text(p, ldir, name, a.mode)
+    else:
+        raise LogoError(f"{rid} 没有版式 {name}（可选：{', '.join(release_logo_layouts(ldir) + ['app-icon', 'avatar'])}）")
+    mode = a.mode if name in LOGO_LAYOUTS else "color"
+    out_dir = p.dir / "dist" / rid / "render"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if a.format == "svg":
+        out = out_dir / f"{p.slug}-{name}-{mode}.svg"
+        out.write_text(text, encoding="utf-8")
+    else:
+        out = render_text(text, out_dir / f"{p.slug}-{name}-{mode}@{a.size}.png", a.size)
+    print(f"已生成：{rel(out)}（不提交）")
 
 
 def load_release_meta(rdir: Path) -> dict:
@@ -1501,6 +1539,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
         except LogoError as e:
             errors.append(f"{rel(rd)}: 追溯链断裂：{e}")
         ldir = rd / "layouts"
+        if not (ldir / "primary.svg").exists():
+            errors.append(f"{rel(ldir)}: 缺少主版 primary.svg（发布唯一必需的版式）")
         for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
             check_svg(f, layout_palette(p, f, palette), errors, warnings, staged)
             m = re.fullmatch(r"(.+)\.([a-z]+)", f.stem)  # 手工配色覆盖文件 name.mode.svg（cover-2.7x1 不算）
@@ -1518,23 +1558,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
                             f"确认定稿后运行 ./logo release {p.slug} --from {sel_ver}")
         ldir = p.release_dir(cur_rel) / "layouts"
         try:
-            missing = [n for n in required_layouts(p) if not (ldir / f"{n}.svg").exists()]
-            if missing:
-                warnings.append(f"{rel(ldir)}: 缺少现行导出配置要求的版式 {', '.join(missing)}，"
-                                "需新建发布补齐后才能导出")
-            enabled = cfg.get("export", {}).get("profiles", [])
-            prof = load_profiles()
-            if "social" in enabled:
-                if (w := avatar_safe_warning(ldir, prof["social"]["avatar"])):
-                    warnings.append(w)
-            warnings.extend(release_structure_warnings(p, ldir, prof))
-            warnings.extend(app_icon_warnings(p, ldir, prof))
-            ap = prof.get("android", {})
-            if "android" in enabled and (ldir / f"{ap.get('adaptive_foreground_layout')}.svg").exists():
-                with tempfile.TemporaryDirectory() as td:
-                    fg = render_android_foreground(p, ldir, ap, "color", Path(td) / "fg.png")
-                    if (w := android_safe_warning(fg, ap)):
-                        warnings.append(f"{rel(ldir)}: {w}")
+            if (ldir / "primary.svg").exists():
+                warnings.extend(target_warnings(p, ldir))
         except LogoError as e:
             warnings.append(f"{rel(ldir)}: 无法完成版式检查：{e}")
 
@@ -1549,30 +1574,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
         except LogoError as e:
             warnings.append(f"{rel(svg)}: 无法完成单色结构检查：{e}")
 
-    final = p.dir / "final"
-    if final.exists():
-        mf = final / "manifest.json"
-        if not mf.exists():
-            errors.append(f"{rel(final)}: 缺少 manifest.json，final/ 只能由 ./logo export 生成")
-        else:
-            manifest = json.loads(mf.read_text(encoding="utf-8"))
-            files = manifest.get("files", {})
-            for name, digest in files.items():
-                f = final / name
-                if not f.exists():
-                    errors.append(f"{rel(f)}: 清单中的文件缺失，请重新导出")
-                elif sha256_file(f) != digest:
-                    errors.append(f"{rel(f)}: 内容与清单不符（final/ 禁止手改，请重新导出）")
-            listed = set(files) | {"manifest.json"}
-            for f in final.rglob("*"):
-                if f.is_file() and f.name != ".DS_Store" and f.relative_to(final).as_posix() not in listed:
-                    errors.append(f"{rel(f)}: 不在导出清单中（final/ 禁止手动放入文件）")
-            if manifest.get("release") != cur_rel:
-                warnings.append(f"{rel(mf)}: final/ 由 {manifest.get('release') or '?'} 导出，"
-                                f"与 current_release {cur_rel or '（空）'} 不一致，请重新导出")
-            elif not manifest.get("based_on") or not manifest.get("design_version"):
-                warnings.append(f"{rel(mf)}: 清单缺少 based_on/design_version（旧版工具导出），"
-                                "请重新导出以补全追溯链")
+    if (p.dir / "final").exists():
+        warnings.append(f"{rel(p.dir / 'final')}: 交付物已改为按需生成到 dist/（不提交），旧的 final/ 可以删除")
 
 
 def license_review_path(entry: dict) -> Path:
@@ -1626,45 +1629,43 @@ def check_fonts(errors: list[str], warnings: list[str]) -> None:
             errors.append(f"{where}: 授权文件不存在")
 
 
-def profile_warnings(prof: dict, enabled: list[str] | None = None) -> list[str]:
+def spec_warnings(name: str, item: dict) -> list[str]:
+    """单个规格条目的依据检查：official 须有官方来源，common/generic 须写明依据；均按年复核。"""
+    if item.get("generic"):
+        return []  # 通用比例，不对应具体平台
     out = []
     limit = dt.date.today() - dt.timedelta(days=365)
-
-    def chk(name: str, item: dict):
-        if item.get("generic"):
-            return  # 通用比例，不对应具体平台
-        basis = item.get("basis", "official")
-        if basis not in ("official", "common", "generic"):
-            out.append(f"导出规格 {name} 的 basis 只能是 official、common 或 generic")
-        if basis != "official":
-            # 无官方规格时按通用规格：须写明依据，按年复核
-            if not item.get("verify_note"):
-                out.append(f"导出规格 {name} 采用{'通用' if basis == 'common' else '泛用'}规格，须在 verify_note 中写明依据")
-            v = item.get("verified_on", "")
-            if not v:
-                out.append(f"导出规格 {name} 缺少复核日期 verified_on")
-            elif dt.date.fromisoformat(v) < limit:
-                out.append(f"导出规格 {name} 的通用规格超过 12 个月未复核，建议检查平台是否已公布官方规格")
-            return
-        v = item.get("verified_on", "")
+    basis = item.get("basis", "official")
+    if basis not in ("official", "common", "generic"):
+        out.append(f"导出规格 {name} 的 basis 只能是 official、common 或 generic")
+    v = item.get("verified_on", "")
+    if basis != "official":
+        if not item.get("verify_note"):
+            out.append(f"导出规格 {name} 采用{'通用' if basis == 'common' else '泛用'}规格，须在 verify_note 中写明依据")
         if not v:
-            note = item.get("verify_note")
-            out.append(f"导出规格 {name} 尚未按官方文档核实" + (f"（{note}）" if note else ""))
+            out.append(f"导出规格 {name} 缺少复核日期 verified_on")
         elif dt.date.fromisoformat(v) < limit:
-            out.append(f"导出规格 {name} 核实已超过 12 个月（{v}），建议复核")
-        if not item.get("source"):
-            out.append(f"导出规格 {name} 缺少官方规格来源链接 source")
+            out.append(f"导出规格 {name} 的通用规格超过 12 个月未复核，建议检查平台是否已公布官方规格")
+        return out
+    if not v:
+        note = item.get("verify_note")
+        out.append(f"导出规格 {name} 尚未按官方文档核实" + (f"（{note}）" if note else ""))
+    elif dt.date.fromisoformat(v) < limit:
+        out.append(f"导出规格 {name} 核实已超过 12 个月（{v}），建议复核")
+    if not item.get("source"):
+        out.append(f"导出规格 {name} 缺少官方规格来源链接 source")
+    return out
 
-    for key in ("ios", "android"):
-        if key in prof and (enabled is None or key in enabled):
-            chk(key, prof[key])
-    if "social" in prof and (enabled is None or "social" in enabled):
-        chk("social.avatar", prof["social"]["avatar"])
-        for c in prof["social"].get("cover", []):
-            chk(f"social.cover.{c['id']}", c)
-        pend = prof["social"].get("pending", [])
-        if pend:
-            out.append("以下平台规格待补充：" + "、".join(pend))
+
+def profile_warnings() -> list[str]:
+    """Logo 目标（iOS / Android / 头像）与封面平台登记的规格依据检查。"""
+    t = load_targets()
+    out = [w for key in ("ios", "android", "avatar") for w in spec_warnings(key, t[key])]
+    social = load_profiles().get("social", {})
+    for c in social.get("cover", []):
+        out.extend(spec_warnings(f"cover.{c['id']}", c))
+    if social.get("pending"):
+        out.append("以下平台规格待补充：" + "、".join(social["pending"]))
     return out
 
 
@@ -1918,7 +1919,7 @@ def cmd_check(a) -> None:
         if not a.staged:
             check_hooks(warnings)
         try:
-            warnings.extend(profile_warnings(load_profiles()))
+            warnings.extend(profile_warnings())
         except LogoError as e:
             errors.append(str(e))
     for w in warnings:
@@ -2058,10 +2059,22 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("ids", nargs="*", help="版本号列表")
     s.set_defaults(fn=cmd_compare)
 
-    s = sub.add_parser("export", help="由发布生成 final/ 交付文件")
+    s = sub.add_parser("export", help="按需生成 Logo 资产到 dist/（不提交）")
     s.add_argument("slug")
+    s.add_argument("targets", nargs="*", help=f"目标（默认项目 [export] targets）：{', '.join(TARGET_NAMES)}")
     s.add_argument("--release", help="发布号（默认 current_release）")
+    s.add_argument("--list", action="store_true", help="列出可用目标及项目已声明的目标")
     s.set_defaults(fn=cmd_export)
+
+    s = sub.add_parser("render", help="按需生成单张图：任意版式、配色、尺寸（输出到 dist/，不提交）")
+    s.add_argument("slug")
+    s.add_argument("layout", nargs="?", default="primary",
+                   help="primary / icon / horizontal / wordmark-cn / wordmark-en，或 app-icon / avatar 的排版结果")
+    s.add_argument("--mode", default="color", help="color / mono / reversed")
+    s.add_argument("--size", type=int, default=1024)
+    s.add_argument("--format", choices=["png", "svg"], default="png")
+    s.add_argument("--release", help="发布号（默认 current_release）")
+    s.set_defaults(fn=cmd_render)
 
     s = sub.add_parser("check", help="检查规范、不可变规则与导出一致性")
     s.add_argument("slug", nargs="?")

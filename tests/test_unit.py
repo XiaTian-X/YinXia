@@ -66,10 +66,10 @@ class PathRulesTest(unittest.TestCase):
         ok = ["PROJECTS.md", ".gitignore", "acme/project.toml", "acme/brief.md", "acme/concepts/001-ref.png",
               "acme/concepts/001-ref.md", "acme/directions/A-mountain/direction.md",
               "acme/directions/A-mountain/v001/logo.svg", "acme/decisions/001-secret-garden.md",
-              "acme/releases/r1/layouts/cover-2.7x1.svg", "acme/releases/r1/layouts/icon.mono.svg",
-              "acme/final/png/general/x@64.png"]
+              "acme/releases/r1/layouts/cover-2.7x1.svg", "acme/releases/r1/layouts/icon.mono.svg"]
         bad = ["notes.txt", "acme/trace.py", "acme/directions/A-mountain/v001/debug.png",
-               "acme/releases/r1/notes.txt", "acme/concepts/ref.gif", "Acme/project.toml", ".final-build/a"]
+               "acme/releases/r1/notes.txt", "acme/concepts/ref.gif", "Acme/project.toml", ".final-build/a",
+               "acme/final/png/general/x@64.png", "acme/dist/r1/ios/AppIcon-1024.png"]
         for p in ok:
             self.assertTrue(logo.path_allowed(p, "projects"), p)
         for p in bad:
@@ -190,10 +190,8 @@ class AppBackgroundTest(unittest.TestCase):
 class ProfileWarningsTest(unittest.TestCase):
     TODAY = dt.date.today().isoformat()
 
-    def warn(self, cover: dict) -> list[str]:
-        prof = {"social": {"avatar": {"verified_on": self.TODAY, "source": "x"},
-                           "cover": [{"id": "t", **cover}]}}
-        return logo.profile_warnings(prof, ["social"])
+    def warn(self, item: dict) -> list[str]:
+        return logo.spec_warnings("t", item)
 
     def test_official(self):
         self.assertEqual(self.warn({"verified_on": self.TODAY, "source": "https://x"}), [])
@@ -206,13 +204,67 @@ class ProfileWarningsTest(unittest.TestCase):
             self.assertEqual(self.warn({"basis": basis, "verified_on": self.TODAY, "verify_note": "依据"}), [])
             self.assertTrue(self.warn({"basis": basis, "verified_on": self.TODAY}))  # 缺依据
             self.assertTrue(self.warn({"basis": basis, "verified_on": "2020-01-01", "verify_note": "依据"}))
+            self.assertTrue(self.warn({"basis": basis, "verify_note": "依据"}))  # 缺复核日期
         self.assertTrue(self.warn({"basis": "guess", "verified_on": self.TODAY, "verify_note": "x"}))
 
-    def test_real_profiles_are_clean(self):
-        prof = logo.load_profiles()
-        self.assertEqual(logo.profile_warnings(prof), [])
-        for c in prof["social"]["cover"]:
-            self.assertTrue(c["layout"].startswith(("cover-", "avatar")), c["id"])
+    def test_real_configs_are_clean(self):
+        self.assertEqual(logo.profile_warnings(), [])
+        t = logo.load_targets()
+        self.assertTrue({"compose", "favicon", "ios", "android", "avatar"} <= set(t))
+        self.assertNotIn("social", t)  # 封面不属于 Logo 资产
+
+
+class LogoAssetsTest(unittest.TestCase):
+    class P:
+        palette = {"primary": "#00897B", "ink": "#1A1A1A"}
+
+        def __init__(self, export):
+            self.cfg = {"export": export}
+
+    def test_targets_and_legacy_profiles(self):
+        self.assertEqual(logo.project_targets(self.P({"targets": ["ios", "svg"]})), ["svg", "ios"])  # 固定顺序
+        self.assertEqual(logo.project_targets(self.P({"profiles": ["general", "social", "favicon"]})),
+                         ["svg", "favicon", "avatar"])
+        self.assertEqual(logo.project_targets(self.P({})), [])
+        with self.assertRaises(logo.LogoError):
+            logo.project_targets(self.P({"targets": ["cover"]}))
+
+    def test_icon_mode_alias(self):
+        self.assertEqual(logo.icon_mode(self.P({"icon_mode": "mono", "android_foreground_mode": "reversed"})), "mono")
+        self.assertEqual(logo.icon_mode(self.P({"android_foreground_mode": "reversed"})), "reversed")
+        self.assertEqual(logo.icon_mode(self.P({})), "color")
+
+    def test_compose_geometry(self):
+        import xml.etree.ElementTree as ET
+        src = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 50 100"><path d="M0 0h1v1z"/></svg>'
+        root = ET.fromstring(logo.compose_svg(src, 0.64, "#00897B"))
+        ns = "{http://www.w3.org/2000/svg}"
+        self.assertEqual(root.get("viewBox"), "0 0 1000 1000")
+        rect, inner = list(root)
+        self.assertEqual((rect.tag, rect.get("fill"), rect.get("width")), (f"{ns}rect", "#00897B", "1000"))
+        self.assertEqual([inner.get(k) for k in ("x", "y", "width", "height")], ["180", "180", "640", "640"])
+        self.assertEqual(inner.get("preserveAspectRatio"), "xMidYMid meet")  # 等比，不拉伸
+        self.assertEqual(len(ET.fromstring(logo.compose_svg(src, 0.5, None))), 1)  # 不铺底色时只有图形
+        with self.assertRaises(logo.LogoError):
+            logo.compose_svg('<svg xmlns="http://www.w3.org/2000/svg"/>', 0.5, None)
+
+    def test_write_ico(self):
+        import struct
+        def fake_png(w, h):
+            return b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" + struct.pack(">II", w, h) + b"\0" * 9
+        with tempfile.TemporaryDirectory() as td:
+            pngs = []
+            for s in (16, 256):
+                f = Path(td) / f"{s}.png"
+                f.write_bytes(fake_png(s, s))
+                pngs.append(f)
+            data = logo.write_ico(pngs, Path(td) / "a.ico").read_bytes()
+            self.assertEqual(struct.unpack("<HHH", data[:6]), (0, 1, 2))
+            e1, e2 = data[6:22], data[22:38]
+            self.assertEqual(e1[0], 16)
+            self.assertEqual(e2[0], 0)  # 256 在 ICO 目录中记为 0
+            off2 = struct.unpack("<I", e2[12:16])[0]
+            self.assertEqual(data[off2:off2 + 8], b"\x89PNG\r\n\x1a\n")
 
 
 @unittest.skipUnless(any(f.name == "Inter-Regular.ttf" for f in FONT_BINARIES), "Inter 未下载（./logo fonts fetch inter）")

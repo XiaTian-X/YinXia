@@ -3,27 +3,36 @@ from __future__ import annotations
 
 import hashlib
 import json
-import shutil
+import struct
 import subprocess
+import tempfile
+import tomllib
 import unittest
+from pathlib import Path
 
 from helpers import FONT_BINARIES, HAS_RENDER, PRIMARY, TRIANGLE, Workspace, fill_doc, logo
 
-AVATAR_INSIDE = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
-                 '<rect id="background" width="100" height="100" fill="#111111"/>'
-                 f'<circle cx="50" cy="50" r="30" fill="{PRIMARY}"/></svg>\n')
+ALL_TARGETS = '["svg", "favicon", "ios", "android", "avatar"]'
 
 
-def prepare_release(ws: Workspace, slug: str = "demo") -> str:
-    """在已有 A-v001 的项目上完成定稿决策与 r1 发布（版式、文档齐全），并提交。返回发布号。"""
+def set_targets(p: Path, targets: str = ALL_TARGETS) -> None:
+    toml = p / "project.toml"
+    text = toml.read_text(encoding="utf-8")
+    new = text.replace('targets = ["svg", "favicon"]', f"targets = {targets}")
+    assert new != text, "模板中找不到 targets 行"
+    toml.write_text(new, encoding="utf-8")
+
+
+def prepare_release(ws: Workspace, slug: str = "demo", extra: dict[str, str] | None = None) -> str:
+    """在已有 A-v001 的项目上完成定稿决策与 r1 发布（只放主版 primary.svg 与 extra 中的文件），并提交。"""
     p = ws.projects / slug
     ws.logo("decision", slug, "finalize-a-v001", "--title", "定稿 A-v001")
     fill_doc(next((p / "decisions").glob("*.md")))
     ws.logo("release", slug, "--from", "A-v001")
     rdir = p / "releases" / "r1"
-    for name in logo.required_layouts(logo_project_view(ws, slug)):
-        (rdir / "layouts" / f"{name}.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
-    (rdir / "layouts" / "avatar.svg").write_text(AVATAR_INSIDE, encoding="utf-8")
+    (rdir / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+    for name, text in (extra or {}).items():
+        (rdir / "layouts" / name).write_text(text, encoding="utf-8")
     fill_doc(rdir / "release.md")
     with (rdir / "release.md").open("a", encoding="utf-8") as f:
         f.write("\n依据：decisions/001-finalize-a-v001.md\n")
@@ -34,13 +43,10 @@ def prepare_release(ws: Workspace, slug: str = "demo") -> str:
     return "r1"
 
 
-def logo_project_view(ws: Workspace, slug: str):
-    """读取工作区里项目配置的轻量视图，供 required_layouts 使用（不依赖真实仓库路径）。"""
-    import tomllib
-
-    class View:
-        cfg = tomllib.loads((ws.projects / slug / "project.toml").read_text(encoding="utf-8"))
-    return View()
+def pixel(png: Path, x: str, y: str) -> str:
+    """读取 PNG 某点颜色（RRGGBBAA）；x/y 可用 fx 表达式，如 "w/2"。"""
+    return subprocess.run(["magick", str(png), "-format", f"%[hex:p{{%[fx:{x}],%[fx:{y}]}}]", "info:"],
+                          capture_output=True, text=True, check=True).stdout.strip().upper()
 
 
 class LifecycleTest(unittest.TestCase):
@@ -50,7 +56,6 @@ class LifecycleTest(unittest.TestCase):
         self.p = self.ws.new_project()
 
     def state(self) -> dict:
-        import tomllib
         return tomllib.loads((self.p / "project.toml").read_text(encoding="utf-8"))["state"]
 
     def test_concept_and_inspired_version(self):
@@ -78,36 +83,68 @@ class LifecycleTest(unittest.TestCase):
         r = ws.logo("state", "demo", "selected_direction=A", "selected_version=B-v001", ok=False)
         self.assertIn("不属于", r.stderr)
 
-    def test_release_syncs_selection_and_chains(self):
+    def test_release_needs_only_primary(self):
         ws = self.ws
         ws.new_version()
         self.assertEqual(ws.commit("projects", "[demo] A-v001").returncode, 0)
-        prepare_release(ws)
+        prepare_release(ws)  # 只放 primary.svg 也能提交
         st = self.state()
         self.assertEqual((st["stage"], st["selected_version"], st["current_release"]), ("releasing", "A-v001", "r1"))
+        self.assertNotIn("缺少", ws.logo("check").stdout)
         ws.logo("release", "demo", "--from", "r1")
-        self.assertEqual(self.state()["current_release"], "r2")
         self.assertEqual(self.state()["selected_version"], "A-v001")  # r2 → r1 → A-v001
+        (self.p / "releases" / "r2" / "layouts" / "primary.svg").unlink()
+        self.assertIn("缺少主版 primary.svg", ws.logo("check", ok=False).stdout)
 
     def test_export_refuses_unfilled_guide(self):
         ws = self.ws
         ws.new_version()
         ws.commit("projects", "[demo] A-v001")
         ws.logo("release", "demo", "--from", "A-v001")
+        (self.p / "releases" / "r1" / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
         r = ws.logo("export", "demo", ok=False)
         self.assertIn("guide.md", r.stderr)
-        self.assertFalse((self.p / "final").exists())
+        self.assertFalse((self.p / "dist").exists())
+
+    def test_targets_declaration_and_legacy_profiles(self):
+        ws = self.ws
+        listing = ws.logo("export", "demo", "--list").stdout
+        self.assertRegex(listing, r"svg\s+已声明")
+        self.assertRegex(listing, r"ios\s+—")
+        toml = self.p / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace(
+            'targets = ["svg", "favicon"]', 'profiles = ["general", "favicon", "ios", "android", "social"]'),
+            encoding="utf-8")
+        listing = ws.logo("export", "demo", "--list").stdout
+        for t in ("svg", "favicon", "ios", "android", "avatar"):  # 旧写法自动换算
+            self.assertRegex(listing, rf"{t}\s+已声明")
+        set_targets_raw = toml.read_text(encoding="utf-8").replace(
+            'profiles = ["general", "favicon", "ios", "android", "social"]', 'targets = ["svg", "cover"]')
+        toml.write_text(set_targets_raw, encoding="utf-8")
+        self.assertIn("未知目标", ws.logo("export", "demo", "--list", ok=False).stderr)
 
 
 @unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
 class ExportTest(unittest.TestCase):
+    EXPECTED = {
+        "svg": {"demo-primary-color.svg", "demo-primary-mono.svg", "demo-primary-reversed.svg"},
+        "favicon": {"favicon-16.png", "favicon-32.png", "favicon-48.png", "favicon.ico", "apple-touch-icon.png"},
+        "ios": {"AppIcon-1024.png"},
+        "android": {f"mipmap-{d}/ic_launcher.png" for d in ("mdpi", "hdpi", "xhdpi", "xxhdpi", "xxxhdpi")}
+        | {"play-store-512.png", "adaptive/ic_launcher_background.png", "adaptive/ic_launcher_foreground.png",
+           "adaptive/ic_launcher_monochrome.png"},
+        "avatar": {"demo-avatar@400.png", "demo-avatar@800.png", "demo-avatar@1080.png"},
+    }
+
     @classmethod
     def setUpClass(cls):
         cls.ws = Workspace()
         cls.p = cls.ws.new_project()
+        set_targets(cls.p)
         cls.ws.new_version()
         assert cls.ws.commit("projects", "[demo] A-v001").returncode == 0
         prepare_release(cls.ws)
+        cls.dist = cls.p / "dist" / "r1"
         cls.out = cls.ws.logo("export", "demo")
 
     @classmethod
@@ -115,94 +152,127 @@ class ExportTest(unittest.TestCase):
         cls.ws.cleanup()
 
     def manifest(self) -> dict:
-        return json.loads((self.p / "final" / "manifest.json").read_text(encoding="utf-8"))
+        return json.loads((self.dist / "manifest.json").read_text(encoding="utf-8"))
+
+    def test_outputs_per_target(self):
+        files = set(self.manifest()["files"])
+        expected = {f"{t}/{n}" for t, names in self.EXPECTED.items() for n in names} | {"guide.md"}
+        self.assertEqual(files, expected)  # 只有声明目标的产物，没有通用 PNG 套装与封面
+        self.assertEqual(self.manifest()["targets"], sorted(self.EXPECTED))
 
     def test_manifest_traceability(self):
         m = self.manifest()
         self.assertEqual((m["release"], m["based_on"], m["design_version"]), ("r1", "A-v001", "A-v001"))
         self.assertEqual(m["git_head"], self.ws.git("projects", "rev-parse", "--short", "HEAD").stdout.strip())
         self.assertEqual(m["system_head"], self.ws.git("system", "rev-parse", "--short", "HEAD").stdout.strip())
+        self.assertEqual(m["renderer"], subprocess.run(["resvg", "--version"], capture_output=True, text=True).stdout.strip())
         for name, digest in m["files"].items():
-            data = (self.p / "final" / name).read_bytes()
-            self.assertEqual(hashlib.sha256(data).hexdigest(), digest, name)
+            self.assertEqual(hashlib.sha256((self.dist / name).read_bytes()).hexdigest(), digest, name)
 
-    def test_all_platform_outputs(self):
-        prof = logo.load_profiles()
-        files = self.manifest()["files"]
-        for c in prof["social"]["cover"]:
-            self.assertIn(f"png/social/covers/{c['id']}-{c['width']}x{c['height']}.png", files, c["id"])
-        for s in prof["social"]["avatar"]["sizes"]:
-            self.assertIn(f"png/social/avatar/demo-avatar@{s}.png", files)
-        for name in ("png/ios/AppIcon-1024.png", "png/favicon/favicon.ico", "png/android/play-store-512.png",
-                     "png/android/adaptive/ic_launcher_monochrome.png", "guide.md"):
-            self.assertIn(name, files)
+    def test_deterministic_without_metadata(self):
+        before = self.manifest()["files"]
+        self.ws.logo("export", "demo")
+        self.assertEqual(self.manifest()["files"], before)  # 同一发布再导出，逐字节相同
+        for png in self.dist.rglob("*.png"):
+            data, i = png.read_bytes(), 8
+            while i < len(data):
+                n, kind = struct.unpack(">I", data[i:i + 4])[0], data[i + 4:i + 8]
+                self.assertNotIn(kind, (b"tEXt", b"zTXt", b"iTXt", b"tIME"), png.name)
+                i += 12 + n
 
-    def test_stage_delivered_and_check_clean(self):
-        import tomllib
+    def test_ico_is_valid(self):
+        data = (self.dist / "favicon" / "favicon.ico").read_bytes()
+        reserved, kind, count = struct.unpack("<HHH", data[:6])
+        self.assertEqual((reserved, kind, count), (0, 1, 3))
+        sizes = []
+        for k in range(count):
+            w, h, _, _, _, _, length, offset = struct.unpack("<BBBBHHII", data[6 + 16 * k:22 + 16 * k])
+            self.assertEqual(data[offset:offset + 8], b"\x89PNG\r\n\x1a\n")
+            sizes.append(w)
+        self.assertEqual(sizes, [16, 32, 48])
+
+    def test_auto_composition(self):
+        bg, white = PRIMARY[1:] + "FF", "FFFFFFFF"  # 模板：app_background=primary，icon_mode=reversed
+        for f in ("ios/AppIcon-1024.png", "favicon/apple-touch-icon.png", "android/play-store-512.png",
+                  "avatar/demo-avatar@400.png"):
+            self.assertEqual(pixel(self.dist / f, "2", "2"), bg, f)               # 品牌底色铺满
+            self.assertEqual(pixel(self.dist / f, "w/2", "h*0.6"), white, f)      # 图形居中且可见
+        fg = self.dist / "android/adaptive/ic_launcher_foreground.png"
+        self.assertTrue(pixel(fg, "2", "2").endswith("00"))                       # 前景层四周透明
+        self.assertEqual(pixel(fg, "w/2", "h*0.55"), white)
+        out = self.ws.logo("check").stdout
+        self.assertNotIn("无法区分", out)
+        self.assertNotIn("✗", out)
+
+    def test_dist_untracked_and_stage_unchanged(self):
+        self.assertEqual(self.ws.git("projects", "status", "--porcelain").stdout.strip(), "")
         st = tomllib.loads((self.p / "project.toml").read_text(encoding="utf-8"))["state"]
-        self.assertEqual(st["stage"], "delivered")
-        self.ws.logo("index")
-        r = self.ws.commit("projects", "[demo] export r1")
-        self.assertEqual(r.returncode, 0, self.ws.blocked(r))
-        self.assertNotIn("✗", self.ws.logo("check").stdout)
+        self.assertEqual(st["stage"], "releasing")  # 导出不再自动改阶段
 
-    def test_reexport_and_atomic_failure(self):
-        ws, final = self.ws, self.p / "final"
-        ws.logo("export", "demo")
-        self.assertFalse((self.p / ".final-build").exists() or (self.p / ".final-old").exists())
-        before = (final / "manifest.json").read_bytes()
+    def test_partial_export_and_atomic_failure(self):
+        ws = self.ws
+        fav_before = (self.dist / "favicon" / "favicon.ico").read_bytes()
+        ws.logo("export", "demo", "svg")
+        self.assertEqual((self.dist / "favicon" / "favicon.ico").read_bytes(), fav_before)  # 其他目标保留
+        self.assertIn("favicon/favicon.ico", self.manifest()["files"])
+        ios_before = (self.dist / "ios" / "AppIcon-1024.png").read_bytes()
         toml = self.p / "project.toml"
         original = toml.read_text(encoding="utf-8")
         broken = original.replace('app_background = "primary"', 'app_background = "nope"')
-        self.assertNotEqual(broken, original)  # 确认真的改坏了配置
+        self.assertNotEqual(broken, original)
         toml.write_text(broken, encoding="utf-8")
         try:
-            r = ws.logo("export", "demo", ok=False)
-            self.assertNotEqual(r.returncode, 0)
-            self.assertEqual((final / "manifest.json").read_bytes(), before)  # 旧交付物原样保留
-            self.assertFalse((self.p / ".final-build").exists())
+            self.assertNotEqual(ws.logo("export", "demo", "ios", ok=False).returncode, 0)
+            self.assertEqual((self.dist / "ios" / "AppIcon-1024.png").read_bytes(), ios_before)  # 失败不动旧产物
+            self.assertFalse(any(d.name.startswith((".build", ".old")) for d in (self.p / "dist").rglob(".*")))
         finally:
             toml.write_text(original, encoding="utf-8")
 
-    def test_app_icons_use_brand_background(self):
-        final = self.p / "final" / "png"
-        for f in ("ios/AppIcon-1024.png", "android/play-store-512.png", "favicon/apple-touch-icon.png"):
-            corner = subprocess.run(["magick", str(final / f), "-format", "%[hex:p{1,1}]", "info:"],
-                                    capture_output=True, text=True, check=True).stdout
-            self.assertEqual(corner.strip()[:6].upper(), PRIMARY[1:], f)  # 透明处铺的是 app_background，不是白色
-        self.assertIn("app-icon.svg 含透明区域", self.ws.logo("check").stdout)
+    def test_override_wins_and_visibility(self):
+        ws = self.ws
+        override = self.p / "releases" / "r1" / "layouts" / "app-icon.svg"
+        override.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
+                            '<rect width="10" height="10" fill="#111111"/></svg>', encoding="utf-8")
+        toml = self.p / "project.toml"
+        original = toml.read_text(encoding="utf-8")
+        try:
+            ws.logo("export", "demo", "ios")
+            self.assertEqual(pixel(self.dist / "ios/AppIcon-1024.png", "w/2", "h/2"), "111111FF")  # 用手工覆盖
+            override.unlink()
+            toml.write_text(original.replace('icon_mode = "reversed"', 'icon_mode = "color"'), encoding="utf-8")
+            self.assertIn("自动排版的 app-icon 中图形与底色几乎无法区分", ws.logo("check").stdout)
+        finally:
+            override.unlink(missing_ok=True)
+            toml.write_text(original, encoding="utf-8")
+            ws.logo("export", "demo", "ios")
 
-    def test_opaque_app_icon_not_warned(self):
-        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="#00897B"/></svg>'
-        import tempfile
-        from pathlib import Path
-        with tempfile.TemporaryDirectory() as td:
-            f = Path(td) / "app-icon.svg"
-            f.write_text(svg, encoding="utf-8")
-            self.assertIsNone(logo.app_icon_transparency_warning(f))
-            f.write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
-            self.assertIsNotNone(logo.app_icon_transparency_warning(f))
+    def test_render(self):
+        ws = self.ws
+        ws.logo("render", "demo", "--mode", "mono", "--size", "300")
+        out = self.dist / "render" / "demo-primary-mono@300.png"
+        self.assertEqual(subprocess.run(["magick", "identify", "-format", "%wx%h", str(out)],
+                                        capture_output=True, text=True).stdout, "300x300")
+        ws.logo("render", "demo", "app-icon", "--format", "svg")
+        self.assertIn("<rect", (self.dist / "render" / "demo-app-icon-color.svg").read_text(encoding="utf-8"))
+        self.assertIn("没有版式", ws.logo("render", "demo", "horizontal", ok=False).stderr)
 
-    def test_android_safe_zone_warning(self):
-        ldir = self.p / "releases" / "r1" / "layouts"
-        full = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="#00897B" d="M0 0h100v100H0z"/></svg>'
-        ap = logo.load_profiles()["android"]
-        import tempfile
-        from pathlib import Path
+    def test_android_safe_zone(self):
+        ap = logo.load_targets()["android"]
+
+        class P:
+            cfg = {"export": {}}
+
+            def mode_map(self, mode):
+                return {}
         with tempfile.TemporaryDirectory() as td:
             tdir = Path(td)
-            shutil.copy(ldir / "icon.svg", tdir / "icon.svg")
-
-            class P:
-                palette = {}
-
-                def mode_map(self, mode):
-                    return {}
-            ok = logo.render_android_foreground(P(), tdir, ap, "color", tdir / "ok.png")
+            (tdir / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+            ok = logo.render_text(logo.android_foreground_text(P(), tdir, "color"), tdir / "ok.png", ap["adaptive_size"])
             self.assertIsNone(logo.android_safe_warning(ok, ap))
-            (tdir / "icon.svg").write_text(full, encoding="utf-8")
-            bad = logo.render_android_foreground(P(), tdir, ap, "color", tdir / "bad.png")
-            self.assertIsNotNone(logo.android_safe_warning(bad, ap))
+            (tdir / "primary.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+                                              f'<path fill="{PRIMARY}" d="M0 0h100v100H0z"/></svg>', encoding="utf-8")
+            bad = logo.render_text(logo.android_foreground_text(P(), tdir, "color"), tdir / "bad.png", ap["adaptive_size"])
+            self.assertIsNotNone(logo.android_safe_warning(bad, ap))  # 铺满方块的四角超出 66dp 圆
 
 
 # 依赖颜色区分结构的设计：方块上的圆，单色化后成为一整块
@@ -214,8 +284,6 @@ COLOR_RELIANT = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
 @unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
 class MonoStructureTest(unittest.TestCase):
     def setUp(self):
-        import tempfile
-        from pathlib import Path
         self._cache = logo.STRUCTURE_CACHE
         logo.STRUCTURE_CACHE = Path(tempfile.mkdtemp()) / "structure.json"  # 不写入真实仓库的缓存
         self.addCleanup(setattr, logo, "STRUCTURE_CACHE", self._cache)
@@ -267,13 +335,27 @@ class MonoStructureTest(unittest.TestCase):
         for n in logos:
             (ldir / f"{n}.svg").write_text(COLOR_RELIANT, encoding="utf-8")
         out = ws.logo("check").stdout
-        self.assertIn("primary.svg（同内容：horizontal、icon、wordmark-cn、wordmark-en）", out)
+        self.assertIn("primary.svg（同内容：icon、horizontal、wordmark-cn、wordmark-en）", out)
         kept = COLOR_RELIANT.replace("#FFB300", "#FFFFFF").replace(PRIMARY, "#000000")
         for n in logos:
             for mode, txt in (("mono", kept), ("reversed", kept.replace("#000000", "#X").replace("#FFFFFF", "#000000")
                                                          .replace("#X", "#FFFFFF"))):
                 (ldir / f"{n}.{mode}.svg").write_text(txt, encoding="utf-8")
         self.assertNotIn("非彩色版只保留", ws.logo("check").stdout)
+
+
+    def test_auto_icons_warn_when_icon_mode_collapses_mark(self):
+        ws = self.ws
+        set_targets(self.p, '["svg", "android"]')
+        ws.new_version()
+        ws.commit("projects", "[demo] A-v001")
+        ws.logo("release", "demo", "--from", "A-v001")
+        (self.p / "releases" / "r1" / "layouts" / "primary.svg").write_text(COLOR_RELIANT, encoding="utf-8")
+        self.assertIn("app-icon、Android 前景层（icon_mode=reversed）", ws.logo("check").stdout)  # 模板默认 reversed
+        toml = self.p / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('icon_mode = "reversed"', 'icon_mode = "color"'),
+                        encoding="utf-8")
+        self.assertNotIn("Android 前景层（icon_mode", ws.logo("check").stdout)
 
 
 @unittest.skipUnless(any(f.name == "Inter-Regular.ttf" for f in FONT_BINARIES), "Inter 未下载")

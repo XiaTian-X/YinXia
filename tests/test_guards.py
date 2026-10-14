@@ -142,7 +142,7 @@ class FontUsageTest(GuardBase):
         self.assertEqual(self.ws.py("print(logo.Project('demo').cfg['fonts']['used'])").strip(),
                          "['inter', 'source-han-sans-sc-bold', 'x-font']")
         text = toml.read_text(encoding="utf-8")
-        toml.write_text(text[:text.index("[fonts]")] + text[text.index("[layouts]"):], encoding="utf-8")  # 无 [fonts] 表
+        toml.write_text(text[:text.index("[fonts]")] + text[text.index("[export]"):], encoding="utf-8")  # 无 [fonts] 表
         self.ws.py("logo.Project('demo').add_font('inter')")
         self.assertEqual(self.ws.py("print(logo.Project('demo').cfg['fonts']['used'])").strip(), "['inter']")
 
@@ -159,6 +159,13 @@ class StructureAndSecretsTest(GuardBase):
         for rel in self.PROJECT_JUNK:
             self.ws.write(f"projects/{rel}", "x")
         self.assertEqual(self.ws.git("projects", "add", "-A", "--dry-run").stdout.strip(), "")
+
+    def test_final_blocked_and_dist_hidden(self):
+        self.ws.write("projects/demo/dist/r1/ios/AppIcon-1024.png", "x")
+        self.assertEqual(self.ws.git("projects", "add", "-A", "--dry-run").stdout.strip(), "")
+        self.ws.write("projects/demo/final/manifest.json", "{}")
+        self.ws.git("projects", "add", "-f", "demo/final/manifest.json")
+        self.assertBlocked(self.ws.commit("projects", "x", add=False), "不在规定的目录结构中")
 
     def test_projects_forced_junk_blocked(self):
         self.ws.write("projects/demo/trace.py", "x")
