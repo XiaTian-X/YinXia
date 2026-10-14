@@ -96,6 +96,45 @@ class LifecycleTest(unittest.TestCase):
         (self.p / "releases" / "r2" / "layouts" / "primary.svg").unlink()
         self.assertIn("缺少主版 primary.svg", ws.logo("check", ok=False).stdout)
 
+    def test_release_seeds_primary_from_version(self):
+        ws = self.ws
+        square = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="{PRIMARY}" d="M10 10h80v80H10Z"/></svg>\n'
+        logo_svg = ws.new_version(svg=square) / "logo.svg"
+        ws.logo("release", "demo", "--from", "A-v001")
+        primary = self.p / "releases" / "r1" / "layouts" / "primary.svg"
+        self.assertEqual(primary.read_bytes(), logo_svg.read_bytes())
+        primary.write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")  # 发布版式可另行调整
+        ws.logo("release", "demo", "--from", "r1")  # 基于发布：继承上一个发布的版式，而不是版本稿
+        self.assertEqual((self.p / "releases" / "r2" / "layouts" / "primary.svg").read_text(encoding="utf-8"),
+                         TRIANGLE.format(c=PRIMARY))
+
+    def test_legacy_config_warning(self):
+        toml = self.p / "project.toml"
+        modern = toml.read_text(encoding="utf-8")
+        self.assertNotIn("旧写法", self.ws.logo("check").stdout)
+        toml.write_text(modern.replace('targets = ["svg", "favicon"]', 'profiles = ["general", "social"]')
+                        .replace('app_background = "primary"', 'android_background = "primary"')
+                        + '\n[layouts]\nlogo = ["primary"]\n', encoding="utf-8")
+        out = self.ws.logo("check").stdout
+        self.assertIn("使用了旧写法", out)
+        for part in ("[layouts] 已不起作用", 'profiles 改为 targets = ["svg", "avatar"]',
+                     "android_background 改名为 app_background"):
+            self.assertIn(part, out)
+        self.assertNotIn("android_foreground_mode", out)
+        toml.write_text(modern.replace('targets = ["svg", "favicon"]',
+                                       'targets = ["svg"]\nprofiles = ["general"]'), encoding="utf-8")
+        self.assertIn("profiles 已被 targets 取代", self.ws.logo("check").stdout)
+
+    def test_paused_stage(self):
+        ws = self.ws
+        ws.new_version()
+        ws.logo("state", "demo", "stage=paused")
+        ws.logo("version", "demo", "A")  # 暂停中的项目继续出稿不会自动恢复阶段
+        self.assertEqual(self.state()["stage"], "paused")
+        ws.logo("index")
+        self.assertIn("| paused |", (ws.projects / "PROJECTS.md").read_text(encoding="utf-8"))
+        self.assertNotIn("✗", ws.logo("check").stdout)
+
     def test_export_refuses_unfilled_guide(self):
         ws = self.ws
         ws.new_version()
@@ -158,14 +197,16 @@ class ExportTest(unittest.TestCase):
         files = set(self.manifest()["files"])
         expected = {f"{t}/{n}" for t, names in self.EXPECTED.items() for n in names} | {"guide.md"}
         self.assertEqual(files, expected)  # 只有声明目标的产物，没有通用 PNG 套装与封面
-        self.assertEqual(self.manifest()["targets"], sorted(self.EXPECTED))
+        self.assertEqual(sorted(self.manifest()["targets"]), sorted(self.EXPECTED))
 
     def test_manifest_traceability(self):
         m = self.manifest()
         self.assertEqual((m["release"], m["based_on"], m["design_version"]), ("r1", "A-v001", "A-v001"))
-        self.assertEqual(m["git_head"], self.ws.git("projects", "rev-parse", "--short", "HEAD").stdout.strip())
-        self.assertEqual(m["system_head"], self.ws.git("system", "rev-parse", "--short", "HEAD").stdout.strip())
-        self.assertEqual(m["renderer"], subprocess.run(["resvg", "--version"], capture_output=True, text=True).stdout.strip())
+        origin = {"git_head": self.ws.git("projects", "rev-parse", "--short", "HEAD").stdout.strip(),
+                  "system_head": self.ws.git("system", "rev-parse", "--short", "HEAD").stdout.strip(),
+                  "renderer": subprocess.run(["resvg", "--version"], capture_output=True, text=True).stdout.strip()}
+        for target in self.EXPECTED:  # 每个目标记录生成它的版本
+            self.assertEqual(m["targets"][target], origin, target)
         for name, digest in m["files"].items():
             self.assertEqual(hashlib.sha256((self.dist / name).read_bytes()).hexdigest(), digest, name)
 
@@ -209,6 +250,32 @@ class ExportTest(unittest.TestCase):
         st = tomllib.loads((self.p / "project.toml").read_text(encoding="utf-8"))["state"]
         self.assertEqual(st["stage"], "releasing")  # 导出不再自动改阶段
 
+    def test_compare(self):
+        out = self.ws.logo("compare", "demo").stdout
+        self.assertIn("A-v001", out)
+        self.assertTrue((self.ws.root / ".cache" / "demo" / "compare" / "A-v001.png").exists())
+        self.assertIn("方向不存在：Z", self.ws.logo("compare", "demo", "A-v001", "Z-v001", ok=False).stderr)
+
+    def test_partial_export_keeps_target_origin(self):
+        mpath = self.dist / "manifest.json"
+        original = mpath.read_text(encoding="utf-8")
+        try:
+            m = json.loads(original)
+            m["targets"]["ios"] = {"git_head": "old1234", "system_head": "old5678", "renderer": "resvg 0.1"}
+            mpath.write_text(json.dumps(m), encoding="utf-8")
+            self.ws.logo("export", "demo", "svg")
+            m = self.manifest()
+            self.assertEqual(m["targets"]["ios"]["git_head"], "old1234")  # 没重新生成的目标保留原来源
+            self.assertNotEqual(m["targets"]["svg"]["git_head"], "old1234")
+            legacy = dict(m, targets=sorted(m["targets"]))  # 旧格式：目标列表，没有逐目标来源
+            mpath.write_text(json.dumps(legacy), encoding="utf-8")
+            self.ws.logo("export", "demo", "svg")
+            m = self.manifest()
+            self.assertEqual(m["targets"]["ios"], {"git_head": None, "system_head": None, "renderer": None})
+            self.assertIsNotNone(m["targets"]["svg"]["git_head"])
+        finally:
+            self.ws.logo("export", "demo")
+
     def test_partial_export_and_atomic_failure(self):
         ws = self.ws
         fav_before = (self.dist / "favicon" / "favicon.ico").read_bytes()
@@ -249,12 +316,19 @@ class ExportTest(unittest.TestCase):
     def test_render(self):
         ws = self.ws
         ws.logo("render", "demo", "--mode", "mono", "--size", "300")
-        out = self.dist / "render" / "demo-primary-mono@300.png"
+        out = self.p / "dist" / "render" / "r1" / "demo-primary-mono@300.png"  # 不在交付目录 dist/r1/ 里
         self.assertEqual(subprocess.run(["magick", "identify", "-format", "%wx%h", str(out)],
                                         capture_output=True, text=True).stdout, "300x300")
         ws.logo("render", "demo", "app-icon", "--format", "svg")
-        self.assertIn("<rect", (self.dist / "render" / "demo-app-icon-color.svg").read_text(encoding="utf-8"))
+        self.assertIn("<rect", (out.parent / "demo-app-icon-color.svg").read_text(encoding="utf-8"))
         self.assertIn("没有版式", ws.logo("render", "demo", "horizontal", ok=False).stderr)
+        self.assertIn("--mode 不适用", ws.logo("render", "demo", "avatar", "--mode", "mono", ok=False).stderr)
+        legacy = self.dist / "render" / "old.png"  # 旧版 render 留在交付目录里的文件不计入 manifest
+        legacy.parent.mkdir(exist_ok=True)
+        legacy.write_bytes(b"x")
+        ws.logo("export", "demo", "svg")
+        self.assertFalse([f for f in self.manifest()["files"] if f.startswith("render/")])
+        self.assertFalse((self.dist / "render" / "demo-primary-mono@300.png").exists())
 
     def test_android_safe_zone(self):
         ap = logo.load_targets()["android"]

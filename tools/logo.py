@@ -874,9 +874,11 @@ def cmd_release(a) -> None:
         # 只继承版式；guide.md 为只追加文件，新发布重新起稿，避免误继承
         shutil.copytree(p.release_dir(src) / "layouts", layouts)
     elif VERSION_ID_RE.match(src):
-        p.version_dir(src)  # 校验存在
+        version_svg = p.version_dir(src) / "logo.svg"  # 校验存在
         root_version = src
         layouts.mkdir(parents=True)
+        if version_svg.exists():
+            shutil.copyfile(version_svg, layouts / "primary.svg")  # 主版以定稿版本起稿
     else:
         raise LogoError("--from 需要版本号（A-v004）或发布号（r1）")
     write_new(rdir / "release.md", render_template(
@@ -887,7 +889,9 @@ def cmd_release(a) -> None:
     p.set_state(stage="releasing", current_release=rid,
                 selected_direction=root_version.split("-")[0], selected_version=root_version)
     print(f"已创建发布：{rid} → {rel(rdir)}（定稿版本：{root_version}）")
-    print("必需版式：primary.svg（其余可选，见 release.md 清单）；完成后用 ./logo preview 查看自动排版效果")
+    if VERSION_ID_RE.match(src) and (layouts / "primary.svg").exists():
+        print(f"已用 {src}/logo.svg 起稿主版 layouts/primary.svg：提交前可调整（如留白），提交后冻结")
+    print("其余版式可选（见 release.md 清单）；完成后用 ./logo preview 查看自动排版效果")
 
 
 def cmd_state(a) -> None:
@@ -1305,8 +1309,15 @@ def build_target(p: Project, ldir: Path, target: str, out: Path) -> None:
         raise LogoError(f"未知目标：{target}")
 
 
-def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist: Path) -> dict:
-    """写入 guide.md（发布指南 + 色板附录）与覆盖 dist/<发布>/ 全部文件的 manifest.json。"""
+def short_head(repo: str) -> str:
+    """系统仓库或项目仓库当前提交的短哈希（尚无提交时为空），写入导出记录用于追溯。"""
+    r = git("rev-parse", "--short", "HEAD", check=False, repo=repo)
+    return r.stdout.decode().strip() if r.returncode == 0 else ""
+
+
+def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist: Path, built: list[str]) -> dict:
+    """写入 guide.md（发布指南 + 色板附录）与 manifest.json：只登记交付物（各目标目录与 guide.md），
+    每个目标记录生成它的版本（只生成部分目标时，其余目标保留上次的记录）。"""
     guide_src = rdir / "guide.md"
     pal_rows = "\n".join(f"| {k} | `{v}` |" for k, v in p.palette.items())
     (dist / "guide.md").write_text(
@@ -1314,20 +1325,25 @@ def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist:
         + guide_src.read_text(encoding="utf-8")
         + f"\n\n---\n\n## 附录：色板（自动生成）\n\n| 色名 | 色值 |\n|---|---|\n{pal_rows}\n", encoding="utf-8")
 
-    def short_head(repo: str) -> str:
-        r = git("rev-parse", "--short", "HEAD", check=False, repo=repo)
-        return r.stdout.decode().strip() if r.returncode == 0 else ""
-
-    files = sorted(f for f in dist.rglob("*") if f.is_file() and f.name != "manifest.json")
+    try:
+        old = json.loads((dist / "manifest.json").read_text(encoding="utf-8")).get("targets", {})
+    except (OSError, ValueError, AttributeError):
+        old = {}
+    old = old if isinstance(old, dict) else {}  # 旧格式（目标列表）没有逐目标来源
+    origin = {
+        "git_head": short_head("projects"),  # 项目仓库：设计内容的版本
+        "system_head": short_head("system"),  # 系统仓库：生成它的工具版本
+        "renderer": resvg_version(),          # 渲染器版本：重新生成出现像素差异时据此排查
+    }
+    present = [t for t in TARGET_NAMES if (dist / t).is_dir()]
+    targets = {t: origin if t in built else old.get(t, dict.fromkeys(origin)) for t in present}
+    files = sorted([dist / "guide.md"] + [f for t in present for f in (dist / t).rglob("*") if f.is_file()])
     manifest = {
         "project": p.slug,
         "release": rid,
         "based_on": load_release_meta(rdir).get("based_on", ""),
         "design_version": root_version,
-        "git_head": short_head("projects"),  # 项目仓库：设计内容的版本
-        "system_head": short_head("system"),  # 系统仓库：生成它的工具版本
-        "renderer": resvg_version(),          # 渲染器版本：重新生成出现像素差异时据此排查
-        "targets": sorted(d.name for d in dist.iterdir() if d.is_dir() and d.name in TARGET_NAMES),
+        "targets": targets,
         "files": {f.relative_to(dist).as_posix(): sha256_file(f) for f in files},
     }
     (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -1373,7 +1389,7 @@ def cmd_export(a) -> None:
         (build / t).rename(dist / t)
         shutil.rmtree(old, ignore_errors=True)
     shutil.rmtree(build, ignore_errors=True)
-    manifest = write_dist_extras(p, rid, rdir, root_version, dist)
+    manifest = write_dist_extras(p, rid, rdir, root_version, dist, targets)
     print(f"已生成 {', '.join(targets)} → {rel(dist)}（{rid} ← {root_version}；目录内共 {len(manifest['files'])} 个文件，不提交）")
     for w in target_warnings(p, ldir):
         print(f"⚠ {w}")
@@ -1384,16 +1400,18 @@ def cmd_render(a) -> None:
     p = Project(a.slug)
     rid, ldir, _ = export_release(p, a.release)
     name = a.layout
+    if name in ("app-icon", "avatar") and a.mode:
+        raise LogoError(f"{name} 的配色由 [export] icon_mode 决定（手工覆盖时按文件原样），--mode 不适用")
     if name == "app-icon":
         text = app_icon_text(p, ldir)
     elif name == "avatar":
         text = avatar_text(p, ldir)
     elif (ldir / f"{name}.svg").exists() and name in LOGO_LAYOUTS:
-        text = layout_mode_text(p, ldir, name, a.mode)
+        text = layout_mode_text(p, ldir, name, a.mode or "color")
     else:
         raise LogoError(f"{rid} 没有版式 {name}（可选：{', '.join(release_logo_layouts(ldir) + ['app-icon', 'avatar'])}）")
-    mode = a.mode if name in LOGO_LAYOUTS else "color"
-    out_dir = p.dir / "dist" / rid / "render"
+    mode = a.mode or "color"
+    out_dir = p.dir / "dist" / "render" / rid  # 不放进交付目录 dist/<发布号>/，manifest 只登记交付物
     out_dir.mkdir(parents=True, exist_ok=True)
     if a.format == "svg":
         out = out_dir / f"{p.slug}-{name}-{mode}.svg"
@@ -1487,6 +1505,25 @@ def layout_palette(p: Project, f: Path, palette: set[str]) -> set[str]:
         return palette  # 未知配色模式，由覆盖文件检查报错
 
 
+def legacy_config(cfg: dict) -> list[str]:
+    """project.toml 中已被取代的旧写法及迁移建议（旧写法仍兼容，只提醒）。"""
+    out = []
+    if "layouts" in cfg:
+        out.append("[layouts] 已不起作用，可删除（生成时以发布中实际存在的版式为准）")
+    ex = cfg.get("export", {})
+    if "profiles" in ex:
+        if "targets" in ex:
+            out.append("[export] profiles 已被 targets 取代，可删除")
+        else:
+            names = [LEGACY_PROFILE_TARGETS[x] for x in ex["profiles"] if x in LEGACY_PROFILE_TARGETS]
+            out.append("[export] profiles 改为 targets = [" + ", ".join(
+                f'"{n}"' for n in TARGET_NAMES if n in names) + "]")
+    for old, new in (("android_background", "app_background"), ("android_foreground_mode", "icon_mode")):
+        if old in ex:
+            out.append(f"[export] {old} 改名为 {new}" + ("（新名已存在，旧名可删除）" if new in ex else ""))
+    return out
+
+
 def check_project(p: Project, errors: list[str], warnings: list[str], staged: bool = False) -> None:
     try:
         cfg = p.cfg
@@ -1504,6 +1541,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
     vals = [str(v).upper() for v in pal.values()]
     if len(vals) != len(set(vals)):
         warnings.append(f"{r}: 色板中存在重复色值，配色模式映射可能产生歧义")
+    if (legacy := legacy_config(cfg)):
+        warnings.append(f"{r}: 使用了旧写法（仍兼容）：{'；'.join(legacy)}")
     st = cfg.get("state", {})
     stage = st.get("stage")
     if stage not in STAGES:
@@ -2093,7 +2132,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("slug")
     s.add_argument("layout", nargs="?", default="primary",
                    help="primary / icon / horizontal / wordmark-cn / wordmark-en，或 app-icon / avatar 的排版结果")
-    s.add_argument("--mode", default="color", help="color / mono / reversed")
+    s.add_argument("--mode", help="color（默认）/ mono / reversed；app-icon / avatar 由 [export] icon_mode 决定")
     s.add_argument("--size", type=int, default=1024)
     s.add_argument("--format", choices=["png", "svg"], default="png")
     s.add_argument("--release", help="发布号（默认 current_release）")

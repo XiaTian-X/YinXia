@@ -14,7 +14,8 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 ## 1. 新建项目
 1. `./logo new <slug> --name <名称>`
 2. 填写 `projects/<slug>/brief.md`（含字体策略，引用 fonts.toml 的 id）。
-3. 在 `project.toml` 中定义 `[palette]`、按需调整 `[color_modes]`、`[layouts]`（纯图形项目删去 wordmark-cn/en）。
+3. 在 `project.toml` 中定义 `[palette]`、按需调整 `[color_modes]` 与 `[export]`（生成目标、App 图标底色与图形配色）。
+   生成哪些标志版式以发布中实际存在的文件为准；`check` 提示“旧写法”时按提示迁移（`[layouts]`、`profiles` 等已被取代）。
    `[state]` 不要手改。
 
 ## 2. 探索概念
@@ -44,10 +45,11 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 
 ## 4. 定稿发布
 1. 定稿决策：`./logo decision <slug> finalize-<字母>-vNNN`（为什么这个版本可以定稿）。
-2. 创建发布：`./logo release <slug> --from <字母>-vNNN`（自动把 selected_version/direction 同步为该版本）。
+2. 创建发布：`./logo release <slug> --from <字母>-vNNN`（自动把 selected_version/direction 同步为该版本，
+   并以该版本的 `logo.svg` 起稿主版 `layouts/primary.svg`，提交前可调整留白等，提交后冻结）。
    基于上一个发布修订版式：`./logo release <slug> --from rN`。
 3. 放入版式（`releases/rN/layouts/`）：
-   - **必需** `primary.svg`（主版）；
+   - **必需** `primary.svg`（主版，已由版本起稿）；
    - 可选 `icon.svg`（纯图形，用于小尺寸与图标类目标，缺省时用 primary）、`horizontal.svg` / `wordmark-cn.svg` / `wordmark-en.svg`（带文字的组合版）；
    - App 图标、头像、Android 图标默认由主版**自动排版**（品牌底色 `app_background` + 图形配色 `icon_mode`）；
      效果不满意时才放手工覆盖 `app-icon.svg` / `avatar.svg`（avatar 的底色元素须带 `id="background"`）；
@@ -60,7 +62,9 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
    - `./logo export <slug>`：生成项目 `[export] targets` 声明的目标（svg、favicon、ios、android、avatar）；
    - `./logo export <slug> ios avatar`：只生成点名的目标；`--list` 查看可用与已声明的目标；
    - `./logo render <slug> [版式] --mode mono --size 800`：任意版式、配色、尺寸的单张图；
-   - 产物在 `projects/<slug>/dist/<发布号>/`，附 `manifest.json`（来源、渲染器版本、sha256）；需要交付时把该目录发给对方。
+   - 产物在 `projects/<slug>/dist/<发布号>/`，附 `manifest.json`（每个目标由哪个系统版本与渲染器生成、各文件 sha256）；
+     需要交付时把该目录发给对方。`render` 的单张图在 `dist/render/<发布号>/`，不属于交付目录；
+     app-icon / avatar 的配色由 `[export] icon_mode` 决定，不接受 `--mode`。
    - 需要标记交付时：`./logo state <slug> stage=delivered` 并提交。
 
 ## 5. 检查结果的处理

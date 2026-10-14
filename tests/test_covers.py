@@ -251,8 +251,55 @@ class CoverWorkflowTest(unittest.TestCase):
         self.svg("3x4").unlink()
         self.blocked("缺少画幅稿 3x4.svg")
         self.ws.git("projects", "reset", "-q", "--hard")  # blocked() 已暂存删除，需回到 HEAD
-        (self.c / "9x16.svg").write_text(self.svg().read_text(encoding="utf-8"), encoding="utf-8")
-        self.assertIn("不需要画幅 9x16", self.ws.logo("check").stdout)
+        self.ws.logo("cover", "retarget", "demo", "001", "--platforms", "youtube,x,weibo,xiaohongshu,douyin")
+        self.ws.logo("cover", "retarget", "demo", "001", "--platforms", "youtube,x,weibo,xiaohongshu")
+        self.assertIn("不需要画幅 9x16", self.ws.logo("check").stdout)  # 合规的预备画幅只提醒
+
+    def test_every_design_file_is_checked(self):
+        bad = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1080 1080"><script>alert(1)</script>'
+               '<image href="https://example.com/x.png"/></svg>\n')
+        (self.c / "1x1.svg").write_text(bad, encoding="utf-8")  # 目标平台用不到的画幅也不能夹带脚本与外链
+        self.blocked("1x1.svg: 禁止 <script>", "1x1.svg: 位图 https://example.com/x.png 未登记", "1x1.svg: 须有且只有一个")
+        self.ws.git("projects", "reset", "-q", "--hard")
+        (self.c / "5x5.svg").write_text(self.svg().read_text(encoding="utf-8"), encoding="utf-8")
+        self.blocked("5x5 不是已登记的画幅")
+
+    def test_retarget(self):
+        ws = self.ws
+        before = {k: self.svg(k).read_text(encoding="utf-8") for k in ("16x9", "3x1", "3x4")}
+        md_before = (self.c / "cover.md").read_text(encoding="utf-8")
+        self.assertIn("未登记的平台：nope", ws.logo("cover", "retarget", "demo", "001", "--platforms", "x,nope",
+                                                ok=False).stderr)
+        g0, g1 = covers.group_span(before["3x4"], "guides")
+        self.svg("3x4").write_text(before["3x4"][:g0] + before["3x4"][g1:], encoding="utf-8")  # 参考线层被删掉
+        out = ws.logo("cover", "retarget", "demo", "001", "--platforms",
+                      "youtube,x,zhihu,xiaohongshu,wechat-channels,og").stdout
+        self.assertIn("1.91x1.svg：新起稿", out)
+        self.assertEqual(covers.cover_cfg(self.c)["cover"]["platforms"],
+                         ["youtube", "x", "zhihu", "xiaohongshu", "wechat-channels", "og"])
+        after = self.svg().read_text(encoding="utf-8")
+        a0, a1 = covers.group_span(before["3x1"], "guides")
+        b0, b1 = covers.group_span(after, "guides")
+        self.assertEqual((before["3x1"][:a0], before["3x1"][a1:]), (after[:b0], after[b1:]))  # 只有参考线变化
+        self.assertIn("zhihu", after[b0:b1])
+        self.assertNotIn("weibo", after[b0:b1])
+        portrait = self.svg("3x4").read_text(encoding="utf-8")
+        c0, c1 = covers.group_span(portrait, "guides")  # 被删掉的参考线层补回
+        self.assertIn("wechat-channels", portrait[c0:c1])
+        self.assertEqual(self.svg("16x9").read_text(encoding="utf-8"), before["16x9"])  # 平台组合没变的画幅不动
+        md = (self.c / "cover.md").read_text(encoding="utf-8")
+        self.assertTrue(md.startswith(md_before.rstrip("\n")))
+        self.assertIn("目标平台调整：youtube, x, weibo, xiaohongshu → youtube, x, zhihu", md)
+        ws.logo("index")
+        r = ws.commit("projects", "[demo] cover retarget")
+        self.assertEqual(r.returncode, 0, ws.blocked(r))
+        self.addCleanup(ws.git, "projects", "reset", "-q", "--hard", "HEAD~1")
+        ws.logo("cover", "status", "demo", "001", "live", "--on", "zhihu")
+        self.assertIn("zhihu 正在上线，不能移除", ws.logo("cover", "retarget", "demo", "001", "--platforms", "x",
+                                                     ok=False).stderr)
+        out = ws.logo("cover", "retarget", "demo", "001", "--platforms", "zhihu").stdout
+        self.assertIn("不再需要的画幅稿已保留", out)
+        self.assertTrue(self.svg("16x9").exists())
 
     def test_status_and_list(self):
         self.assertIn("不是该封面的目标平台", self.ws.logo("cover", "status", "demo", "001", "live", "--on", "douyin",
@@ -349,8 +396,13 @@ class CoverOutputTest(unittest.TestCase):
     def test_manifest_and_determinism(self):
         import hashlib
         m = self.manifest()
-        self.assertEqual((m["cover"], m["release"], m["title"]), ("001-spring", "r1", "spring"))
-        self.assertEqual(m["designs"]["3x1.svg"], hashlib.sha256((self.c / "3x1.svg").read_bytes()).hexdigest())
+        self.assertEqual((m["cover"], m["title"]), ("001-spring", "spring"))
+        rec = m["files"]["weibo-980x300.png"]  # 每张图记录自己的来源
+        self.assertEqual((rec["platform"], rec["design"], rec["release"]), ("weibo", "3x1.svg", "r1"))
+        self.assertEqual(rec["design_sha256"], hashlib.sha256((self.c / "3x1.svg").read_bytes()).hexdigest())
+        self.assertEqual(rec["sha256"], hashlib.sha256((self.dist / "weibo-980x300.png").read_bytes()).hexdigest())
+        self.assertEqual(rec["renderer"], subprocess.run(["resvg", "--version"], capture_output=True,
+                                                         text=True).stdout.strip())
         before = m["files"]
         self.ws.logo("cover", "export", "demo", "001")
         self.assertEqual(self.manifest()["files"], before)
@@ -366,6 +418,34 @@ class CoverOutputTest(unittest.TestCase):
         self.assertIn("x-1500x500.png", self.ws.logo("cover", "export", "demo", "001", "x").stdout)
         self.assertEqual((self.dist / "weibo-980x300.png").read_bytes(), weibo)
         self.assertIn("weibo-980x300.png", self.manifest()["files"])
+
+    def test_stale_exports_after_design_change(self):
+        import json
+        svg = self.c / "3x1.svg"
+        original = svg.read_text(encoding="utf-8")
+        old_weibo = self.manifest()["files"]["weibo-980x300.png"]
+        try:
+            svg.write_text(original.replace('<g id="content">', '<g id="content"><rect x="700" y="200" width="20" '
+                                            'height="20" fill="#FFFFFF"/>'), encoding="utf-8")
+            out = self.ws.logo("cover", "export", "demo", "001", "x").stdout
+            m = self.manifest()["files"]
+            self.assertEqual(m["weibo-980x300.png"], old_weibo)  # 没重新导出的图保留原记录，不冒用新稿
+            self.assertNotEqual(m["x-1500x500.png"]["design_sha256"], old_weibo["design_sha256"])
+            self.assertIn("weibo-980x300.png：由旧版设计稿 3x1.svg 导出", out)
+            self.assertNotIn("x-1500x500.png：由旧版", out)
+            self.assertIn("weibo-980x300.png：由旧版", self.ws.logo("cover", "preview", "demo", "001", "x").stdout)
+            (self.dist / "xiaohongshu-1080x1440.png").unlink()  # 已删除的文件不再登记
+            legacy = {"files": {k: v["sha256"] for k, v in self.manifest()["files"].items()}}  # 旧格式
+            (self.dist / "manifest.json").write_text(json.dumps(legacy), encoding="utf-8")
+            out = self.ws.logo("cover", "export", "demo", "001", "x").stdout
+            m = self.manifest()["files"]
+            self.assertNotIn("xiaohongshu-1080x1440.png", m)
+            self.assertIsNone(m["weibo-980x300.png"]["design"])
+            self.assertIn("weibo-980x300.png：来源不明", out)
+        finally:
+            svg.write_text(original, encoding="utf-8")
+            out = self.ws.logo("cover", "export", "demo", "001").stdout
+        self.assertNotIn("⚠", out)  # 全部重新导出后没有过期提醒
 
     def test_refusals_and_transparency(self):
         r = self.ws.logo("cover", "export", "demo", "001", "douyin", ok=False)
@@ -473,6 +553,16 @@ class CoverReviewTest(unittest.TestCase):
         finally:
             cfg.write_text(original, encoding="utf-8")
 
+    def test_sync_logo_updates_unneeded_ratios(self):
+        self.ws.logo("cover", "retarget", "demo", "001", "--platforms", "x,weibo,og")
+        self.ws.logo("cover", "retarget", "demo", "001", "--platforms", "x,weibo")  # 1.91x1.svg 留作预备
+        self.new_release()
+        self.assertIn("1.91x1：r1/primary → r2/primary", self.ws.logo("cover", "sync-logo", "demo", "001").stdout)
+        self.assertIn('data-release="r2"', (self.c / "1.91x1.svg").read_text(encoding="utf-8"))
+        out = self.ws.logo("check").stdout
+        self.assertNotIn("✗", out)
+        self.assertIn("不需要画幅 1.91x1", out)
+
     def new_release(self) -> None:
         """新建 r2：主版换成更宽的图形（宽高比 2:1），成为当前发布。"""
         self.ws.logo("release", "demo", "--from", "r1")
@@ -500,13 +590,13 @@ class CoverReviewTest(unittest.TestCase):
     def test_sync_logo(self):
         self.put_content('<!-- 设计备注：标题区 --><rect x="700" y="200" width="300" height="80" fill="#FFFFFF"/>')
         before = self.svg.read_text(encoding="utf-8")
-        a0, a1 = covers.logo_group_span(before)
+        a0, a1 = covers.group_span(before, "logo")
         old_group = ET.fromstring(before[a0:a1])
         self.new_release()
         out = self.ws.logo("cover", "sync-logo", "demo", "001").stdout
         self.assertIn("3x1：r1/primary → r2/primary", out)
         after = self.svg.read_text(encoding="utf-8")
-        b0, b1 = covers.logo_group_span(after)
+        b0, b1 = covers.group_span(after, "logo")
         self.assertEqual((before[:a0], before[a1:]), (after[:b0], after[b1:]))  # 其余内容逐字保留（含注释）
         new_group = ET.fromstring(after[b0:b1])
         self.assertEqual(new_group.get("transform"), old_group.get("transform"))  # 位置与缩放不变
@@ -518,6 +608,58 @@ class CoverReviewTest(unittest.TestCase):
         self.assertNotIn("✗", "\n".join(ln for ln in out.splitlines() if "001-spring" in ln))
         self.assertFalse(any("不是当前发布" in ln for ln in out.splitlines()))
         self.assertIn("无需同步", self.ws.logo("cover", "sync-logo", "demo", "001").stdout)
+
+
+def wide_logo(aspect: int, fill: float) -> str:
+    """宽 aspect:1 的版式，图形只占 viewBox 高度的 fill（字标常见：上下带留白）。"""
+    w, h = 100 * aspect, 100
+    top = h * (1 - fill) / 2
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {w} {h}">'
+            f'<path fill="{PRIMARY}" d="M0 {top:g}H{w}V{h - top:g}H0Z"/></svg>\n')
+
+
+@unittest.skipUnless(logo.shutil.which("resvg") and logo.shutil.which("magick"), "需要 resvg 与 magick")
+class StarterPlacementTest(unittest.TestCase):
+    """起稿按 Logo 图形的实际高度排版：各画幅起稿即满足手机显示的最小高度，并避开遮挡区。"""
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.addCleanup(self.ws.cleanup)
+        self.p = self.ws.new_project()
+        self.ws.new_version()
+        self.ws.logo("release", "demo", "--from", "A-v001")
+
+    def use_logo(self, svg: str) -> None:
+        (self.p / "releases" / "r1" / "layouts" / "primary.svg").write_text(svg, encoding="utf-8")
+
+    def starter(self, platforms: str) -> tuple[str, list[str]]:
+        out = self.ws.logo("cover", "new", "demo", "t", "--platforms", platforms).stdout
+        cid = sorted((self.p / "covers").iterdir())[-1].name
+        warns = [ln for ln in self.ws.logo("check").stdout.splitlines()
+                 if cid in ln and ("Logo" in ln or "关键内容" in ln)]
+        return out, warns
+
+    def test_every_ratio_is_clean_with_wide_logo(self):
+        self.use_logo(wide_logo(4, 0.6))
+        by_ratio: dict[str, list[str]] = {}
+        for pl in covers.load_config()["platform"]:
+            by_ratio.setdefault(pl["ratio"], []).append(pl["id"])
+        for ratio, ids in by_ratio.items():
+            out, warns = self.starter(",".join(ids))
+            self.assertNotIn("⚠", out, ratio)
+            self.assertEqual(warns, [], ratio)
+
+    def test_avoids_occlusion(self):
+        self.use_logo(wide_logo(4, 0.3))  # 放大后会伸进 X 左下角的头像区，须换到右侧
+        out, warns = self.starter("x")
+        self.assertNotIn("⚠", out)
+        self.assertEqual(warns, [])
+
+    def test_too_narrow_is_reported(self):
+        self.use_logo(wide_logo(10, 0.3))
+        out, warns = self.starter("bilibili")
+        self.assertIn("画幅太窄", out)
+        self.assertTrue(any("Logo 在 bilibili 手机显示" in w for w in warns), warns)
 
 
 if __name__ == "__main__":

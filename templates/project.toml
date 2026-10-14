@@ -1,4 +1,4 @@
-# [state] 只能通过 ./logo state / version / release / export 修改；其余配置（色板、版式、导出）可手工维护
+# [state] 只能通过 ./logo state / direction / version / release 修改；其余配置（色板、配色模式、字体、导出）可手工维护
 [project]
 name = "{{name}}"
 slug = "{{slug}}"

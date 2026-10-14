@@ -355,11 +355,16 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
         assets.add(f"assets/{img.name}")
     need = needed_ratios(targets)
     for key in need:
-        svg = cdir / f"{key}.svg"
-        if not svg.exists():
+        if not (cdir / f"{key}.svg").exists():
             errors.append(f"{where}: 缺少画幅稿 {key}.svg（目标平台需要）")
+    for svg in sorted(cdir.glob("*.svg")):  # 目录里的每一份设计稿都按规则检查，不只是目标平台需要的
+        if svg.stem not in ratios:
+            errors.append(f"{logo.rel(svg)}: {svg.stem} 不是已登记的画幅（可选：{', '.join(ratios)}）")
             continue
-        root = check_cover_svg(svg, ratios[key], assets, errors, staged)
+        if svg.stem not in need:
+            warnings.append(f"{logo.rel(svg)}: 当前目标平台不需要画幅 {svg.stem}"
+                            f"（若是为新平台预备，可用 ./logo cover retarget 加入目标平台）")
+        root = check_cover_svg(svg, ratios[svg.stem], assets, errors, staged)
         if root is not None:
             found = logo_errors(p, root, logo.rel(svg))
             errors.extend(found)
@@ -367,9 +372,6 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
             if not found and g is not None and g.get("data-release") != c.get("release"):
                 errors.append(f"{logo.rel(svg)}: Logo 标注的发布 {g.get('data-release')} 与 cover.toml 记录的 "
                               f"{c.get('release')} 不一致（请用 ./logo cover sync-logo 更新，不要手改）")
-    for svg in sorted(cdir.glob("*.svg")):
-        if svg.stem not in need:
-            warnings.append(f"{logo.rel(svg)}: 当前目标平台不需要画幅 {svg.stem}（若是为新平台预备，可加入 platforms）")
     if not any(e.startswith(where) for e in errors):  # 已有结构错误时，渲染类提醒不可靠，跳过
         warnings.extend(cover_warnings(p, cdir))
 
@@ -468,6 +470,8 @@ def cmd_preview(a) -> None:
     print("每行一个画幅，从左到右：" + "\n  ".join([""] + order))
     print(f"红色为平台遮挡区（头像、按钮等），绿框为平台安全区；缩略图为手机上的常见显示宽度"
           f"（横幅 {rules()['thumb_width_landscape']}px、竖版/方形 {rules()['thumb_width_portrait']}px）")
+    for w in stale_exports(p, cdir, cover_cfg(cdir)):
+        print(f"⚠ {w}")
 
 
 def cmd_export(a) -> None:
@@ -476,8 +480,11 @@ def cmd_export(a) -> None:
     cfg, platforms = cover_targets(p, cdir, a.platforms)
     dist = p.dir / "dist" / "covers" / cdir.name
     dist.mkdir(parents=True, exist_ok=True)
+    old = read_manifest(dist)
     roots: dict[str, ET.Element] = {}
     written, warnings = [], []
+    origin = {"release": cfg["cover"]["release"], "git_head": logo.short_head("projects"),
+              "system_head": logo.short_head("system"), "renderer": logo.resvg_version()}
     # 暂存目录建在目标旁边（同一磁盘），os.replace 才能原子替换；系统临时目录可能在另一块磁盘上
     with tempfile.TemporaryDirectory(dir=dist.parent, prefix=".build-") as td:
         staged = []
@@ -485,33 +492,57 @@ def cmd_export(a) -> None:
             root = roots.setdefault(pl["ratio"], design_root(cdir, pl["ratio"]))
             name = f"{pl['id']}-{pl['width']}x{pl['height']}.png"
             staged.append((render_platform(cdir, root, pl, Path(td) / name), dist / name))
-        for tmp, final in staged:
+        records = {}
+        for (tmp, final), pl in zip(staged, platforms):
             os.replace(tmp, final)
             written.append(final.name)
+            design = f"{pl['ratio']}.svg"
+            records[final.name] = {"sha256": logo.sha256_file(final), "platform": pl["id"], "design": design,
+                                   "design_sha256": logo.sha256_file(cdir / design), **origin}
             if has_transparency(final):
                 warnings.append(f"{final.name} 含透明区域：多数平台会以黑或白显示透明处，封面通常应铺满底色")
-
-    def short_head(repo: str) -> str:
-        r = logo.git("rev-parse", "--short", "HEAD", check=False, repo=repo)
-        return r.stdout.decode().strip() if r.returncode == 0 else ""
-
-    files = sorted(f for f in dist.iterdir() if f.is_file() and f.suffix == ".png")
-    manifest = {
-        "project": p.slug,
-        "cover": cdir.name,
-        "title": cfg["cover"]["title"],
-        "release": cfg["cover"]["release"],
-        "designs": {f"{r}.svg": logo.sha256_file(cdir / f"{r}.svg")
-                    for r in needed_ratios(cfg["cover"]["platforms"])},  # 由哪一版设计稿导出
-        "git_head": short_head("projects"),
-        "system_head": short_head("system"),
-        "renderer": logo.resvg_version(),
-        "files": {f.name: logo.sha256_file(f) for f in files},
-    }
+    # 每张图记录自己的来源：只导出部分平台时，其余图保留上次导出时的记录（文件仍在且未被改动）
+    files = {}
+    for f in sorted(f for f in dist.iterdir() if f.is_file() and f.suffix == ".png"):
+        prev = old.get(f.name)
+        if f.name in records:
+            files[f.name] = records[f.name]
+        elif prev and prev.get("sha256") == logo.sha256_file(f):
+            files[f.name] = prev
+        else:
+            files[f.name] = {"sha256": logo.sha256_file(f), "design": None}  # 来源不明（旧格式或被改动）
+    manifest = {"project": p.slug, "cover": cdir.name, "title": cfg["cover"]["title"], "files": files}
     (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"已导出 {', '.join(written)} → {logo.rel(dist)}（不提交）")
-    for w in warnings:
+    for w in warnings + stale_exports(p, cdir, cfg):
         print(f"⚠ {w}")
+
+
+def read_manifest(dist: Path) -> dict[str, dict]:
+    """读取已导出封面的逐张记录 {文件名: 来源}；没有或无法解析时返回空。旧格式（文件名 → sha256）视为来源不明。"""
+    try:
+        files = json.loads((dist / "manifest.json").read_text(encoding="utf-8")).get("files", {})
+    except (OSError, ValueError, AttributeError):
+        return {}
+    return {k: (v if isinstance(v, dict) else {"sha256": v, "design": None}) for k, v in files.items()}
+
+
+def stale_exports(p: "logo.Project", cdir: Path, cfg: dict) -> list[str]:
+    """dist 中由旧版设计稿导出、来源不明或已不是目标平台的图（只提醒）。"""
+    dist = p.dir / "dist" / "covers" / cdir.name
+    targets = set(cfg["cover"]["platforms"])
+    out = []
+    for name, rec in read_manifest(dist).items():
+        if not (dist / name).exists():
+            continue
+        design = rec.get("design")
+        if rec.get("platform") and rec["platform"] not in targets:
+            out.append(f"{logo.rel(dist / name)}：{rec['platform']} 已不是该封面的目标平台，可删除")
+        elif not design:
+            out.append(f"{logo.rel(dist / name)}：来源不明（旧版导出记录），请重新导出")
+        elif not (cdir / design).exists() or logo.sha256_file(cdir / design) != rec.get("design_sha256"):
+            out.append(f"{logo.rel(dist / name)}：由旧版设计稿 {design} 导出，设计稿已修改，请重新导出")
+    return out
 
 
 # -- 校对辅助：关键内容越界、Logo 过小、Logo 过时（只提醒）与 sync-logo ---------------
@@ -639,11 +670,11 @@ def cover_warnings(p: "logo.Project", cdir: Path) -> list[str]:
     return out
 
 
-def logo_group_span(text: str) -> tuple[int, int]:
-    """在设计稿文本中定位 <g id="logo">…</g> 的起止位置（按 <g> 的嵌套层级配对）。"""
-    m = re.search(r'<g\b[^>]*\bid="logo"[^>]*>', text)
+def group_span(text: str, group_id: str) -> tuple[int, int]:
+    """在设计稿文本中定位 <g id="…">…</g> 的起止位置（按 <g> 的嵌套层级配对），用于逐字保留其余内容的替换。"""
+    m = re.search(rf'<g\b[^>]*\bid="{re.escape(group_id)}"[^>]*>', text)
     if not m:
-        raise logo.LogoError('找不到 <g id="logo">')
+        raise logo.LogoError(f'找不到 <g id="{group_id}">')
     depth, pos = 1, m.end()
     for tag in re.finditer(r"<g\b[^>]*?(/?)>|</g\s*>", text[pos:]):
         if tag.group(0).startswith("</"):
@@ -652,7 +683,7 @@ def logo_group_span(text: str) -> tuple[int, int]:
             depth += 1
         if depth == 0:
             return m.start(), pos + tag.end()
-    raise logo.LogoError('<g id="logo"> 没有闭合')
+    raise logo.LogoError(f'<g id="{group_id}"> 没有闭合')
 
 
 def cmd_sync_logo(a) -> None:
@@ -660,17 +691,16 @@ def cmd_sync_logo(a) -> None:
     cdir = cover_dir(p, a.cover)
     cfg = cover_cfg(cdir)
     rid = a.release or p.cfg["state"].get("current_release")
-    ldir = p.release_dir(rid) / "layouts"
-    if not (ldir / "primary.svg").exists():
-        raise logo.LogoError(f"{rid} 缺少主版 primary.svg")
+    ldir = release_layouts(p, rid)
     if cfg["cover"]["release"] == rid:
         print(f"{cdir.name} 已在使用 {rid}，无需同步")
         return
     new_texts, report = {}, []
-    for ratio in needed_ratios(cfg["cover"]["platforms"]):
-        svg = cdir / f"{ratio}.svg"
+    ratios = load_config()["ratios"]
+    for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):  # 含预备中的画幅，免得发布不一致
+        ratio = svg.stem
         text = svg.read_text(encoding="utf-8")
-        a0, a1 = logo_group_span(text)
+        a0, a1 = group_span(text, "logo")
         old = ET.fromstring(text[a0:a1])
         layout = old.get("data-layout", "")
         if layout not in logo.LOGO_LAYOUTS or not (ldir / f"{layout}.svg").exists():
@@ -700,53 +730,94 @@ def cmd_sync_logo(a) -> None:
 
 
 # -- 命令 --------------------------------------------------------------------------
-def cmd_new(a) -> None:
-    p = logo.Project(a.slug)
-    targets = [t.strip() for t in a.platforms.split(",") if t.strip()]
-    plats = platforms_by_id()
-    unknown = [t for t in targets if t not in plats]
+def logo_fill(svg_text: str) -> float:
+    """Logo 图形实际占自身 viewBox 高度的比例（版式常带留白，按 viewBox 估算会偏大），结果按内容缓存。"""
+    def compute() -> float:
+        with tempfile.TemporaryDirectory() as td:
+            png = logo.render_text(svg_text, Path(td) / "l.png", 400)
+            full, trimmed = (float(logo.run(["magick", str(png), *extra, "-format", "%h", "info:"],
+                                            capture=True).strip() or 0) for extra in ([], ["-trim"]))
+        return min(trimmed / full, 1.0) if full and trimmed > 1 else 1.0
+    return logo.cached(f"logo-fill-v1|{svg_text}", compute)
+
+
+def place_logo(on_ratio: list[dict], canvas: dict, aspect: float, fill: float):
+    """起稿时 Logo 的位置与大小 (x, y, 高) 及提示：在共同安全区内、避开遮挡区，并在各平台手机显示中不低于最小高度。"""
+    safe = common_safe(on_ratio, canvas) or (0, 0, canvas["width"], canvas["height"])
+    need_h = max(rules()["min_logo_display_px"] * 1.1 * crop_window(pl, canvas)[2] / thumb_width(pl)
+                 for pl in on_ratio) / fill
+    want = max(safe[3] * 0.15, need_h)
+    for hmax, wmax in ((0.5, 0.6), (0.8, 0.9)):  # 常规上限；不够最小显示高度时放宽
+        lh = min(want, safe[3] * hmax, safe[2] * wmax / aspect)
+        if lh >= need_h:
+            break
+    lw = lh * aspect
+    inset_x, inset_y = min(lh * 0.25, (safe[2] - lw) / 2), min(lh * 0.25, (safe[3] - lh) / 2)
+    left, center, right = safe[0] + inset_x, safe[0] + (safe[2] - lw) / 2, safe[0] + safe[2] - inset_x - lw
+    y = safe[1] + inset_y
+    occ = [map_box(b, pl, crop_window(pl, canvas)) for pl in on_ratio for b in pl.get("occlusions", [])]
+    candidates = (center, left, right) if canvas["height"] > canvas["width"] else (left, right, center)
+    x = next((c for c in candidates if not any(intersect((c, y, lw, lh), o) for o in occ)), candidates[0])
+    note = None
+    if lh < need_h:
+        shown = min(lh * fill * thumb_width(pl) / crop_window(pl, canvas)[2] for pl in on_ratio)
+        note = (f"画幅太窄，Logo 放到最大在手机显示中仍只有约 {shown:.0f}px 高（低于 "
+                f"{rules()['min_logo_display_px']}px）；建议在发布中提供更紧凑的 icon.svg")
+    return x, y, lh, note
+
+
+def starter_svg(p: "logo.Project", ldir: Path, rid: str, layout: str, mode: str, on_ratio: list[dict],
+                canvas: dict) -> tuple[str, str | None]:
+    """某画幅的起稿：品牌底色、按规则摆放的 Logo、空的 content 分组与参考线层。返回 (SVG 文本, 提示)。"""
+    try:
+        bg = logo.app_background(p)
+    except logo.LogoError:
+        bg = next(iter(p.palette.values()), "#FFFFFF")
+    text = logo.layout_mode_text(p, ldir, layout, mode)
+    vb = [float(v) for v in re.split(r"[\s,]+", ET.fromstring(text).get("viewBox").strip())]
+    x, y, lh, note = place_logo(on_ratio, canvas, vb[2] / vb[3], logo_fill(text))
+    return (f'<svg xmlns="{logo.SVG_NS}" xmlns:xlink="{logo.XLINK_NS}" viewBox="0 0 {canvas["width"]} {canvas["height"]}">\n'
+            f'  <rect id="background" width="{canvas["width"]}" height="{canvas["height"]}" fill="{bg}"/>\n'
+            f'  {logo_group(p, ldir, rid, layout, mode, x, y, lh)}\n'
+            f'  <g id="content">\n    <!-- 关键内容（标题、副标题、行动号召）放在这里，须在共同安全区内 -->\n  </g>\n'
+            f'  {guides_xml(on_ratio, canvas)}\n</svg>\n'), note
+
+
+def parse_platforms(spec: str) -> list[str]:
+    targets = list(dict.fromkeys(t.strip() for t in spec.split(",") if t.strip()))
+    unknown = [t for t in targets if t not in platforms_by_id()]
     if not targets or unknown:
         raise logo.LogoError(f"未登记的平台：{', '.join(unknown) or '（空）'}（./logo cover platforms 查看）")
-    rid = a.release or p.cfg["state"].get("current_release")
-    if not rid:
-        raise logo.LogoError("项目还没有 Logo 发布；先 ./logo release，或用 --release 指定")
+    return targets
+
+
+def release_layouts(p: "logo.Project", rid: str) -> Path:
     ldir = p.release_dir(rid) / "layouts"
     if not (ldir / "primary.svg").exists():
         raise logo.LogoError(f"{rid} 缺少主版 primary.svg")
+    return ldir
+
+
+def cmd_new(a) -> None:
+    p = logo.Project(a.slug)
+    targets = parse_platforms(a.platforms)
+    plats = platforms_by_id()
+    rid = a.release or p.cfg["state"].get("current_release")
+    if not rid:
+        raise logo.LogoError("项目还没有 Logo 发布；先 ./logo release，或用 --release 指定")
+    ldir = release_layouts(p, rid)
     nums = [int(c.name[:3]) for c in project_covers(p)]
     cid = f"{max(nums, default=0) + 1:03d}-{logo.to_slug(a.name)}"
     cdir = p.dir / "covers" / cid
     ratios = load_config()["ratios"]
     need = needed_ratios(targets)
     layout = logo.mark_layout(ldir)
-    try:
-        bg = logo.app_background(p)
-    except logo.LogoError:
-        bg = next(iter(p.palette.values()), "#FFFFFF")
-    texts = {}
+    texts, notes = {}, []
     for key in need:  # 先全部生成，成功后再落盘
-        canvas = ratios[key]
         on_ratio = [plats[t] for t in targets if plats[t]["ratio"] == key]
-        safe = common_safe(on_ratio, canvas) or (0, 0, canvas["width"], canvas["height"])
-        vb = [float(v) for v in re.split(r"[\s,]+", ET.fromstring(
-            logo.layout_mode_text(p, ldir, layout, "color")).get("viewBox").strip())]
-        # 高度取安全区的 15%，且保证在各平台手机显示中达到最小高度（×1.5 余量，Logo 图形未必占满自身画框）
-        need_h = max(rules()["min_logo_display_px"] * 1.5 * crop_window(pl, canvas)[2] / thumb_width(pl)
-                     for pl in on_ratio)
-        lh = min(max(safe[3] * 0.15, need_h), safe[3] * 0.5)
-        lw = lh * vb[2] / vb[3]
-        if lw > safe[2] * 0.6:  # 很宽的 Logo：按宽度收
-            lw, lh = safe[2] * 0.6, safe[2] * 0.6 * vb[3] / vb[2]
-        vertical = canvas["height"] > canvas["width"]
-        inset = lh * 0.25  # 与安全区边缘保持留白
-        x = safe[0] + (safe[2] - lw) / 2 if vertical else safe[0] + inset
-        y = safe[1] + inset
-        texts[key] = (
-            f'<svg xmlns="{logo.SVG_NS}" xmlns:xlink="{logo.XLINK_NS}" viewBox="0 0 {canvas["width"]} {canvas["height"]}">\n'
-            f'  <rect id="background" width="{canvas["width"]}" height="{canvas["height"]}" fill="{bg}"/>\n'
-            f'  {logo_group(p, ldir, rid, layout, logo.icon_mode(p), x, y, lh)}\n'
-            f'  <g id="content">\n    <!-- 关键内容（标题、副标题、行动号召）放在这里，须在共同安全区内 -->\n  </g>\n'
-            f'  {guides_xml(on_ratio, canvas)}\n</svg>\n')
+        texts[key], note = starter_svg(p, ldir, rid, layout, logo.icon_mode(p), on_ratio, ratios[key])
+        if note:
+            notes.append(f"{key}.svg：{note}")
     cdir.mkdir(parents=True)
     (cdir / "assets").mkdir()
     cfg = {"cover": {"name": logo.to_slug(a.name), "title": a.title or a.name, "created": logo.today(),
@@ -760,7 +831,74 @@ def cmd_new(a) -> None:
         (cdir / f"{key}.svg").write_text(text, encoding="utf-8")
     (p.dir / "covers" / ".gitkeep").unlink(missing_ok=True)
     print(f"已创建封面：{logo.rel(cdir)}（画幅：{', '.join(need)}；Logo：{rid}/{layout}）")
+    for n in notes:
+        print(f"⚠ {n}")
     print("下一步：填写 cover.md；在主视觉画幅定稿后延展到其他画幅；关键内容放进 <g id=\"content\">")
+
+
+def cmd_retarget(a) -> None:
+    """修改封面的目标平台：新需要的画幅起稿，共用画幅的参考线按新平台组合重画，其余内容逐字保留。"""
+    p = logo.Project(a.slug)
+    cdir = cover_dir(p, a.cover)
+    cfg = cover_cfg(cdir)
+    old, new = list(cfg["cover"]["platforms"]), parse_platforms(a.platforms)
+    if new == old:
+        print(f"{cdir.name} 的目标平台未变化")
+        return
+    live = [t for t in cfg["state"]["live_on"] if t not in new]
+    if live:
+        raise logo.LogoError(f"{', '.join(live)} 正在上线，不能移除；先用 ./logo cover status 调整上线平台")
+    plats, ratios = platforms_by_id(), load_config()["ratios"]
+    rid = cfg["cover"]["release"]
+    ldir = release_layouts(p, rid)
+    layout, mode = logo.mark_layout(ldir), logo.icon_mode(p)
+    for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):  # 沿用已有设计稿中 Logo 的版式与配色
+        try:
+            g = next((el for el in ET.parse(svg).getroot().iter() if el.get("id") == "logo"), None)
+        except ET.ParseError:
+            continue  # 解析失败由 check 报告
+        if g is not None and g.get("data-layout") in logo.LOGO_LAYOUTS and (ldir / f"{g.get('data-layout')}.svg").exists():
+            layout, mode = g.get("data-layout"), g.get("data-mode") or mode
+            break
+    texts, report, notes = {}, [], []
+    for key in needed_ratios(new):
+        on_ratio = [plats[t] for t in new if plats[t]["ratio"] == key]
+        svg = cdir / f"{key}.svg"
+        if not svg.exists():
+            texts[svg], note = starter_svg(p, ldir, rid, layout, mode, on_ratio, ratios[key])
+            report.append(f"{key}.svg：新起稿")
+            if note:
+                notes.append(f"{key}.svg：{note}")
+            continue
+        text = svg.read_text(encoding="utf-8")
+        guides = guides_xml(on_ratio, ratios[key])
+        try:
+            g0, g1 = group_span(text, "guides")
+            updated = text[:g0] + guides + text[g1:]
+        except logo.LogoError:  # 参考线层被删掉时补回
+            end = text.rindex("</svg>")
+            updated = text[:end] + "  " + guides + "\n" + text[end:]
+        if updated != text:
+            texts[svg] = updated
+            report.append(f"{key}.svg：参考线按 {', '.join(pl['id'] for pl in on_ratio)} 更新")
+    for svg, text in texts.items():  # 全部生成成功后再写回
+        svg.write_text(text, encoding="utf-8")
+    cfg["cover"]["platforms"] = new
+    cfg["state"]["updated"] = logo.today()
+    write_cover_cfg(cdir, cfg)
+    md = cdir / "cover.md"  # 只追加文件：在末尾记录调整
+    body = md.read_text(encoding="utf-8")
+    md.write_text(body.rstrip("\n") + f"\n- {logo.today()} 目标平台调整：{', '.join(old)} → {', '.join(new)}\n",
+                  encoding="utf-8")
+    unused = [s.name for s in sorted(cdir.glob("*.svg")) if s.stem not in needed_ratios(new)]
+    print(f"已调整 {cdir.name} 的目标平台：{', '.join(old)} → {', '.join(new)}")
+    for line in report:
+        print(f"  {line}")
+    for n in notes:
+        print(f"⚠ {n}")
+    if unused:
+        print(f"不再需要的画幅稿已保留：{', '.join(unused)}（确认不用后可删除）")
+    print(f"请运行 ./logo cover preview {p.slug} {cdir.name[:3]} 查看效果后提交")
 
 
 def cmd_asset(a) -> None:
@@ -845,6 +983,11 @@ def register(sub) -> None:
     c.add_argument("cover")
     c.add_argument("platforms", nargs="*", help="只导出这些平台（默认全部目标平台）")
     c.set_defaults(fn=cmd_export)
+    c = cs.add_parser("retarget", help="修改目标平台：新画幅起稿，共用画幅的参考线随之更新")
+    c.add_argument("slug")
+    c.add_argument("cover")
+    c.add_argument("--platforms", required=True, help="新的目标平台（完整列表），逗号分隔")
+    c.set_defaults(fn=cmd_retarget)
     c = cs.add_parser("sync-logo", help="Logo 出新发布后，替换各画幅中的 Logo（保留位置、缩放、配色与显示高度）")
     c.add_argument("slug")
     c.add_argument("cover")

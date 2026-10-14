@@ -11,7 +11,7 @@
 ./logo setup
 ```
 
-需要本机已安装 `resvg` 与 `magick`（Homebrew）。`setup` 会创建 `.venv`、安装 fonttools、初始化项目仓库 `projects/`，并为两个仓库启用 pre-commit 钩子。
+需要本机已安装 `resvg` 与 `magick`（Homebrew）。`setup` 会创建 `.venv`、安装 fonttools 与 uharfbuzz（HarfBuzz 排版）、初始化项目仓库 `projects/`，并为两个仓库启用 pre-commit 钩子。
 
 字体文件不进 Git。需要文字转曲时运行：
 
@@ -29,7 +29,7 @@
 | 项目仓库 | `projects/`（系统仓库忽略它） | 各项目目录、`PROJECTS.md` | `git -C projects commit …` |
 
 系统可以单独分享或克隆；单独克隆时 `./logo check` 会跳过项目相关检查，运行 `./logo setup` 即可新建空的项目仓库。
-每次导出的 `dist/<发布号>/manifest.json` 记录 `git_head`（项目仓库）、`system_head`（系统版本）与 `renderer`（resvg 版本）。
+每次导出的 `dist/<发布号>/manifest.json` 为每个目标记录 `git_head`（项目仓库）、`system_head`（系统版本）与 `renderer`（resvg 版本）。
 
 ## 目录结构
 
@@ -54,7 +54,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
                                          └──决策依据──▶ decisions/NNN-*.md ──▶ brief.md
 ```
 
-`manifest.json` 记录了 `release`、`based_on`（直接来源）与 `design_version`（最终设计版本）以及每个文件的 sha256。
+`manifest.json` 记录了 `release`、`based_on`（直接来源）与 `design_version`（最终设计版本）、每个目标的生成版本以及每个交付文件的 sha256。
 
 ## 常用命令
 
@@ -67,14 +67,15 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 | `./logo preview <slug> A-v001` / `compare <slug>` | 预览 / 多版本对比（输出到 `.cache/`） |
 | `./logo decision <slug> select-direction-a` | 新建决策记录 |
 | `./logo state <slug> [key=value…]` | 查看/更新状态 |
-| `./logo release <slug> --from A-v004` | 新建发布 |
+| `./logo release <slug> --from A-v004` | 新建发布（以该版本起稿主版 `primary.svg`） |
 | `./logo export <slug> [目标…]` | 按需生成 svg / favicon / ios / android / avatar 到 `dist/`（不提交） |
-| `./logo render <slug> [版式] --mode mono --size 800` | 生成任意版式、配色、尺寸的单张图 |
+| `./logo render <slug> [版式] --mode mono --size 800` | 生成任意版式、配色、尺寸的单张图（到 `dist/render/<发布号>/`） |
 | `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug> [--features calt,ss02] [--lang zh-Hans]` | 文字转路径：HarfBuzz 排版，默认只开字距，连字与上下文替换按需开启 |
 | `./logo fonts [fetch\|review] [id…]` | 查看字体状态与使用方 / 下载并校验 / 为非开源字体创建授权复核 |
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
 | `./logo cover new / asset / status / list` | 封面立项起稿 / 登记素材 / 记录上线 / 查看项目封面 |
 | `./logo cover preview / export <slug> <封面> [平台…]` | 封面校对图 / 按平台导出 PNG（不提交） |
+| `./logo cover retarget <slug> <封面> --platforms a,b` | 调整封面的目标平台（新画幅起稿、参考线随之更新） |
 | `./logo cover sync-logo <slug> <封面> [--release rN]` | 把封面中的 Logo 换成新发布（保留位置与显示高度） |
 | `./logo cover platforms [--ratio 3x1]` | 查看封面平台、画幅与裁切比例 |
 | `./logo selftest [测试名]` | 运行系统自动化测试 |
@@ -90,12 +91,13 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 - 发布缺少主版 `primary.svg`；`final/` 等生成物被提交；
 - 字体未登记、校验值不符；SVG 中转曲用到的字体未在项目 `[fonts] used` 声明；非开源字体缺少或未通过授权复核（`LICENSE-REVIEW.md`）；字体文件被提交到系统仓库；
 - 目录结构外的文件（临时文件请放 `.cache/`）；系统仓库按目录和文件类型精确限定（如 `tools/` 只收 `*.py`）；
+- 封面：Logo 被改动（只能移动缩放）、引用未登记或被替换的素材、文字未转曲、画布尺寸不对、缺少目标平台需要的画幅稿、画幅名未登记；封面目录里每一份设计稿都按规则检查；
 - 疑似密钥：文件名（`.env`、`*.pem`、`*.key`、`id_rsa`、`*credential*` 等）或内容（私钥、AWS/GitHub/Anthropic/OpenAI/Slack/Google 令牌）。
 
 系统仓库的 `.gitignore` 采用白名单：根目录默认忽略一切，只放行系统文件；放行的目录内仍忽略临时文件、日志、编辑器杂物、密钥与字体文件。
 项目仓库的 `.gitignore` 同样是白名单，逐层只放行规定的项目文件（由 `./logo setup` 从 `templates/projects.gitignore` 生成，与模板不一致时 `check` 会提醒）。
 
-同时会提醒（不拦截）：选定版本尚未发布、手工头像超出圆形安全区、Android 图标超出 66dp 安全区、手工 App 图标含透明区域、自动排版的图标中图形与底色几乎无法区分、单色/反白版丢失内部细节（糊成一块）、brief.md 未填完、平台导出规格未核实或缺少来源。
+同时会提醒（不拦截）：选定版本尚未发布、手工头像超出圆形安全区、Android 图标超出 66dp 安全区、手工 App 图标含透明区域、自动排版的图标中图形与底色几乎无法区分、单色/反白版丢失内部细节（糊成一块）、brief.md 未填完、平台导出规格未核实或缺少来源、`project.toml` 使用了旧写法。
 
 `./logo export` 先在临时目录生成点名的目标，全部成功后才逐个替换 `dist/` 中对应目录（其他目标保留）；只用 resvg 渲染，同一发布再导出逐字节相同；发布的 `guide.md` 未填完时拒绝导出。
 
@@ -120,7 +122,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 
 `./logo cover platforms [--ratio 3x1]` 查看平台、尺寸与从画布裁切的比例；配置写错时 `check` 报错。
 
-封面项目放在 `projects/<slug>/covers/NNN-名称/`（`cover.toml` 元数据、`cover.md` 简报、`assets/` 已登记素材、每种画幅一份设计稿），流程见 [cover-workflow 技能](.agents/skills/cover-workflow/SKILL.md)：`cover new` 立项起稿、`cover asset` 登记素材、`cover status` 记录上线、`cover list` 查看。设计稿中的 Logo 只能移动缩放（按发布比对指纹），关键内容放在 `<g id="content">`。`cover preview` 出校对图（各平台裁切叠遮挡区/安全区、手机缩略图），`cover export` 按平台尺寸导出 PNG 到 `dist/covers/`（不提交、结果可重复）。校对时会提醒关键内容越界（被裁、超出安全区或被头像遮挡）、Logo 在手机上过小、Logo 过时（上线中的封面优先）；Logo 改版后用 `cover sync-logo` 一键替换。
+封面项目放在 `projects/<slug>/covers/NNN-名称/`（`cover.toml` 元数据、`cover.md` 简报、`assets/` 已登记素材、每种画幅一份设计稿），流程见 [cover-workflow 技能](.agents/skills/cover-workflow/SKILL.md)：`cover new` 立项起稿、`cover asset` 登记素材、`cover retarget` 调整目标平台、`cover status` 记录上线、`cover list` 查看。设计稿中的 Logo 只能移动缩放（按发布比对指纹），关键内容放在 `<g id="content">`。`cover preview` 出校对图（各平台裁切叠遮挡区/安全区、手机缩略图），`cover export` 按平台尺寸导出 PNG 到 `dist/covers/`（不提交、结果可重复，manifest 逐张记录由哪份设计稿导出，过期的会提醒）。校对时会提醒关键内容越界（被裁、超出安全区或被头像遮挡）、Logo 在手机上过小、Logo 过时（上线中的封面优先）；Logo 改版后用 `cover sync-logo` 一键替换。
 
 ## 自动化测试
 
@@ -130,4 +132,4 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 ./logo selftest
 ```
 
-测试在临时目录里为每个用例搭建隔离的工作区（系统仓库 + 项目仓库，Git 配置与个人全局配置隔离），经由真实的 `./logo` 命令与提交钩子验证；不访问网络、不触碰真实仓库。`./logo selftest test_unit` 只跑毫秒级的单元测试。缺少 `resvg`/`magick` 时导出测试自动跳过，未下载 Inter 时字距测试自动跳过。
+测试在临时目录里为每个用例搭建隔离的工作区（系统仓库 + 项目仓库，Git 配置与个人全局配置隔离），经由真实的 `./logo` 命令与提交钩子验证；不访问网络、不触碰真实仓库。`./logo selftest test_unit` 只跑毫秒级的单元测试。缺少 `resvg`/`magick` 时导出测试自动跳过，未下载 Inter / 思源黑体时转曲与排版测试自动跳过。
