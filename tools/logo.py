@@ -75,6 +75,7 @@ FROZEN_PATTERNS = [
     re.compile(r"^[^/]+/directions/[^/]+/v\d{3}/logo\.svg$"),
     re.compile(r"^[^/]+/releases/r\d+/layouts/[^/]+\.svg$"),
     re.compile(r"^[^/]+/concepts/\d{3}-[^/]+\.(png|jpe?g|webp)$"),
+    re.compile(r"^[^/]+/covers/[^/]+/assets/\d{3}-[^/]+\.(png|jpe?g|webp)$"),  # 封面素材登记后不可替换
 ]
 
 APPEND_ONLY_PATTERNS = [
@@ -83,6 +84,8 @@ APPEND_ONLY_PATTERNS = [
     re.compile(r"^[^/]+/releases/r\d+/(release|guide)\.md$"),
     re.compile(r"^[^/]+/decisions/[^/]+\.md$"),
     re.compile(r"^[^/]+/concepts/[^/]+\.md$"),
+    re.compile(r"^[^/]+/covers/[^/]+/cover\.md$"),
+    re.compile(r"^[^/]+/covers/[^/]+/assets/[^/]+\.md$"),
 ]
 
 # 系统仓库允许提交的文件（相对仓库根目录，精确到目录与文件类型）；与 .gitignore 的白名单保持一致
@@ -128,6 +131,10 @@ PROJECT_FILE_PATTERNS = [re.compile(p) for p in (
     r"decisions/\d{3}-[a-z0-9-]+\.md",
     r"releases/r\d+/(release|guide)\.md",
     r"releases/r\d+/layouts/[a-z0-9.-]+\.svg",
+    r"covers/\.gitkeep",
+    r"covers/\d{3}-[a-z0-9-]+/cover\.(toml|md)",
+    r"covers/\d{3}-[a-z0-9-]+/[0-9.]+x[0-9.]+\.svg",
+    r"covers/\d{3}-[a-z0-9-]+/assets/\d{3}-[a-z0-9-]+\.(md|png|jpe?g|webp)",
 )]
 
 # 项目文档与其模板（用于检测未填写的模板占位）
@@ -139,6 +146,8 @@ DOC_TEMPLATES = [
     (re.compile(r"^[^/]+/releases/r\d+/guide\.md$"), "release-guide.md"),
     (re.compile(r"^[^/]+/decisions/\d{3}-[^/]+\.md$"), "decision.md"),
     (re.compile(r"^[^/]+/concepts/\d{3}-[^/]+\.md$"), "concept.md"),
+    (re.compile(r"^[^/]+/covers/[^/]+/cover\.md$"), "cover.md"),
+    (re.compile(r"^[^/]+/covers/[^/]+/assets/\d{3}-[^/]+\.md$"), "cover-asset.md"),
 ]
 OUTLINE_FONT_RE = re.compile(r"<!--\s*outline:\s*font=([A-Za-z0-9_-]+)")  # ./logo outline 写入的来源注释
 DECISION_REF_RE = re.compile(r"decisions/(\d{3}-[a-z0-9-]+\.md)")
@@ -366,6 +375,7 @@ class Project:
         """项目各版本与发布版式中经 outline 转曲的字体 → 出现的文件（依据 outline 注释）。"""
         files = [v / "logo.svg" for d in self.directions() for v in self.versions_in(d)]
         files += [f for rd in self.releases() for f in sorted((rd / "layouts").glob("*.svg"))]
+        files += sorted((self.dir / "covers").glob("*/*.svg"))  # 封面中的标题等文字同样计入
         found: dict[str, list[str]] = {}
         for f in files:
             if not f.exists():
@@ -1570,6 +1580,9 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
                 warnings.append(w)
         except LogoError as e:
             warnings.append(f"{rel(svg)}: 无法完成单色结构检查：{e}")
+
+    import covers  # 延迟导入：covers.py 依赖本模块
+    covers.check_covers(p, errors, warnings, staged)
 
     if (p.dir / "final").exists():
         warnings.append(f"{rel(p.dir / 'final')}: 交付物已改为按需生成到 dist/（不提交），旧的 final/ 可以删除")

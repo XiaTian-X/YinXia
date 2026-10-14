@@ -43,6 +43,7 @@ projects/                     # 项目仓库根目录（独立 .git）
     ├── directions/           # 并行方向 A/B/C，每个版本 vNNN/{logo.svg, notes.md}
     ├── decisions/            # 关键取舍记录
     ├── releases/rN/          # 定稿发布：release.md、guide.md、layouts/（必需 primary.svg）
+    ├── covers/NNN-名称/      # 封面：cover.toml、cover.md、assets/、每种画幅一份设计稿
     └── dist/                 # ./logo export / render 的按需产物（被忽略，不提交）
 ```
 
@@ -72,7 +73,8 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 | `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug>` | 文字转路径（默认应用字距调整，`--no-kern` 关闭） |
 | `./logo fonts [fetch\|review] [id…]` | 查看字体状态与使用方 / 下载并校验 / 为非开源字体创建授权复核 |
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
-| `./logo cover list [--ratio 3x1]` | 查看封面平台、画幅与裁切比例 |
+| `./logo cover new / asset / status / list` | 封面立项起稿 / 登记素材 / 记录上线 / 查看项目封面 |
+| `./logo cover platforms [--ratio 3x1]` | 查看封面平台、画幅与裁切比例 |
 | `./logo selftest [测试名]` | 运行系统自动化测试 |
 
 ## 规则如何被强制执行
@@ -114,7 +116,9 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 - **画幅**（`[ratios]`）：16:9、3:1、2.7:1、6:1、1.91:1、4:3、3:4、9:16、1:1，每种一块设计画布，同画幅的平台共用一份设计稿；
 - **平台**（`[[platform]]`，15 个）：所属画幅、尺寸、安全区/遮挡区与规格依据，导出时从画布居中裁切到平台尺寸。
 
-`./logo cover list [--ratio 3x1]` 查看平台、尺寸与从画布裁切的比例；配置写错时 `check` 报错。封面的起稿、导出与检查在开发中。
+`./logo cover platforms [--ratio 3x1]` 查看平台、尺寸与从画布裁切的比例；配置写错时 `check` 报错。
+
+封面项目放在 `projects/<slug>/covers/NNN-名称/`（`cover.toml` 元数据、`cover.md` 简报、`assets/` 已登记素材、每种画幅一份设计稿），流程见 [cover-workflow 技能](.agents/skills/cover-workflow/SKILL.md)：`cover new` 立项起稿、`cover asset` 登记素材、`cover status` 记录上线、`cover list` 查看。设计稿中的 Logo 只能移动缩放（按发布比对指纹），关键内容放在 `<g id="content">`。预览与导出开发中。
 
 ## 自动化测试
 

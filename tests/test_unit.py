@@ -43,7 +43,8 @@ class PlaceholderTest(unittest.TestCase):
                 path = {"brief.md": "x/brief.md", "direction.md": "x/directions/A-a/direction.md",
                         "version-notes.md": "x/directions/A-a/v001/notes.md", "release.md": "x/releases/r1/release.md",
                         "release-guide.md": "x/releases/r1/guide.md", "decision.md": "x/decisions/001-a.md",
-                        "concept.md": "x/concepts/001-a.md"}[tpl]
+                        "concept.md": "x/concepts/001-a.md", "cover.md": "x/covers/001-a/cover.md",
+                        "cover-asset.md": "x/covers/001-a/assets/001-p.md"}[tpl]
                 self.assertTrue(logo.unfilled_placeholders(path, f.read_text(encoding="utf-8")))
                 fill_doc(f)
                 self.assertEqual(logo.unfilled_placeholders(path, f.read_text(encoding="utf-8")), [])

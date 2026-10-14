@@ -16,6 +16,7 @@
 !/*/directions/
 !/*/decisions/
 !/*/releases/
+!/*/covers/
 # dist/（./logo export / render 的按需产物）与其他目录不在白名单内，一律忽略
 
 /*/concepts/*
@@ -49,6 +50,21 @@
 !/*/releases/r*/layouts/
 /*/releases/r*/layouts/*
 !/*/releases/r*/layouts/*.svg
+
+/*/covers/*
+!/*/covers/.gitkeep
+!/*/covers/[0-9][0-9][0-9]-*/
+/*/covers/*/*
+!/*/covers/*/cover.toml
+!/*/covers/*/cover.md
+!/*/covers/*/*.svg
+!/*/covers/*/assets/
+/*/covers/*/assets/*
+!/*/covers/*/assets/[0-9][0-9][0-9]-*.md
+!/*/covers/*/assets/[0-9][0-9][0-9]-*.png
+!/*/covers/*/assets/[0-9][0-9][0-9]-*.jpg
+!/*/covers/*/assets/[0-9][0-9][0-9]-*.jpeg
+!/*/covers/*/assets/[0-9][0-9][0-9]-*.webp
 
 # ── 任何位置都排除（放在最后，优先于上面的放行）──
 .DS_Store
