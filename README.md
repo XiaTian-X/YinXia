@@ -70,7 +70,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 | `./logo release <slug> --from A-v004` | 新建发布 |
 | `./logo export <slug> [目标…]` | 按需生成 svg / favicon / ios / android / avatar 到 `dist/`（不提交） |
 | `./logo render <slug> [版式] --mode mono --size 800` | 生成任意版式、配色、尺寸的单张图 |
-| `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug>` | 文字转路径（默认应用字距调整，`--no-kern` 关闭） |
+| `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug> [--features calt,ss02] [--lang zh-Hans]` | 文字转路径：HarfBuzz 排版，默认只开字距，连字与上下文替换按需开启 |
 | `./logo fonts [fetch\|review] [id…]` | 查看字体状态与使用方 / 下载并校验 / 为非开源字体创建授权复核 |
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
 | `./logo cover new / asset / status / list` | 封面立项起稿 / 登记素材 / 记录上线 / 查看项目封面 |

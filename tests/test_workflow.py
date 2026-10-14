@@ -373,9 +373,49 @@ class OutlineTest(unittest.TestCase):
                      "--project", "demo").stdout
         off = ws.logo("outline", "--font", "inter", "--text", "A--V", "--size", "2048", "--fill", PRIMARY,
                       "--project", "demo", "--no-kern").stdout
-        self.assertIn("kern=on", on)
+        self.assertIn("shaper=harfbuzz-", on)
+        self.assertIn("features=calt=0,clig=0,dlig=0,kern=1,liga=0", on)
+        self.assertIn("kern=0", off)
         self.assertNotIn('text="A--V"', on)  # 注释中的 “--” 已转义
         self.assertNotEqual(on.split("advance=")[1], off.split("advance=")[1])
+        same = ws.logo("outline", "--font", "inter", "--text", "A--V", "--size", "2048", "--fill", PRIMARY,
+                       "--project", "demo", "--features=-kern").stdout  # 以 - 开头的值须用 = 连写
+        self.assertEqual(same, off)  # --no-kern 与 --features -kern 等价
+        self.assertEqual(ws.logo("outline", "--font", "inter", "--text", "A--V", "--size", "2048", "--fill", PRIMARY,
+                                 "--project", "demo").stdout, on)  # 同样参数，结果逐字相同
+
+    def test_opt_in_features_and_missing_chars(self):
+        ws = self.ws
+        plain = ws.logo("outline", "--font", "inter", "--text=1x2", "--fill", PRIMARY).stdout
+        alt = ws.logo("outline", "--font", "inter", "--text=1x2", "--fill", PRIMARY, "--features", "calt").stdout
+        self.assertNotEqual(plain.splitlines()[1], alt.splitlines()[1])  # calt 把 x 换成乘号，路径不同
+        self.assertIn("calt=1", alt)
+        r = ws.logo("outline", "--font", "inter", "--text", "A猫B狗", "--fill", PRIMARY, ok=False)
+        self.assertIn("不包含这些字符：猫狗", r.stderr)
+        r = ws.logo("outline", "--font", "inter", "--text", "A", "--fill", PRIMARY, "--lang", "zh --><script>", ok=False)
+        self.assertIn("--lang 须为语言标签", r.stderr)  # 不合法的值不能写进 SVG 注释
+
+    def test_combining_marks(self):
+        def outline(text, tracking="0"):
+            out = self.ws.logo("outline", "--font", "inter", "--text", text, "--size", "2048", "--fill", PRIMARY,
+                               "--tracking", tracking).stdout
+            bbox = [float(v) for v in out.split("bbox=")[1].split()[0].split(",")]
+            return bbox, float(out.split("advance=")[1].split()[0])
+        (_, top_x, _, _), _ = outline("X")
+        (_, top_acc, _, _), _ = outline("X\u0301")
+        self.assertLess(top_acc, top_x - 300)  # 附加符号按 HarfBuzz 的 y 偏移抬到大写字母上方（SVG 中 y 向下）
+        (_, _, right_x, _), _ = outline("x")
+        (_, _, right_acc, _), _ = outline("x\u0301")
+        self.assertLessEqual(right_acc, right_x + 50)  # 附加符号按 x 偏移回到字母上方，不越出字母右侧
+        _, adv = outline("x\u0301", tracking="100")
+        self.assertEqual(adv, 1118 + 100)  # 零宽附加符号后不再加字间距
+
+    @unittest.skipUnless(any(f.name == "SourceHanSansSC-Bold.otf" for f in FONT_BINARIES), "思源黑体未下载")
+    def test_cjk_and_latin(self):
+        out = self.ws.logo("outline", "--font", "source-han-sans-sc-bold", "--text", "猫狗 Cat&Dog", "--fill", PRIMARY,
+                           "--lang", "zh-Hans").stdout
+        self.assertIn("lang=zh-Hans", out)
+        self.assertIn('<path fill="', out)
 
     def test_missing_font_points_to_fetch(self):
         ws = Workspace()

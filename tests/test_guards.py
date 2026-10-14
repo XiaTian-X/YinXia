@@ -109,7 +109,7 @@ class DocsTest(GuardBase):
 
 class FontUsageTest(GuardBase):
     OUTLINED = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">\n'
-                '<!-- outline: font={f} size=100 tracking=0 kern=on text="A" bbox=0,0,1,1 advance=1 -->\n'
+                '<!-- outline: font={f} size=100 tracking=0 shaper=harfbuzz-14.6.0 features=kern=1 lang=auto text="A" bbox=0,0,1,1 advance=1 -->\n'
                 f'<path fill="{PRIMARY}" d="M10 90 50 10 90 90Z"/></svg>\n')
 
     def test_undeclared_font_blocked(self):

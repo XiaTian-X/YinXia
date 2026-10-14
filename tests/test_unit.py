@@ -268,19 +268,40 @@ class LogoAssetsTest(unittest.TestCase):
             self.assertEqual(data[off2:off2 + 8], b"\x89PNG\r\n\x1a\n")
 
 
-@unittest.skipUnless(any(f.name == "Inter-Regular.ttf" for f in FONT_BINARIES), "Inter 未下载（./logo fonts fetch inter）")
-class KerningTest(unittest.TestCase):
-    # HarfBuzz（hb-shape --features=-liga,-calt）对 Inter Regular 的总前进宽度，单位为字体单位
-    HARFBUZZ = {"AV": 2686, "To": 2390, "AVATAR": 7664, "Cat&Dog": 8597}
+class FeatureParsingTest(unittest.TestCase):
+    def test_defaults_keep_glyphs(self):
+        f = logo.parse_features(None)
+        self.assertEqual(f, {"kern": True, "liga": False, "clig": False, "calt": False, "dlig": False})
 
-    def test_matches_harfbuzz(self):
-        from fontTools.ttLib import TTFont
-        font = TTFont(next(f for f in FONT_BINARIES if f.name == "Inter-Regular.ttf"))
-        cmap, hmtx, kern = font.getBestCmap(), font["hmtx"], logo.kerning_lookup(font)
+    def test_syntax(self):
+        f = logo.parse_features("calt, -kern, ss02, cv05=2, +liga")
+        self.assertEqual((f["calt"], f["kern"], f["ss02"], f["cv05"], f["liga"]), (True, False, True, 2, True))
+        self.assertFalse(logo.parse_features(None, no_kern=True)["kern"])  # --no-kern 等同 -kern
+        for bad in ("bad tag", "toolong", "ss0", "cv05=x"):
+            with self.assertRaises(logo.LogoError):
+                logo.parse_features(bad)
+
+
+@unittest.skipUnless(any(f.name == "Inter-Regular.ttf" for f in FONT_BINARIES), "Inter 未下载（./logo fonts fetch inter）")
+class ShapingTest(unittest.TestCase):
+    # HarfBuzz 14.6.0（hb-shape --features=-liga,-calt）对 Inter Regular 的总前进宽度，单位为字体单位
+    HARFBUZZ = {"AV": 2686, "To": 2390, "AVATAR": 7664, "Cat&Dog": 8597, "->": 2297}
+
+    def shape(self, text, spec=None):
+        return logo.shape_text(next(f for f in FONT_BINARIES if f.name == "Inter-Regular.ttf"), text, logo.parse_features(spec))
+
+    def test_matches_harfbuzz_reference(self):
         for text, expected in self.HARFBUZZ.items():
-            names = [cmap[ord(c)] for c in text]
-            total = sum(hmtx[n][0] for n in names) + sum(kern(a, b) for a, b in zip(names, names[1:]))
-            self.assertEqual(total, expected, text)
+            self.assertEqual(sum(g[2] for g in self.shape(text)), expected, text)
+
+    def test_substitution_only_when_requested(self):
+        self.assertEqual(len(self.shape("->")), 2)                  # 默认：两个字形，保持原样
+        self.assertEqual(len(self.shape("->", "calt")), 1)          # 开启 calt：替换成箭头
+        self.assertEqual(sum(g[2] for g in self.shape("->", "calt")), 1954)
+
+    def test_clusters_are_character_indices(self):
+        glyphs = self.shape("A猫B")
+        self.assertEqual([(g[0] == 0, g[1]) for g in glyphs], [(False, 0), (True, 1), (False, 2)])
 
 
 if __name__ == "__main__":

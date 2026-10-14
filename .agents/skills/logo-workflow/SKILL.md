@@ -78,5 +78,8 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 3. 项目使用某字体：转曲时带上 `--project <slug>`，字体会自动写入该项目的 `[fonts] used`；
    `./logo fonts` 可查看每款字体被哪些项目使用。
 4. 转曲：`./logo outline --font <id> --text "TEXT" --size 120 --fill "#HEX" --project <slug>`，将输出粘贴至 svg。
-   默认应用字体自带的字距调整（与 HarfBuzz 排版一致）；需要逐字等距时加 `--no-kern`。
+   由 HarfBuzz 排版：默认开字距（kern），连字与上下文替换（liga、clig、calt、dlig）关闭，字形所见即所得；
+   需要时用 `--features` 开启，如 `--features calt,ss02` 或选择风格变体 `cv05=2`（关闭写作 `--features=-kern`，等同 `--no-kern`）；
+   `--lang zh-Hans` / `zh-Hant` 选择地区字形。字体里没有的字会报错，不会转出空框。
+   以 `-` 开头的值须用 `=` 连写，如 `--text=-ACME`。
    已入库：`inter`（英文）、`source-han-sans-sc-bold`（思源黑体 SC Bold，中文）。

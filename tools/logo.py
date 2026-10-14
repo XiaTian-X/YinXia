@@ -941,48 +941,49 @@ def find_font(font_id: str) -> dict:
     raise LogoError(f"字体未登记：{font_id}。已登记：{ids}")
 
 
-def kerning_lookup(font):
-    """返回 kern(左字形, 右字形) -> 字距调整（字体单位）。读取 GPOS 的 kern 特性，没有时退回旧式 kern 表。"""
-    subtables = []
-    if "GPOS" in font and font["GPOS"].table.FeatureList:
-        gpos = font["GPOS"].table
-        idx = {i for fr in gpos.FeatureList.FeatureRecord if fr.FeatureTag == "kern"
-               for i in fr.Feature.LookupListIndex}
-        for i in sorted(idx):
-            lk = gpos.LookupList.Lookup[i]
-            subs = [st.ExtSubTable if lk.LookupType == 9 else st for st in lk.SubTable]
-            subtables.append([st for st in subs if getattr(st, "LookupType", lk.LookupType) == 2])
-    legacy = {}
-    if not subtables and "kern" in font:
-        for kt in font["kern"].kernTables:
-            legacy.update(getattr(kt, "kernTable", {}))
+# Logo 文字默认只开不改变字形的特性：字距（kern）及 HarfBuzz 的必需特性（ccmp、locl、mark、mkmk 等）照常；
+# 会替换字形的连字与上下文替换默认关闭，需要时用 --features 开启（如 calt、ss02、cv05）
+DEFAULT_FEATURES = {"kern": True, "liga": False, "clig": False, "calt": False, "dlig": False}
+FEATURE_RE = re.compile(r"^([+-]?)([A-Za-z0-9]{4})(?:=(\d+))?$")
+LANG_RE = re.compile(r"^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$")  # BCP 47 语言标签（如 zh-Hans、en-US）
 
-    def adv(vr) -> int:
-        return getattr(vr, "XAdvance", None) or 0  # ValueRecord 可能为 None 或不含 XAdvance
 
-    def kern(left: str, right: str) -> int:
-        if not subtables:
-            return legacy.get((left, right), 0)
-        total = 0
-        for lookup in subtables:  # 每个查找取第一个命中的子表，多个查找累加
-            for st in lookup:
-                cov = st.Coverage.glyphs
-                if left not in cov:
-                    continue
-                if st.Format == 1:
-                    pairs = st.PairSet[cov.index(left)].PairValueRecord
-                    rec = next((r for r in pairs if r.SecondGlyph == right), None)
-                    if rec is None:
-                        continue
-                    total += adv(rec.Value1)
-                else:
-                    c1 = st.ClassDef1.classDefs.get(left, 0)
-                    c2 = st.ClassDef2.classDefs.get(right, 0)
-                    total += adv(st.Class1Record[c1].Class2Record[c2].Value1)
-                break
-        return total
+def parse_features(spec: str | None, no_kern: bool = False) -> dict[str, bool | int]:
+    """--features 写法：tag 开启、-tag 关闭、tag=N 选第 N 个替代（如 cv05=2），逗号分隔。"""
+    feats: dict[str, bool | int] = dict(DEFAULT_FEATURES)
+    for item in filter(None, (x.strip() for x in (spec or "").split(","))):
+        m = FEATURE_RE.match(item)
+        if not m:
+            raise LogoError(f"无法识别的排版特性：{item!r}（写法如 calt、-kern、ss02、cv05=2）")
+        sign, tag, num = m.groups()
+        feats[tag] = int(num) if num else sign != "-"
+    if no_kern:
+        feats["kern"] = False
+    return feats
 
-    return kern
+
+def shape_text(font_path: Path, text: str, features: dict, lang: str | None = None,
+               font_number: int = 0) -> list[tuple[int, int, int, int, int]]:
+    """用 HarfBuzz 排版，返回 [(字形编号, 字符序号, x 前进量, x 偏移, y 偏移)]，单位为字体单位。"""
+    try:
+        import uharfbuzz as hb
+    except ImportError:
+        raise LogoError("缺少 uharfbuzz，请先运行 ./logo setup")
+    face = hb.Face(hb.Blob.from_file_path(str(font_path)), font_number)
+    font = hb.Font(face)
+    buf = hb.Buffer()
+    buf.add_codepoints([ord(c) for c in text])  # 按码位加入：cluster 即字符序号（若用 add_utf8 则是字节偏移）
+    buf.guess_segment_properties()
+    if lang:
+        buf.language = lang
+    hb.shape(font, buf, features)
+    return [(i.codepoint, i.cluster, pos.x_advance, pos.x_offset, pos.y_offset)
+            for i, pos in zip(buf.glyph_infos, buf.glyph_positions)]
+
+
+def harfbuzz_version() -> str:
+    import uharfbuzz as hb
+    return hb.version_string()
 
 
 def fmt_num(v: float) -> str:
@@ -1012,35 +1013,34 @@ def cmd_outline(a) -> None:
             raise LogoError(f"--fill {a.fill.upper()} 不在 {a.project} 的色板中")
     else:
         print("⚠ 未指定 --project，无法校验填充色是否在色板中", file=sys.stderr)
-    font = TTFont(path, fontNumber=entry.get("font_number", 0))
+    features = parse_features(a.features, a.no_kern)
+    if a.lang and not LANG_RE.match(a.lang):  # 会写进 SVG 注释，须是合法的语言标签
+        raise LogoError(f"--lang 须为语言标签（如 zh-Hans、zh-Hant、en），收到：{a.lang!r}")
+    font_number = entry.get("font_number", 0)
+    glyphs = shape_text(path, a.text, features, a.lang, font_number)
+    missing = sorted({a.text[cl] for gid, cl, *_ in glyphs if gid == 0}, key=a.text.index)
+    if missing:  # HarfBuzz 用 .notdef（空框）代替字体里没有的字
+        raise LogoError(f"字体 {a.font} 不包含这些字符：{''.join(missing)}")
+    font = TTFont(path, fontNumber=font_number)
     gs = font.getGlyphSet()
-    cmap = font.getBestCmap()
-    hmtx = font["hmtx"]
+    order = font.getGlyphOrder()
     scale = a.size / font["head"].unitsPerEm
     pen = SVGPathPen(gs, ntos=fmt_num)
     bpen = BoundsPen(gs)
-    kern = kerning_lookup(font) if not a.no_kern else (lambda _l, _r: 0)
     x = 0.0
-    missing = []
-    prev = None
-    for ch in a.text:
-        gname = cmap.get(ord(ch))
-        if gname is None:
-            missing.append(ch)
-            continue
-        if prev is not None:
-            x += kern(prev, gname) * scale
-        prev = gname
-        t = (scale, 0, 0, -scale, x, 0)
-        gs[gname].draw(TransformPen(pen, t))
-        gs[gname].draw(TransformPen(bpen, t))
-        x += hmtx[gname][0] * scale + a.tracking
-    if missing:
-        raise LogoError(f"字体 {a.font} 不包含这些字符：{''.join(missing)}")
+    for gid, _cluster, x_adv, x_off, y_off in glyphs:
+        t = (scale, 0, 0, -scale, x + x_off * scale, -y_off * scale)  # HarfBuzz 的 y 向上，SVG 的 y 向下
+        gs[order[gid]].draw(TransformPen(pen, t))
+        gs[order[gid]].draw(TransformPen(bpen, t))
+        x += x_adv * scale
+        if x_adv:  # 零宽字形（组合附加符号）后不加字间距，免得符号与字母分开
+            x += a.tracking
     d = pen.getCommands()
     bounds = bpen.bounds or (0, 0, 0, 0)
     safe_text = a.text.replace("--", "‐‐")  # XML 注释中不允许出现 “--”
-    comment = (f"<!-- outline: font={a.font} size={a.size} tracking={a.tracking} kern={'off' if a.no_kern else 'on'} "
+    feat_str = ",".join(f"{k}={int(v)}" for k, v in sorted(features.items()))
+    comment = (f"<!-- outline: font={a.font} size={a.size} tracking={a.tracking} "
+               f"shaper=harfbuzz-{harfbuzz_version()} features={feat_str} lang={a.lang or 'auto'} "
                f"text=\"{safe_text}\" "
                f"bbox={','.join(fmt_num(b) for b in bounds)} advance={fmt_num(x)} -->")
     path_el = f'<path fill="{a.fill.upper()}" d="{d}"/>'
@@ -2054,12 +2054,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("outline", help="文字转路径（仅限已登记字体）")
     s.add_argument("--font", required=True, help="fonts.toml 中的字体 id")
-    s.add_argument("--text", required=True)
+    s.add_argument("--text", required=True, help="要转曲的文字；以 - 开头时须写成 --text=-文字")
     s.add_argument("--size", type=float, default=100, help="字号（SVG 单位）")
     s.add_argument("--tracking", type=float, default=0, help="字间距（SVG 单位）")
     s.add_argument("--fill", required=True, help="填充色（须在项目色板中）")
     s.add_argument("--project", help="项目短名：校验填充色在色板中，并把字体自动写入该项目的 [fonts] used")
-    s.add_argument("--no-kern", action="store_true", help="不应用字体自带的字距调整（kerning）")
+    s.add_argument("--no-kern", action="store_true", help="不应用字距调整（等同 --features=-kern）")
+    s.add_argument("--features", help="OpenType 特性，逗号分隔：calt 开启、-kern 关闭、cv05=2 选替代；"
+                                      "默认只开字距，连字与上下文替换关闭。以 - 开头时须写成 --features=-kern")
+    s.add_argument("--lang", help="语言标签，影响地区字形（如 zh-Hans、zh-Hant）；默认按文字推断")
     s.add_argument("--svg", help="输出为独立 SVG 文件；不填则输出 <path> 片段")
     s.set_defaults(fn=cmd_outline)
 
