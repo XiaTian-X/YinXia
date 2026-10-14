@@ -6,6 +6,12 @@
 # 规格依据：basis = official（须有官方 source）/ common（业内通用，须写 verify_note）/ generic（泛用比例）；
 #           超过 12 个月未复核会提醒。
 
+# 封面校对规则：缩略图宽度为手机上的常见显示宽度（预览与“Logo 过小”检查共用）
+[rules]
+min_logo_display_px = 16     # Logo 在手机显示中的最小高度
+thumb_width_landscape = 360  # 横幅
+thumb_width_portrait = 180   # 竖版与方形
+
 [ratios]
 "16x9" = { width = 2560, height = 1440, label = "横幅 16:9" }
 "3x1" = { width = 1500, height = 500, label = "横幅 3:1" }

@@ -77,6 +77,11 @@ def check_platforms(errors: list[str], warnings: list[str]) -> None:
             if len(box) != 4 or not box_inside(box, w, h):
                 errors.append(f"{tag}: {name} {box} 须为 [x, y, 宽, 高] 且落在 {w}x{h} 以内")
         warnings.extend(logo.spec_warnings(f"cover.{pid}", p))
+    for k, v in cfg.get("rules", {}).items():
+        if k not in RULE_DEFAULTS:
+            errors.append(f"{where} [rules]: 未知规则 {k}（可选：{', '.join(RULE_DEFAULTS)}）")
+        elif not (isinstance(v, int) and v > 0):
+            errors.append(f"{where} [rules]: {k} 须为正整数")
 
 
 def cmd_platforms(a) -> None:
@@ -311,7 +316,7 @@ def check_covers(p: "logo.Project", errors: list[str], warnings: list[str], stag
 
 
 def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list[str], staged: bool = False) -> None:
-    """检查一个封面：元数据、画幅稿规则、Logo 指纹、素材登记（提交检查与导出共用）。"""
+    """检查一个封面：元数据、画幅稿规则、Logo 指纹、素材登记，以及校对提醒（提交检查与导出共用）。"""
     plats, ratios = platforms_by_id(), load_config()["ratios"]
     where = logo.rel(cdir)
     try:
@@ -356,10 +361,17 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
             continue
         root = check_cover_svg(svg, ratios[key], assets, errors, staged)
         if root is not None:
-            errors.extend(logo_errors(p, root, logo.rel(svg)))
+            found = logo_errors(p, root, logo.rel(svg))
+            errors.extend(found)
+            g = next((el for el in root.iter() if el.get("id") == "logo"), None)
+            if not found and g is not None and g.get("data-release") != c.get("release"):
+                errors.append(f"{logo.rel(svg)}: Logo 标注的发布 {g.get('data-release')} 与 cover.toml 记录的 "
+                              f"{c.get('release')} 不一致（请用 ./logo cover sync-logo 更新，不要手改）")
     for svg in sorted(cdir.glob("*.svg")):
         if svg.stem not in need:
             warnings.append(f"{logo.rel(svg)}: 当前目标平台不需要画幅 {svg.stem}（若是为新平台预备，可加入 platforms）")
+    if not any(e.startswith(where) for e in errors):  # 已有结构错误时，渲染类提醒不可靠，跳过
+        warnings.extend(cover_warnings(p, cdir))
 
 
 # -- 渲染：去掉参考线，按平台“铺满后居中裁切”（预览与导出共用同一套） ----------------
@@ -411,9 +423,12 @@ def has_transparency(png: Path) -> bool:
 def cover_targets(p: "logo.Project", cdir: Path, names: list[str]) -> tuple[dict, list[dict]]:
     """校验封面设计稿（违反规则时拒绝），返回 (cover.toml, 要处理的平台)。"""
     errors: list[str] = []
-    check_cover(p, cdir, errors, [])
+    warnings: list[str] = []
+    check_cover(p, cdir, errors, warnings)
     if errors:
         raise logo.LogoError("封面未通过检查：\n  " + "\n  ".join(errors))
+    for w in warnings:
+        print(f"⚠ {w}")
     cfg = cover_cfg(cdir)
     targets = cfg["cover"]["platforms"]
     bad = [n for n in names if n not in targets]
@@ -439,8 +454,7 @@ def cmd_preview(a) -> None:
         crops, thumbs = [], []
         for pl in on_ratio:
             crops.append(render_platform(cdir, root, pl, out_dir / f"{pl['id']}.png", width=600, overlay=True))
-            thumb_w = 360 if pl["width"] > pl["height"] else 180  # 手机上的常见显示宽度
-            thumbs.append(render_platform(cdir, root, pl, out_dir / f"{pl['id']}-thumb.png", width=thumb_w))
+            thumbs.append(render_platform(cdir, root, pl, out_dir / f"{pl['id']}-thumb.png", width=thumb_width(pl)))
         row = out_dir / f"row-{ratio}.png"
         logo.run(["magick", "montage", str(canvas), *map(str, crops), *map(str, thumbs), "-tile",
                   f"{1 + 2 * len(on_ratio)}x", "-geometry", "+8+8", "-background", "#DDDDDD", str(row)])
@@ -452,7 +466,8 @@ def cmd_preview(a) -> None:
               "-gravity", "west", "-append", str(sheet)])  # 分隔条加在每行顶部，各行左对齐
     print(f"预览：{logo.rel(sheet)}（单张图在同一目录）")
     print("每行一个画幅，从左到右：" + "\n  ".join([""] + order))
-    print("红色为平台遮挡区（头像、按钮等），绿框为平台安全区；缩略图为手机上的常见显示宽度")
+    print(f"红色为平台遮挡区（头像、按钮等），绿框为平台安全区；缩略图为手机上的常见显示宽度"
+          f"（横幅 {rules()['thumb_width_landscape']}px、竖版/方形 {rules()['thumb_width_portrait']}px）")
 
 
 def cmd_export(a) -> None:
@@ -499,6 +514,191 @@ def cmd_export(a) -> None:
         print(f"⚠ {w}")
 
 
+# -- 校对辅助：关键内容越界、Logo 过小、Logo 过时（只提醒）与 sync-logo ---------------
+RULE_DEFAULTS = {"min_logo_display_px": 16, "thumb_width_landscape": 360, "thumb_width_portrait": 180}
+KEY_GROUPS = (("logo", "Logo"), ("content", "关键内容"))
+
+
+def rules() -> dict:
+    return {**RULE_DEFAULTS, **load_config().get("rules", {})}
+
+
+def thumb_width(platform: dict) -> int:
+    """手机上的常见显示宽度：横幅用 thumb_width_landscape，竖版与方形用 thumb_width_portrait。"""
+    r = rules()
+    return r["thumb_width_landscape"] if platform["width"] > platform["height"] else r["thumb_width_portrait"]
+
+
+def keep_only(root: ET.Element, element_id: str) -> ET.Element | None:
+    """复制设计稿，只保留指定分组（及 defs / style）；分组不存在或为空时返回 None。"""
+    copy = ET.fromstring(ET.tostring(root))
+    target = next((el for el in copy.iter() if el.get("id") == element_id), None)
+    if target is None or not [c for c in target if not callable(c.tag)]:
+        return None
+    keep = set(target.iter())
+    parents = {c: par for par in copy.iter() for c in par}
+    node = target
+    while node in parents:
+        node = parents[node]
+        keep.add(node)
+    for par in list(copy.iter()):
+        for child in list(par):
+            if child not in keep and child.tag.split("}")[-1] not in ("defs", "style"):
+                par.remove(child)
+    return copy
+
+
+def masked_alpha(png: Path, size: tuple[int, int], rects: list, inside: bool) -> float:
+    """rects 之内（inside=True）或之外（False）的最大不透明度；边界按抗锯齿各放宽 1px。"""
+    w, h = size
+    fill, draw = ("black", "white") if inside else ("white", "black")
+    pad = -1 if inside else 1
+    cmd = ["magick", "-size", f"{w}x{h}", f"xc:{fill}", "-fill", draw]
+    for x, y, rw, rh in rects:
+        cmd += ["-draw", f"rectangle {x - pad},{y - pad} {x + rw + pad},{y + rh + pad}"]
+    with tempfile.TemporaryDirectory() as td:
+        mask = Path(td) / "mask.png"
+        logo.run(cmd + [str(mask)])
+        val = logo.run(["magick", str(png), "-alpha", "extract", str(mask), "-compose", "multiply",
+                        "-composite", "-format", "%[fx:maxima]", "info:"], capture=True)
+    return float(val.strip() or 0)
+
+
+def geometry_warnings(cdir: Path, ratio: str, platforms: list[dict]) -> list[str]:
+    """按平台检查关键内容（Logo、content）是否会被裁掉、超出安全区或被遮挡，以及 Logo 在手机上的显示高度。"""
+    canvas = load_config()["ratios"][ratio]
+    svg = cdir / f"{ratio}.svg"
+    text = svg.read_text(encoding="utf-8")
+    key = "cover-geometry-v1|" + json.dumps([text, canvas, platforms, rules()], sort_keys=True, ensure_ascii=False)
+    # 照片不影响结论（只渲染 Logo 与 content），所以只按设计稿文本、画布、平台与规则缓存
+    return logo.cached(key, lambda: _geometry_warnings(cdir, svg, canvas, platforms))
+
+
+def _geometry_warnings(cdir: Path, svg: Path, canvas: dict, platforms: list[dict]) -> list[str]:
+    out: list[str] = []
+    where = logo.rel(svg)
+    root = ET.parse(svg).getroot()
+    cw, ch = canvas["width"], canvas["height"]
+    rw, rh = (800, round(800 * ch / cw)) if cw >= ch else (round(800 * cw / ch), 800)
+    s = rw / cw  # 渲染像素 / 画布单位
+    with tempfile.TemporaryDirectory() as td:
+        for gid, label in KEY_GROUPS:
+            part = keep_only(root, gid)
+            if part is None:
+                continue
+            png = logo.render_text(ET.tostring(part, encoding="unicode"), Path(td) / f"{gid}.png", resources=cdir,
+                                   width=rw, height=rh)
+            if masked_alpha(png, (rw, rh), [], inside=False) < 0.5:
+                continue  # 完全透明（如空分组）
+            for pl in platforms:
+                win = crop_window(pl, canvas)
+                allowed = intersect(win, map_box(pl["safe"], pl, win)) if "safe" in pl else win
+                px = [(v * s) for v in allowed] if allowed else [0, 0, 0, 0]
+                if masked_alpha(png, (rw, rh), [px], inside=False) > 0.5:
+                    out.append(f"{where}：{label}在 {pl['id']} 上会被裁掉或超出安全区")
+                occ = [[v * s for v in map_box(b, pl, win)] for b in pl.get("occlusions", [])]
+                if occ and masked_alpha(png, (rw, rh), occ, inside=True) > 0.5:
+                    out.append(f"{where}：{label}在 {pl['id']} 上会被遮挡（平台头像、按钮等区域）")
+            if gid == "logo":
+                trim = logo.run(["magick", str(png), "-trim", "-format", "%h", "info:"], capture=True).strip()
+                logo_h = float(trim or 0) / s  # Logo 实际高度（画布单位）
+                for pl in platforms:
+                    win = crop_window(pl, canvas)
+                    shown = logo_h * thumb_width(pl) / win[2]
+                    if shown < rules()["min_logo_display_px"]:
+                        out.append(f"{where}：Logo 在 {pl['id']} 手机显示（{thumb_width(pl)}px 宽）中只有约 "
+                                   f"{shown:.0f}px 高，低于 {rules()['min_logo_display_px']}px，可能认不出")
+    return out
+
+
+def outdated_warning(p: "logo.Project", cdir: Path, cfg: dict) -> str | None:
+    """封面使用的 Logo 发布不是项目当前发布时提醒；上线中的优先、已下线的不提醒。"""
+    cur = p.cfg["state"].get("current_release")
+    used, st = cfg["cover"]["release"], cfg["state"]
+    if not cur or used == cur or st["status"] == "archived":
+        return None
+    if st["status"] == "live":
+        return (f"{logo.rel(cdir)}：上线中的封面（{', '.join(st['live_on']) or '—'}）仍在使用旧 Logo {used}，"
+                f"当前发布为 {cur}；运行 ./logo cover sync-logo {p.slug} {cdir.name[:3]}")
+    return f"{logo.rel(cdir)}：使用的 Logo 发布 {used} 不是当前发布 {cur}；可运行 ./logo cover sync-logo"
+
+
+def cover_warnings(p: "logo.Project", cdir: Path) -> list[str]:
+    """一个封面的校对提醒（越界、Logo 过小、Logo 过时）；check、preview、export 共用。"""
+    cfg = cover_cfg(cdir)
+    out = []
+    if (w := outdated_warning(p, cdir, cfg)):
+        out.append(w)
+    plats = platforms_by_id()
+    for ratio in needed_ratios(cfg["cover"]["platforms"]):
+        on_ratio = [plats[t] for t in cfg["cover"]["platforms"] if plats[t]["ratio"] == ratio]
+        try:
+            out.extend(geometry_warnings(cdir, ratio, on_ratio))
+        except logo.LogoError as e:
+            out.append(f"{logo.rel(cdir / (ratio + '.svg'))}: 无法完成越界检查：{e}")
+    return out
+
+
+def logo_group_span(text: str) -> tuple[int, int]:
+    """在设计稿文本中定位 <g id="logo">…</g> 的起止位置（按 <g> 的嵌套层级配对）。"""
+    m = re.search(r'<g\b[^>]*\bid="logo"[^>]*>', text)
+    if not m:
+        raise logo.LogoError('找不到 <g id="logo">')
+    depth, pos = 1, m.end()
+    for tag in re.finditer(r"<g\b[^>]*?(/?)>|</g\s*>", text[pos:]):
+        if tag.group(0).startswith("</"):
+            depth -= 1
+        elif not tag.group(1):
+            depth += 1
+        if depth == 0:
+            return m.start(), pos + tag.end()
+    raise logo.LogoError('<g id="logo"> 没有闭合')
+
+
+def cmd_sync_logo(a) -> None:
+    p = logo.Project(a.slug)
+    cdir = cover_dir(p, a.cover)
+    cfg = cover_cfg(cdir)
+    rid = a.release or p.cfg["state"].get("current_release")
+    ldir = p.release_dir(rid) / "layouts"
+    if not (ldir / "primary.svg").exists():
+        raise logo.LogoError(f"{rid} 缺少主版 primary.svg")
+    if cfg["cover"]["release"] == rid:
+        print(f"{cdir.name} 已在使用 {rid}，无需同步")
+        return
+    new_texts, report = {}, []
+    for ratio in needed_ratios(cfg["cover"]["platforms"]):
+        svg = cdir / f"{ratio}.svg"
+        text = svg.read_text(encoding="utf-8")
+        a0, a1 = logo_group_span(text)
+        old = ET.fromstring(text[a0:a1])
+        layout = old.get("data-layout", "")
+        if layout not in logo.LOGO_LAYOUTS or not (ldir / f"{layout}.svg").exists():
+            layout = logo.mark_layout(ldir)
+        mode = old.get("data-mode", "color")
+        inner = list(old)[0] if len(old) else None
+        old_h = float(inner.get("height")) if inner is not None and inner.get("height") else None
+        root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
+        vx, vy, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
+        h = old_h or vh  # 保持原来的显示高度，宽度随新 Logo 的比例变化
+        root.set("width", logo.fmt_num(h * vw / vh))
+        root.set("height", logo.fmt_num(h))
+        opening = re.match(r"<g\b[^>]*>", text[a0:a1]).group(0)
+        opening = re.sub(r'data-release="[^"]*"', f'data-release="{rid}"', opening)
+        opening = re.sub(r'data-layout="[^"]*"', f'data-layout="{layout}"', opening)
+        new_texts[svg] = text[:a0] + opening + ET.tostring(root, encoding="unicode") + "</g>" + text[a1:]
+        report.append(f"{ratio}：{old.get('data-release')}/{old.get('data-layout')} → {rid}/{layout}（{mode}）")
+    for svg, text in new_texts.items():  # 全部生成成功后再写回
+        svg.write_text(text, encoding="utf-8")
+    cfg["cover"]["release"] = rid
+    cfg["state"]["updated"] = logo.today()
+    write_cover_cfg(cdir, cfg)
+    print(f"已同步 {cdir.name} 的 Logo 到 {rid}：\n  " + "\n  ".join(report))
+    for w in cover_warnings(p, cdir):
+        print(f"⚠ {w}")
+    print(f"请运行 ./logo cover preview {p.slug} {cdir.name[:3]} 查看效果后提交")
+
+
 # -- 命令 --------------------------------------------------------------------------
 def cmd_new(a) -> None:
     p = logo.Project(a.slug)
@@ -530,7 +730,10 @@ def cmd_new(a) -> None:
         safe = common_safe(on_ratio, canvas) or (0, 0, canvas["width"], canvas["height"])
         vb = [float(v) for v in re.split(r"[\s,]+", ET.fromstring(
             logo.layout_mode_text(p, ldir, layout, "color")).get("viewBox").strip())]
-        lh = safe[3] * 0.15
+        # 高度取安全区的 15%，且保证在各平台手机显示中达到最小高度（×1.5 余量，Logo 图形未必占满自身画框）
+        need_h = max(rules()["min_logo_display_px"] * 1.5 * crop_window(pl, canvas)[2] / thumb_width(pl)
+                     for pl in on_ratio)
+        lh = min(max(safe[3] * 0.15, need_h), safe[3] * 0.5)
         lw = lh * vb[2] / vb[3]
         if lw > safe[2] * 0.6:  # 很宽的 Logo：按宽度收
             lw, lh = safe[2] * 0.6, safe[2] * 0.6 * vb[3] / vb[2]
@@ -642,6 +845,11 @@ def register(sub) -> None:
     c.add_argument("cover")
     c.add_argument("platforms", nargs="*", help="只导出这些平台（默认全部目标平台）")
     c.set_defaults(fn=cmd_export)
+    c = cs.add_parser("sync-logo", help="Logo 出新发布后，替换各画幅中的 Logo（保留位置、缩放、配色与显示高度）")
+    c.add_argument("slug")
+    c.add_argument("cover")
+    c.add_argument("--release", help="目标发布（默认 current_release）")
+    c.set_defaults(fn=cmd_sync_logo)
     c = cs.add_parser("status", help="记录封面状态：draft / live / archived")
     c.add_argument("slug")
     c.add_argument("cover")

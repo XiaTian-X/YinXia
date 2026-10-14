@@ -37,6 +37,11 @@ description: LOGODesign 的封面（品牌物料）制作流程：立项、素�
   总览图在 `.cache/<slug>/covers/<封面>/preview.png`，单张图在同一目录。**先自己看**：
   关键内容是否被裁掉或被头像/按钮遮挡，缩略图里标题与 Logo 是否还认得出。
 
+校对提醒（`check`、`preview`、`export` 都会给出，只提醒不拦截）：
+- **关键内容越界**：Logo 或 `content` 分组在某平台会被裁掉、超出安全区，或落进头像/按钮等遮挡区（按平台逐一判断，背景装饰不计）；
+- **Logo 过小**：Logo 在手机显示宽度下低于最小高度（默认 16px，见 `config/cover-platforms.toml` 的 `[rules]`）；
+- **Logo 过时**：封面用的不是项目当前发布；**上线中的封面优先提示**，已下线的不提示。
+
 ## 5. 检查与提交
 - `./logo index && ./logo check`，然后 `git -C projects add -A && git -C projects commit -m "[<slug>] cover NNN: <说明>"`。
 - 会被拦截：Logo 被改动、引用未登记或被替换的素材、文字未转曲、画布尺寸不对、缺少目标平台需要的画幅稿、简报未填完。
@@ -48,5 +53,7 @@ description: LOGODesign 的封面（品牌物料）制作流程：立项、素�
 - 导出结果含透明区域会提醒：封面通常应铺满底色。
 
 ## 7. 上线与更替
+- Logo 出了新发布：`./logo cover sync-logo <slug> <封面编号> [--release rN]`，替换各画幅中的 Logo，
+  保留位置、缩放、配色与显示高度（宽度随新比例变化），设计稿其余内容逐字保留；之后 `cover preview` 确认再提交。
 - `./logo cover status <slug> <封面编号> live --on x,youtube`（默认全部目标平台）；下线用 `archived`，草稿用 `draft`。
 - `./logo cover list <slug>` 查看项目的封面、状态与上线平台。

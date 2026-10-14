@@ -666,15 +666,26 @@ def android_safe_warning(png: Path, ap: dict) -> str | None:
     return None
 
 
-def interior_edge_pixels(svg_text: str) -> float:
-    """渲染后统计图形内部的颜色分界像素数（排除外轮廓附近 2px），结果按内容哈希缓存。"""
-    key = hashlib.sha256(f"v2|{STRUCTURE_RENDER_SIZE}|{svg_text}".encode("utf-8")).hexdigest()
+def cached(key_text: str, compute):
+    """按内容哈希缓存可 JSON 序列化的计算结果（渲染类检查用，内容不变时不重复渲染）。"""
+    key = hashlib.sha256(key_text.encode("utf-8")).hexdigest()
     try:
         cache = json.loads(STRUCTURE_CACHE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         cache = {}
-    if key in cache:
-        return cache[key]
+    if key not in cache:
+        cache[key] = compute()
+        STRUCTURE_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        STRUCTURE_CACHE.write_text(json.dumps(cache), encoding="utf-8")
+    return cache[key]
+
+
+def interior_edge_pixels(svg_text: str) -> float:
+    """渲染后统计图形内部的颜色分界像素数（排除外轮廓附近 2px），结果按内容哈希缓存。"""
+    return cached(f"v2|{STRUCTURE_RENDER_SIZE}|{svg_text}", lambda: _interior_edge_pixels(svg_text))
+
+
+def _interior_edge_pixels(svg_text: str) -> float:
     with tempfile.TemporaryDirectory() as td:
         svg = Path(td) / "s.svg"
         svg.write_text(svg_text, encoding="utf-8")
@@ -688,9 +699,6 @@ def interior_edge_pixels(svg_text: str) -> float:
                          "-morphology", "Erode", "Disk:2", ")",
                          "-delete", "0", "-compose", "multiply", "-composite",
                          "-format", "%[fx:mean*w*h]", "info:"], capture=True).strip() or 0)
-    cache[key] = val
-    STRUCTURE_CACHE.parent.mkdir(parents=True, exist_ok=True)
-    STRUCTURE_CACHE.write_text(json.dumps(cache), encoding="utf-8")
     return val
 
 

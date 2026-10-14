@@ -75,6 +75,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
 | `./logo cover new / asset / status / list` | 封面立项起稿 / 登记素材 / 记录上线 / 查看项目封面 |
 | `./logo cover preview / export <slug> <封面> [平台…]` | 封面校对图 / 按平台导出 PNG（不提交） |
+| `./logo cover sync-logo <slug> <封面> [--release rN]` | 把封面中的 Logo 换成新发布（保留位置与显示高度） |
 | `./logo cover platforms [--ratio 3x1]` | 查看封面平台、画幅与裁切比例 |
 | `./logo selftest [测试名]` | 运行系统自动化测试 |
 
@@ -119,7 +120,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 
 `./logo cover platforms [--ratio 3x1]` 查看平台、尺寸与从画布裁切的比例；配置写错时 `check` 报错。
 
-封面项目放在 `projects/<slug>/covers/NNN-名称/`（`cover.toml` 元数据、`cover.md` 简报、`assets/` 已登记素材、每种画幅一份设计稿），流程见 [cover-workflow 技能](.agents/skills/cover-workflow/SKILL.md)：`cover new` 立项起稿、`cover asset` 登记素材、`cover status` 记录上线、`cover list` 查看。设计稿中的 Logo 只能移动缩放（按发布比对指纹），关键内容放在 `<g id="content">`。`cover preview` 出校对图（各平台裁切叠遮挡区/安全区、手机缩略图），`cover export` 按平台尺寸导出 PNG 到 `dist/covers/`（不提交、结果可重复）。
+封面项目放在 `projects/<slug>/covers/NNN-名称/`（`cover.toml` 元数据、`cover.md` 简报、`assets/` 已登记素材、每种画幅一份设计稿），流程见 [cover-workflow 技能](.agents/skills/cover-workflow/SKILL.md)：`cover new` 立项起稿、`cover asset` 登记素材、`cover status` 记录上线、`cover list` 查看。设计稿中的 Logo 只能移动缩放（按发布比对指纹），关键内容放在 `<g id="content">`。`cover preview` 出校对图（各平台裁切叠遮挡区/安全区、手机缩略图），`cover export` 按平台尺寸导出 PNG 到 `dist/covers/`（不提交、结果可重复）。校对时会提醒关键内容越界（被裁、超出安全区或被头像遮挡）、Logo 在手机上过小、Logo 过时（上线中的封面优先）；Logo 改版后用 `cover sync-logo` 一键替换。
 
 ## 自动化测试
 

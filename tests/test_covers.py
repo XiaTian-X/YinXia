@@ -4,6 +4,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from helpers import PRIMARY, TRIANGLE, Workspace, fill_doc, logo
@@ -390,6 +391,133 @@ class CoverOutputTest(unittest.TestCase):
         self.assertEqual(self.size(d / "x-thumb.png"), "360x120")          # 横幅：手机常见宽度
         self.assertEqual(self.size(d / "xiaohongshu-thumb.png"), "180x240")  # 竖版
         self.assertNotEqual(self.px(d / "x.png", 30, 150), PRIMARY[1:])     # X 左下头像遮挡区叠了红色
+
+
+@unittest.skipUnless(logo.shutil.which("resvg") and logo.shutil.which("magick"), "需要 resvg 与 magick")
+class CoverReviewTest(unittest.TestCase):
+    """第 3 步：关键内容越界、Logo 过小、Logo 过时（只提醒）与 sync-logo。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ws = Workspace()
+        ws, cls.p = cls.ws, cls.ws.new_project()
+        ws.new_version()
+        assert ws.commit("projects", "[demo] A-v001").returncode == 0
+        ws.logo("decision", "demo", "finalize", "--title", "定稿")
+        fill_doc(next((cls.p / "decisions").glob("*.md")))
+        ws.logo("release", "demo", "--from", "A-v001")
+        r = cls.p / "releases" / "r1"
+        (r / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        fill_doc(r / "release.md")
+        with (r / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-finalize.md\n")
+        fill_doc(r / "guide.md")
+        ws.logo("cover", "new", "demo", "spring", "--platforms", "x,weibo")
+        cls.c = cls.p / "covers" / "001-spring"
+        fill_doc(cls.c / "cover.md")
+        ws.logo("index")
+        assert ws.commit("projects", "[demo] r1 + cover").returncode == 0
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ws.cleanup()
+
+    def tearDown(self):
+        self.ws.git("projects", "reset", "-q", "--hard")
+        self.ws.git("projects", "clean", "-qfd")
+
+    @property
+    def svg(self) -> Path:
+        return self.c / "3x1.svg"
+
+    def put_content(self, inner: str) -> None:
+        self.svg.write_text(self.svg.read_text(encoding="utf-8").replace('<g id="content">', f'<g id="content">{inner}'),
+                            encoding="utf-8")
+
+    def review(self) -> list[str]:
+        return [ln for ln in self.ws.logo("check").stdout.splitlines() if "001-spring" in ln]
+
+    def test_starter_is_clean(self):
+        self.assertEqual([w for w in self.review() if "Logo" in w or "关键内容" in w], [])
+
+    def test_occlusion_on_x_only(self):
+        self.put_content('<rect x="50" y="300" width="200" height="150" fill="#FFFFFF"/>')  # X 左下头像位置
+        out = self.review()
+        self.assertTrue(any("关键内容在 x 上会被遮挡" in w for w in out), out)
+        self.assertFalse(any("weibo" in w for w in out), out)
+
+    def test_cropped_on_weibo_only(self):
+        self.put_content('<rect x="600" y="4" width="300" height="10" fill="#FFFFFF"/>')  # 只有微博会裁掉顶边
+        out = self.review()
+        self.assertTrue(any("关键内容在 weibo 上会被裁掉或超出安全区" in w for w in out), out)
+        self.assertFalse(any(" x 上" in w for w in out), out)
+
+    def test_decoration_outside_is_ignored(self):
+        text = self.svg.read_text(encoding="utf-8")
+        self.svg.write_text(text.replace('<g id="content">', '<rect x="0" y="0" width="1500" height="8" fill="#FFFFFF"/>'
+                                                            '<g id="content">'), encoding="utf-8")
+        self.assertEqual([w for w in self.review() if "关键内容" in w or "Logo" in w], [])
+
+    def test_logo_too_small_and_rules(self):
+        import re as _re
+        text = self.svg.read_text(encoding="utf-8")
+        self.svg.write_text(_re.sub(r'(id="logo"[^>]*transform="translate\([^)]*\) )scale\([^)]*\)', r"\1scale(0.05)",
+                                    text, count=1), encoding="utf-8")
+        out = self.review()
+        self.assertTrue(any("Logo 在 x 手机显示（360px 宽）中只有约" in w and "低于 16px" in w for w in out), out)
+        cfg = self.ws.root / "config" / "cover-platforms.toml"
+        original = cfg.read_text(encoding="utf-8")
+        try:
+            cfg.write_text(original.replace("min_logo_display_px = 16", "min_logo_display_px = 0"), encoding="utf-8")
+            self.assertIn("min_logo_display_px 须为正整数", self.ws.logo("check", ok=False).stdout)
+        finally:
+            cfg.write_text(original, encoding="utf-8")
+
+    def new_release(self) -> None:
+        """新建 r2：主版换成更宽的图形（宽高比 2:1），成为当前发布。"""
+        self.ws.logo("release", "demo", "--from", "r1")
+        wide = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 200">'  # 画框高度与 r1（100）不同
+                f'<path fill="{PRIMARY}" d="M0 200 200 0 400 200Z"/></svg>\n')
+        (self.p / "releases" / "r2" / "layouts" / "primary.svg").unlink()
+        (self.p / "releases" / "r2" / "layouts" / "primary.svg").write_text(wide, encoding="utf-8")
+
+    def test_outdated_warnings(self):
+        self.new_release()
+        self.assertTrue(any("使用的 Logo 发布 r1 不是当前发布 r2" in w for w in self.review()))
+        self.ws.logo("cover", "status", "demo", "001", "live", "--on", "x")
+        self.assertTrue(any("上线中的封面（x）仍在使用旧 Logo r1" in w for w in self.review()))
+        self.ws.logo("cover", "status", "demo", "001", "archived")
+        self.assertFalse(any("旧 Logo" in w or "不是当前发布" in w for w in self.review()))
+
+    def test_release_record_mismatch_is_error(self):
+        self.ws.logo("release", "demo", "--from", "r1")  # r2 的 Logo 与 r1 完全相同：指纹能通过，只有记录不一致
+        self.svg.write_text(self.svg.read_text(encoding="utf-8").replace('data-release="r1"', 'data-release="r2"'),
+                            encoding="utf-8")
+        out = self.ws.logo("check", ok=False).stdout
+        self.assertIn("Logo 标注的发布 r2 与 cover.toml 记录的 r1 不一致", out)
+        self.assertNotIn("Logo 与 r2/primary.svg", out)
+
+    def test_sync_logo(self):
+        self.put_content('<!-- 设计备注：标题区 --><rect x="700" y="200" width="300" height="80" fill="#FFFFFF"/>')
+        before = self.svg.read_text(encoding="utf-8")
+        a0, a1 = covers.logo_group_span(before)
+        old_group = ET.fromstring(before[a0:a1])
+        self.new_release()
+        out = self.ws.logo("cover", "sync-logo", "demo", "001").stdout
+        self.assertIn("3x1：r1/primary → r2/primary", out)
+        after = self.svg.read_text(encoding="utf-8")
+        b0, b1 = covers.logo_group_span(after)
+        self.assertEqual((before[:a0], before[a1:]), (after[:b0], after[b1:]))  # 其余内容逐字保留（含注释）
+        new_group = ET.fromstring(after[b0:b1])
+        self.assertEqual(new_group.get("transform"), old_group.get("transform"))  # 位置与缩放不变
+        self.assertEqual(new_group.get("data-mode"), old_group.get("data-mode"))
+        self.assertEqual(list(new_group)[0].get("height"), list(old_group)[0].get("height"))  # 显示高度不变
+        self.assertEqual(list(new_group)[0].get("width"), "200")  # 保持原显示高度 100，宽度随新比例（2:1）
+        self.assertEqual(covers.cover_cfg(self.c)["cover"]["release"], "r2")
+        out = self.ws.logo("check").stdout
+        self.assertNotIn("✗", "\n".join(ln for ln in out.splitlines() if "001-spring" in ln))
+        self.assertFalse(any("不是当前发布" in ln for ln in out.splitlines()))
+        self.assertIn("无需同步", self.ws.logo("cover", "sync-logo", "demo", "001").stdout)
 
 
 if __name__ == "__main__":
