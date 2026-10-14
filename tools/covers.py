@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+import tempfile
 import unicodedata
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -299,60 +301,202 @@ def check_cover_svg(path: Path, canvas: dict, assets: set[str], errors: list[str
 
 
 def check_covers(p: "logo.Project", errors: list[str], warnings: list[str], staged: bool = False) -> None:
-    """检查项目的全部封面：元数据、画幅稿、Logo 指纹、素材登记。"""
+    """检查项目的全部封面。"""
     try:
-        cfg_all = load_config()
+        load_config()
     except logo.LogoError:
         return  # 平台登记的问题由 check_platforms 报告
-    plats, ratios = platforms_by_id(), cfg_all["ratios"]
     for cdir in project_covers(p):
-        where = logo.rel(cdir)
-        try:
-            cfg = cover_cfg(cdir)
-            c, st = cfg["cover"], cfg["state"]
-            targets = list(c["platforms"])
-        except (logo.LogoError, KeyError) as e:
-            errors.append(f"{where}/cover.toml 无效：{e}")
+        check_cover(p, cdir, errors, warnings, staged)
+
+
+def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list[str], staged: bool = False) -> None:
+    """检查一个封面：元数据、画幅稿规则、Logo 指纹、素材登记（提交检查与导出共用）。"""
+    plats, ratios = platforms_by_id(), load_config()["ratios"]
+    where = logo.rel(cdir)
+    try:
+        cfg = cover_cfg(cdir)
+        c, st = cfg["cover"], cfg["state"]
+        targets = list(c["platforms"])
+    except (logo.LogoError, KeyError) as e:
+        errors.append(f"{where}/cover.toml 无效：{e}")
+        return
+    unknown = [t for t in targets if t not in plats]
+    if unknown:
+        errors.append(f"{where}/cover.toml: 未登记的平台 {', '.join(unknown)}（./logo cover platforms 查看）")
+        return
+    if st.get("status") not in COVER_STATUSES:
+        errors.append(f"{where}/cover.toml: status 须为 {'/'.join(COVER_STATUSES)}")
+    if not set(st.get("live_on", [])) <= set(targets):
+        errors.append(f"{where}/cover.toml: live_on 只能是目标平台的子集")
+    try:
+        p.release_dir(c.get("release", ""))
+    except logo.LogoError:
+        errors.append(f"{where}/cover.toml: 所用 Logo 发布 {c.get('release')!r} 不存在")
+    # 素材：每张图须有登记记录，且内容与登记的 sha256 一致
+    assets: set[str] = set()
+    adir = cdir / "assets"
+    for img in sorted(adir.glob("*")) if adir.exists() else []:
+        if img.suffix.lower() not in ASSET_SUFFIXES:
             continue
-        unknown = [t for t in targets if t not in plats]
-        if unknown:
-            errors.append(f"{where}/cover.toml: 未登记的平台 {', '.join(unknown)}（./logo cover platforms 查看）")
+        md = img.with_suffix(".md")
+        if not md.exists():
+            errors.append(f"{logo.rel(img)}: 素材未登记（缺少 {md.name}；用 ./logo cover asset 登记）")
             continue
-        if st.get("status") not in COVER_STATUSES:
-            errors.append(f"{where}/cover.toml: status 须为 {'/'.join(COVER_STATUSES)}")
-        if not set(st.get("live_on", [])) <= set(targets):
-            errors.append(f"{where}/cover.toml: live_on 只能是目标平台的子集")
-        try:
-            p.release_dir(c.get("release", ""))
-        except logo.LogoError:
-            errors.append(f"{where}/cover.toml: 所用 Logo 发布 {c.get('release')!r} 不存在")
-        # 素材：每张图须有登记记录，且内容与登记的 sha256 一致
-        assets: set[str] = set()
-        adir = cdir / "assets"
-        for img in sorted(adir.glob("*")) if adir.exists() else []:
-            if img.suffix.lower() not in ASSET_SUFFIXES:
-                continue
-            md = img.with_suffix(".md")
-            if not md.exists():
-                errors.append(f"{logo.rel(img)}: 素材未登记（缺少 {md.name}；用 ./logo cover asset 登记）")
-                continue
-            m = re.search(r"sha256\*\*[:：]\s*([0-9a-f]{64})", md.read_text(encoding="utf-8"))
-            if not m or m.group(1) != logo.sha256_file(img):
-                errors.append(f"{logo.rel(img)}: 内容与登记的 sha256 不符（素材登记后不可替换，换图请重新登记）")
-                continue
-            assets.add(f"assets/{img.name}")
-        need = needed_ratios(targets)
-        for key in need:
-            svg = cdir / f"{key}.svg"
-            if not svg.exists():
-                errors.append(f"{where}: 缺少画幅稿 {key}.svg（目标平台需要）")
-                continue
-            root = check_cover_svg(svg, ratios[key], assets, errors, staged)
-            if root is not None:
-                errors.extend(logo_errors(p, root, logo.rel(svg)))
-        for svg in sorted(cdir.glob("*.svg")):
-            if svg.stem not in need:
-                warnings.append(f"{logo.rel(svg)}: 当前目标平台不需要画幅 {svg.stem}（若是为新平台预备，可加入 platforms）")
+        m = re.search(r"sha256\*\*[:：]\s*([0-9a-f]{64})", md.read_text(encoding="utf-8"))
+        if not m or m.group(1) != logo.sha256_file(img):
+            errors.append(f"{logo.rel(img)}: 内容与登记的 sha256 不符（素材登记后不可替换，换图请重新登记）")
+            continue
+        assets.add(f"assets/{img.name}")
+    need = needed_ratios(targets)
+    for key in need:
+        svg = cdir / f"{key}.svg"
+        if not svg.exists():
+            errors.append(f"{where}: 缺少画幅稿 {key}.svg（目标平台需要）")
+            continue
+        root = check_cover_svg(svg, ratios[key], assets, errors, staged)
+        if root is not None:
+            errors.extend(logo_errors(p, root, logo.rel(svg)))
+    for svg in sorted(cdir.glob("*.svg")):
+        if svg.stem not in need:
+            warnings.append(f"{logo.rel(svg)}: 当前目标平台不需要画幅 {svg.stem}（若是为新平台预备，可加入 platforms）")
+
+
+# -- 渲染：去掉参考线，按平台“铺满后居中裁切”（预览与导出共用同一套） ----------------
+def design_root(cdir: Path, ratio: str) -> ET.Element:
+    """读入画幅设计稿并去掉参考线层。"""
+    root = ET.parse(cdir / f"{ratio}.svg").getroot()
+    for parent in list(root.iter()):
+        for child in list(parent):
+            if child.get("id") == "guides":
+                parent.remove(child)
+    return root
+
+
+def platform_svg(root: ET.Element, platform: dict, overlay: bool = False) -> str:
+    """把（已去参考线的）设计稿装进平台尺寸的外框，按比例铺满后居中裁切；overlay 时叠加安全区与遮挡区。"""
+    w, h = platform["width"], platform["height"]
+    inner = ET.fromstring(ET.tostring(root))
+    for k, v in (("x", "0"), ("y", "0"), ("width", str(w)), ("height", str(h)),
+                 ("preserveAspectRatio", "xMidYMid slice")):
+        inner.set(k, v)
+    outer = ET.Element(f"{{{logo.SVG_NS}}}svg", {"viewBox": f"0 0 {w} {h}"})
+    outer.append(inner)
+    if overlay:
+        stroke = str(max(w, h) / 300)
+        for box in platform.get("occlusions", []):
+            ET.SubElement(outer, f"{{{logo.SVG_NS}}}rect", {
+                "x": str(box[0]), "y": str(box[1]), "width": str(box[2]), "height": str(box[3]),
+                "fill": "#FF0000", "fill-opacity": "0.35", "stroke": "#FF0000", "stroke-width": stroke})
+        if "safe" in platform:
+            x, y, bw, bh = platform["safe"]
+            ET.SubElement(outer, f"{{{logo.SVG_NS}}}rect", {
+                "x": str(x), "y": str(y), "width": str(bw), "height": str(bh),
+                "fill": "none", "stroke": "#2DBE60", "stroke-width": stroke})
+    return ET.tostring(outer, encoding="unicode")
+
+
+def render_platform(cdir: Path, root: ET.Element, platform: dict, out: Path, width: int | None = None,
+                    overlay: bool = False) -> Path:
+    """渲染某平台的成品（默认平台像素尺寸；width 给出时按宽度缩放，用于缩略图）。"""
+    return logo.render_text(platform_svg(root, platform, overlay), out, resources=cdir,
+                            width=width or platform["width"], height=None if width else platform["height"])
+
+
+def has_transparency(png: Path) -> bool:
+    val = logo.run(["magick", str(png), "-alpha", "extract", "-format", "%[fx:minima]", "info:"], capture=True)
+    return float(val.strip() or 1) < 0.99
+
+
+def cover_targets(p: "logo.Project", cdir: Path, names: list[str]) -> tuple[dict, list[dict]]:
+    """校验封面设计稿（违反规则时拒绝），返回 (cover.toml, 要处理的平台)。"""
+    errors: list[str] = []
+    check_cover(p, cdir, errors, [])
+    if errors:
+        raise logo.LogoError("封面未通过检查：\n  " + "\n  ".join(errors))
+    cfg = cover_cfg(cdir)
+    targets = cfg["cover"]["platforms"]
+    bad = [n for n in names if n not in targets]
+    if bad:
+        raise logo.LogoError(f"不是该封面的目标平台：{', '.join(bad)}（目标：{', '.join(targets)}）")
+    plats = platforms_by_id()
+    return cfg, [plats[t] for t in (names or targets)]
+
+
+def cmd_preview(a) -> None:
+    p = logo.Project(a.slug)
+    cdir = cover_dir(p, a.cover)
+    _, platforms = cover_targets(p, cdir, a.platforms)
+    out_dir = logo.CACHE / p.slug / "covers" / cdir.name
+    if out_dir.exists():
+        shutil.rmtree(out_dir)
+    out_dir.mkdir(parents=True)
+    rows, order = [], []
+    for ratio in [r for r in load_config()["ratios"] if any(pl["ratio"] == r for pl in platforms)]:
+        on_ratio = [pl for pl in platforms if pl["ratio"] == ratio]
+        root = design_root(cdir, ratio)
+        canvas = logo.render(cdir / f"{ratio}.svg", out_dir / f"{ratio}-canvas.png", width=900, resources=cdir)
+        crops, thumbs = [], []
+        for pl in on_ratio:
+            crops.append(render_platform(cdir, root, pl, out_dir / f"{pl['id']}.png", width=600, overlay=True))
+            thumb_w = 360 if pl["width"] > pl["height"] else 180  # 手机上的常见显示宽度
+            thumbs.append(render_platform(cdir, root, pl, out_dir / f"{pl['id']}-thumb.png", width=thumb_w))
+        row = out_dir / f"row-{ratio}.png"
+        logo.run(["magick", "montage", str(canvas), *map(str, crops), *map(str, thumbs), "-tile",
+                  f"{1 + 2 * len(on_ratio)}x", "-geometry", "+8+8", "-background", "#DDDDDD", str(row)])
+        rows.append(row)
+        order.append(f"{ratio}：画布 | " + " | ".join(f"{pl['id']} 裁切" for pl in on_ratio)
+                     + " | " + " | ".join(f"{pl['id']} 缩略图" for pl in on_ratio))
+    sheet = out_dir / "preview.png"
+    logo.run(["magick", *map(str, rows), "-background", "#BBBBBB", "-gravity", "north", "-splice", "0x6",
+              "-gravity", "west", "-append", str(sheet)])  # 分隔条加在每行顶部，各行左对齐
+    print(f"预览：{logo.rel(sheet)}（单张图在同一目录）")
+    print("每行一个画幅，从左到右：" + "\n  ".join([""] + order))
+    print("红色为平台遮挡区（头像、按钮等），绿框为平台安全区；缩略图为手机上的常见显示宽度")
+
+
+def cmd_export(a) -> None:
+    p = logo.Project(a.slug)
+    cdir = cover_dir(p, a.cover)
+    cfg, platforms = cover_targets(p, cdir, a.platforms)
+    dist = p.dir / "dist" / "covers" / cdir.name
+    dist.mkdir(parents=True, exist_ok=True)
+    roots: dict[str, ET.Element] = {}
+    written, warnings = [], []
+    # 暂存目录建在目标旁边（同一磁盘），os.replace 才能原子替换；系统临时目录可能在另一块磁盘上
+    with tempfile.TemporaryDirectory(dir=dist.parent, prefix=".build-") as td:
+        staged = []
+        for pl in platforms:  # 全部渲染成功后再逐个替换，失败不动已有产物
+            root = roots.setdefault(pl["ratio"], design_root(cdir, pl["ratio"]))
+            name = f"{pl['id']}-{pl['width']}x{pl['height']}.png"
+            staged.append((render_platform(cdir, root, pl, Path(td) / name), dist / name))
+        for tmp, final in staged:
+            os.replace(tmp, final)
+            written.append(final.name)
+            if has_transparency(final):
+                warnings.append(f"{final.name} 含透明区域：多数平台会以黑或白显示透明处，封面通常应铺满底色")
+
+    def short_head(repo: str) -> str:
+        r = logo.git("rev-parse", "--short", "HEAD", check=False, repo=repo)
+        return r.stdout.decode().strip() if r.returncode == 0 else ""
+
+    files = sorted(f for f in dist.iterdir() if f.is_file() and f.suffix == ".png")
+    manifest = {
+        "project": p.slug,
+        "cover": cdir.name,
+        "title": cfg["cover"]["title"],
+        "release": cfg["cover"]["release"],
+        "designs": {f"{r}.svg": logo.sha256_file(cdir / f"{r}.svg")
+                    for r in needed_ratios(cfg["cover"]["platforms"])},  # 由哪一版设计稿导出
+        "git_head": short_head("projects"),
+        "system_head": short_head("system"),
+        "renderer": logo.resvg_version(),
+        "files": {f.name: logo.sha256_file(f) for f in files},
+    }
+    (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    print(f"已导出 {', '.join(written)} → {logo.rel(dist)}（不提交）")
+    for w in warnings:
+        print(f"⚠ {w}")
 
 
 # -- 命令 --------------------------------------------------------------------------
@@ -488,6 +632,16 @@ def register(sub) -> None:
     c.add_argument("--source", required=True, help="来源（作者、网址或“自摄”）")
     c.add_argument("--license", required=True, help="授权（如 CC BY 4.0、已购买商用授权、自有版权）")
     c.set_defaults(fn=cmd_asset)
+    c = cs.add_parser("preview", help="校对图：画布、各平台裁切（叠遮挡区/安全区）与手机缩略图")
+    c.add_argument("slug")
+    c.add_argument("cover")
+    c.add_argument("platforms", nargs="*", help="只看这些平台（默认全部目标平台）")
+    c.set_defaults(fn=cmd_preview)
+    c = cs.add_parser("export", help="按平台尺寸导出 PNG 到 dist/covers/（不提交，结果可重复）")
+    c.add_argument("slug")
+    c.add_argument("cover")
+    c.add_argument("platforms", nargs="*", help="只导出这些平台（默认全部目标平台）")
+    c.set_defaults(fn=cmd_export)
     c = cs.add_parser("status", help="记录封面状态：draft / live / archived")
     c.add_argument("slug")
     c.add_argument("cover")

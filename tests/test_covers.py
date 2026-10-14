@@ -281,5 +281,116 @@ class CoverWorkflowTest(unittest.TestCase):
         self.assertEqual(self.ws.git("projects", "add", "-A", "--dry-run").stdout.strip(), "")
 
 
+PHOTO = "#E76F51"
+
+
+@unittest.skipUnless(logo.shutil.which("resvg") and logo.shutil.which("magick"), "需要 resvg 与 magick")
+class CoverOutputTest(unittest.TestCase):
+    """第 2 步：预览与导出（去参考线、按平台裁切、照片渲染、结果可重复）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.ws = Workspace()
+        ws, cls.p = cls.ws, cls.ws.new_project()
+        ws.new_version()
+        assert ws.commit("projects", "[demo] A-v001").returncode == 0
+        ws.logo("release", "demo", "--from", "A-v001")
+        (cls.p / "releases" / "r1" / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        ws.logo("cover", "new", "demo", "spring", "--platforms", "x,weibo,xiaohongshu")
+        cls.c = cls.p / "covers" / "001-spring"
+        photo = ws.tmp / "photo.png"
+        subprocess.run(["magick", "-size", "200x100", f"xc:{PHOTO}", str(photo)], check=True)
+        ws.logo("cover", "asset", "demo", "001", str(photo), "--name", "photo", "--source", "测试", "--license", "自有版权")
+        svg = cls.c / "3x1.svg"
+        svg.write_text(svg.read_text(encoding="utf-8").replace(
+            '<g id="content">', '<image href="assets/001-photo.png" x="700" y="60" width="700" height="380" '
+                                'preserveAspectRatio="none"/><g id="content">'), encoding="utf-8")
+        cls.dist = cls.p / "dist" / "covers" / "001-spring"
+        cls.out = ws.logo("cover", "export", "demo", "001")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.ws.cleanup()
+
+    @staticmethod
+    def px(png: Path, x: int, y: int) -> str:
+        return subprocess.run(["magick", str(png), "-format", f"%[hex:p{{{x},{y}}}]", "info:"],
+                              capture_output=True, text=True, check=True).stdout.strip().upper()[:6]
+
+    @staticmethod
+    def size(png: Path) -> str:
+        return subprocess.run(["magick", "identify", "-format", "%wx%h", str(png)],
+                              capture_output=True, text=True, check=True).stdout
+
+    def manifest(self) -> dict:
+        import json
+        return json.loads((self.dist / "manifest.json").read_text(encoding="utf-8"))
+
+    def test_files_and_sizes(self):
+        expected = {"x-1500x500.png", "weibo-980x300.png", "xiaohongshu-1080x1440.png"}
+        self.assertEqual(set(self.manifest()["files"]), expected)
+        for name in expected:
+            png = self.dist / name
+            w, h = (int(v) for v in self.size(png).split("x"))
+            self.assertEqual(f"{w}x{h}", name.rsplit("-", 1)[1][:-4])
+            for x, y in ((1, h // 2), (w - 2, h // 2), (w // 2, 1), (w // 2, h - 2)):  # 铺满裁切：四边都是不透明底色，没有留边
+                hexa = subprocess.run(["magick", str(png), "-format", f"%[hex:p{{{x},{y}}}]", "info:"],
+                                      capture_output=True, text=True, check=True).stdout.strip().upper()
+                self.assertEqual(hexa[:6], PRIMARY[1:], (name, x, y))
+                self.assertTrue(len(hexa) == 6 or hexa.endswith("FF"), (name, x, y, hexa))
+
+    def test_guides_removed_and_photo_rendered(self):
+        x = self.dist / "x-1500x500.png"
+        self.assertEqual(self.px(x, 750, 21), PRIMARY[1:])   # 共同安全区参考线所在位置：只剩底色
+        self.assertEqual(self.px(x, 1495, 15), PRIMARY[1:])  # 平台标注文字所在位置：只剩底色
+        self.assertEqual(self.px(x, 1050, 250), PHOTO[1:])   # 已登记的照片被渲染进成品
+
+    def test_manifest_and_determinism(self):
+        import hashlib
+        m = self.manifest()
+        self.assertEqual((m["cover"], m["release"], m["title"]), ("001-spring", "r1", "spring"))
+        self.assertEqual(m["designs"]["3x1.svg"], hashlib.sha256((self.c / "3x1.svg").read_bytes()).hexdigest())
+        before = m["files"]
+        self.ws.logo("cover", "export", "demo", "001")
+        self.assertEqual(self.manifest()["files"], before)
+        for png in self.dist.glob("*.png"):
+            data, i = png.read_bytes(), 8
+            while i < len(data):
+                n, kind = int.from_bytes(data[i:i + 4], "big"), data[i + 4:i + 8]
+                self.assertNotIn(kind, (b"tEXt", b"zTXt", b"iTXt", b"tIME"), png.name)
+                i += 12 + n
+
+    def test_partial_export_keeps_others(self):
+        weibo = (self.dist / "weibo-980x300.png").read_bytes()
+        self.assertIn("x-1500x500.png", self.ws.logo("cover", "export", "demo", "001", "x").stdout)
+        self.assertEqual((self.dist / "weibo-980x300.png").read_bytes(), weibo)
+        self.assertIn("weibo-980x300.png", self.manifest()["files"])
+
+    def test_refusals_and_transparency(self):
+        r = self.ws.logo("cover", "export", "demo", "001", "douyin", ok=False)
+        self.assertIn("不是该封面的目标平台", r.stderr)
+        svg = self.c / "3x1.svg"
+        original = svg.read_text(encoding="utf-8")
+        try:
+            svg.write_text(original.replace('d="M10 90 50 10 90 90Z"', 'd="M10 90 50 20 90 90Z"'), encoding="utf-8")
+            self.assertIn("封面未通过检查", self.ws.logo("cover", "export", "demo", "001", ok=False).stderr)
+            import re as _re
+            svg.write_text(_re.sub(r'<rect id="background"[^>]*/>', "", original), encoding="utf-8")
+            self.assertIn("含透明区域", self.ws.logo("cover", "export", "demo", "001", "x").stdout)
+        finally:
+            svg.write_text(original, encoding="utf-8")
+            self.ws.logo("cover", "export", "demo", "001")
+
+    def test_preview(self):
+        out = self.ws.logo("cover", "preview", "demo", "001").stdout
+        self.assertIn("3x1：画布 | x 裁切 | weibo 裁切 | x 缩略图 | weibo 缩略图", out)
+        d = self.ws.root / ".cache" / "demo" / "covers" / "001-spring"
+        for name in ("preview.png", "3x1-canvas.png", "x.png", "x-thumb.png", "xiaohongshu-thumb.png"):
+            self.assertTrue((d / name).exists(), name)
+        self.assertEqual(self.size(d / "x-thumb.png"), "360x120")          # 横幅：手机常见宽度
+        self.assertEqual(self.size(d / "xiaohongshu-thumb.png"), "180x240")  # 竖版
+        self.assertNotEqual(self.px(d / "x.png", 30, 150), PRIMARY[1:])     # X 左下头像遮挡区叠了红色
+
+
 if __name__ == "__main__":
     unittest.main()

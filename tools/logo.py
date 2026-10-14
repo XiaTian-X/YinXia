@@ -529,12 +529,16 @@ def android_foreground_text(p: Project, ldir: Path, mode: str) -> str:
     return compose_svg(layout_mode_text(p, ldir, mark_layout(ldir), mode), ap["adaptive_safe_ratio"], None)
 
 
-def render_text(svg_text: str, out: Path, size: int, background: str | None = None) -> Path:
-    """把 SVG 文本渲染为 size×size 的 PNG（只用 resvg，输出可重复、不含时间等元数据）。"""
+def render_text(svg_text: str, out: Path, size: int | None = None, background: str | None = None,
+                resources: Path | None = None, width: int | None = None, height: int | None = None) -> Path:
+    """把 SVG 文本渲染为 PNG（只用 resvg，输出可重复、不含时间等元数据）：
+    给 size 时适配进 size×size，否则按 width / height。"""
     with tempfile.TemporaryDirectory() as td:
         svg = Path(td) / "s.svg"
         svg.write_text(svg_text, encoding="utf-8")
-        return render_fit(svg, out, size, background)
+        if size:
+            return render(svg, out, size, size, background, resources)
+        return render(svg, out, width, height, background, resources)
 
 
 def write_ico(pngs: list[Path], out: Path) -> Path:
@@ -722,10 +726,12 @@ def strip_element_by_id(src: Path, element_id: str) -> str | None:
 
 
 def render(svg: Path, out: Path, width: int | None = None, height: int | None = None,
-           background: str | None = None) -> Path:
-    """渲染 SVG 为 PNG；同时给出宽高时按比例适配到该框内。"""
+           background: str | None = None, resources: Path | None = None) -> Path:
+    """渲染 SVG 为 PNG；同时给出宽高时按比例适配到该框内。resources 为相对路径素材（如封面照片）的查找目录。"""
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = ["resvg", str(svg), str(out)]
+    if resources:
+        cmd += ["--resources-dir", str(resources.resolve())]
     if width:
         cmd += ["-w", str(width)]
     if height:
