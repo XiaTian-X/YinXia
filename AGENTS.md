@@ -8,7 +8,7 @@
   - `releases/rN/layouts/*.svg`：要改就用 `./logo release --from rN` 产生新发布；
   - `concepts/NNN-*.png|jpg|webp`：概念图原样保存。
 - **只追加文件**：`notes.md`、`direction.md`、`release.md`、`guide.md`（releases 下）、`decisions/*.md`、`concepts/*.md`，已有内容不得修改，只能在末尾追加评审记录。
-- **交付物按需生成、不提交**：发布只需主版 `primary.svg`（可选 `icon.svg`、横版/字标与 `app-icon.svg`/`avatar.svg` 手工覆盖）；各目标由 `./logo export` / `./logo render` 生成到 `projects/<slug>/dist/`（被忽略、不提交），结果可重复。封面属于品牌物料，不在 Logo 资产流程内（由独立的封面模块管理）。
+- **交付物按需生成、不提交**：发布只需主版 `primary.svg`（可选 `icon.svg`、横版/字标与 `app-icon.svg`/`avatar.svg` 手工覆盖）；各目标由 `./logo export` / `./logo render` 生成到 `projects/<slug>/dist/`（被忽略、不提交），结果可重复。封面属于品牌物料，不在 Logo 资产流程内：由独立的封面模块 `tools/covers.py` 管理，平台与画幅登记在 `config/cover-platforms.toml`（`./logo cover list` 查看）。
 - **密钥绝不入库**：`.env`、私钥、证书、凭据文件以及任何 API key/token 都不得出现在两个仓库的提交中；系统仓库的 `.gitignore` 是白名单，钩子还会按文件名与内容扫描拦截。需要密钥时放在仓库之外或环境变量中。
 - **目录纪律**：两个仓库里都只允许出现规定结构内的文件。描摹中间件、临时脚本、测试输出一律放 `.cache/`（已被 Git 忽略）或用完删除，绝不提交到根目录或项目目录。
 - **SVG 规范**：使用 viewBox；禁止 hardcoded width/height；所有文字使用 `./logo outline --project <slug>` 转曲；颜色必须来自 `project.toml` 色板的十六进制值；不准用外链/位图/脚本/事件属性（`onload` 等）/CSS 外部资源（`@import`、`url(http…)`）。

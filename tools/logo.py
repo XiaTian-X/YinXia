@@ -25,6 +25,9 @@ import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+# ./logo 以脚本方式运行本文件（__main__）；登记为 logo，使 covers.py 的 import logo 拿到同一份模块
+sys.modules.setdefault("logo", sys.modules[__name__])
+
 # ---------------------------------------------------------------------------
 # 路径与常量
 # ---------------------------------------------------------------------------
@@ -32,7 +35,6 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = ROOT / "projects"  # 独立的项目 Git 仓库（系统仓库中被忽略）
 TEMPLATES = ROOT / "templates"
 CONFIG = ROOT / "config"
-PROFILES_TOML = CONFIG / "export-profiles.toml"  # 封面平台登记（第二期迁走）
 TARGETS_TOML = CONFIG / "logo-targets.toml"
 CACHE = ROOT / ".cache"
 FONTS_DIR = ROOT / "assets" / "fonts"
@@ -1221,11 +1223,6 @@ def cmd_compare(a) -> None:
 # ---------------------------------------------------------------------------
 # 命令：export
 # ---------------------------------------------------------------------------
-def load_profiles() -> dict:
-    """封面平台登记（第二期迁往封面模块）。"""
-    return load_toml(PROFILES_TOML)
-
-
 def resvg_version() -> str:
     return run(["resvg", "--version"], capture=True).strip()
 
@@ -1658,15 +1655,9 @@ def spec_warnings(name: str, item: dict) -> list[str]:
 
 
 def profile_warnings() -> list[str]:
-    """Logo 目标（iOS / Android / 头像）与封面平台登记的规格依据检查。"""
+    """Logo 目标（iOS / Android / 头像）的规格依据检查；封面平台由 covers.py 检查。"""
     t = load_targets()
-    out = [w for key in ("ios", "android", "avatar") for w in spec_warnings(key, t[key])]
-    social = load_profiles().get("social", {})
-    for c in social.get("cover", []):
-        out.extend(spec_warnings(f"cover.{c['id']}", c))
-    if social.get("pending"):
-        out.append("以下平台规格待补充：" + "、".join(social["pending"]))
-    return out
+    return [w for key in ("ios", "android", "avatar") for w in spec_warnings(key, t[key])]
 
 
 def git(*args: str, check: bool = True, repo: str = "system") -> subprocess.CompletedProcess:
@@ -1920,6 +1911,8 @@ def cmd_check(a) -> None:
             check_hooks(warnings)
         try:
             warnings.extend(profile_warnings())
+            import covers  # 延迟导入：covers.py 依赖本模块
+            covers.check_platforms(errors, warnings)
         except LogoError as e:
             errors.append(str(e))
     for w in warnings:
@@ -2087,6 +2080,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("tests", nargs="*", help="只运行指定测试，如 test_unit 或 test_guards.DocsTest")
     s.add_argument("-v", "--verbose", action="store_true")
     s.set_defaults(fn=cmd_selftest)
+
+    import covers  # 延迟导入：covers.py 依赖本模块
+    covers.register(sub)
 
     s = sub.add_parser("index", help="重新生成 PROJECTS.md")
     s.set_defaults(fn=cmd_index)

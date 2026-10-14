@@ -1,153 +1,165 @@
-# 封面平台登记（第二期迁往 config/cover-platforms.toml，由独立的封面模块使用）。
-# Logo 资产的目标见 config/logo-targets.toml。
+# 封面平台登记 —— 由封面模块（tools/covers.py）使用，与 Logo 资产（config/logo-targets.toml）无关。
+#
+# [ratios]  画幅：同一画幅的平台共用一份设计稿，画布尺寸即起稿尺寸；
+# [[platform]] 平台：导出时从所属画幅的画布“铺满后居中裁切”到平台尺寸；
+#              safe / occlusions 为平台尺寸下的 [x, y, 宽, 高]（安全区 / 头像等遮挡区）。
+# 规格依据：basis = official（须有官方 source）/ common（业内通用，须写 verify_note）/ generic（泛用比例）；
+#           超过 12 个月未复核会提醒。
 
-[social]
-[[social.cover]]
+[ratios]
+"16x9" = { width = 2560, height = 1440, label = "横幅 16:9" }
+"3x1" = { width = 1500, height = 500, label = "横幅 3:1" }
+"2.7x1" = { width = 1640, height = 624, label = "横幅约 2.6:1" }
+"6x1" = { width = 1920, height = 320, label = "窄横幅 6:1" }
+"1.91x1" = { width = 1200, height = 630, label = "分享图 1.91:1" }
+"4x3" = { width = 1600, height = 1200, label = "横版 4:3" }
+"3x4" = { width = 1200, height = 1600, label = "竖版 3:4" }
+"9x16" = { width = 1080, height = 1920, label = "竖屏 9:16" }
+"1x1" = { width = 1080, height = 1080, label = "方形 1:1" }
+
+[[platform]]
 id = "youtube"
-layout = "cover-16x9"
+name = "YouTube 频道横幅"
+ratio = "16x9"
 width = 2560
 height = 1440
-safe = [507, 509, 1546, 423] # 官方：最小尺寸 2048x1152 时文字/Logo 安全区 1235x338，按 2560 等比放大
+safe = [507, 509, 1546, 423]  # 官方：最小尺寸 2048x1152 时文字/Logo 安全区 1235x338，按 2560 等比放大
 verified_on = "2026-10-13"
 source = "https://support.google.com/youtube/answer/10456525"
 
-[[social.cover]]
+[[platform]]
 id = "x"
-layout = "cover-3x1"
+name = "X 个人主页头图"
+ratio = "3x1"
 width = 1500
 height = 500
-occlusions = [[0, 200, 400, 300]] # profile picture area roughly
+occlusions = [[0, 200, 400, 300]]  # 左下角个人头像的大致遮挡范围
 verified_on = "2026-10-13"
 source = "https://help.x.com/en/managing-your-account/common-issues-when-uploading-profile-photo"
 verify_note = "help.x.com 拒绝自动抓取，经搜索摘要核对官方原文 1500x500"
 
-[[social.cover]]
+[[platform]]
 id = "facebook"
-layout = "cover-2.7x1"
+name = "Facebook 主页封面"
+ratio = "2.7x1"
 width = 820
 height = 312
+basis = "common"
 verified_on = "2026-10-13"
 source = "https://www.facebook.com/help/125379114252045"
 verify_note = "官方帮助页无法自动读取；按通用规格：桌面 820x312（手机端显示 640x360 裁切）"
-basis = "common"
 
-[[social.cover]]
+[[platform]]
 id = "linkedin"
-layout = "cover-6x1"
+name = "LinkedIn 公司主页封面"
+ratio = "6x1"
 width = 1512
 height = 256
 verified_on = "2026-10-13"
 source = "https://www.linkedin.com/help/linkedin/answer/a563309"
 
-[[social.cover]]
+[[platform]]
 id = "og"
-layout = "cover-og"
+name = "Open Graph 分享图"
+ratio = "1.91x1"
 width = 1200
 height = 630
 verified_on = "2026-10-13"
 source = "https://developers.facebook.com/docs/sharing/webmasters/images"
 
-[[social.cover]]
-id = "ratio-4x3"
-layout = "cover-4x3"
-width = 1600
-height = 1200
-verified_on = "2026-10-09"
-generic = true # 通用比例，不对应具体平台，不做来源核对
-
-[[social.cover]]
-id = "ratio-3x4"
-layout = "cover-3x4"
-width = 1200
-height = 1600
-verified_on = "2026-10-09"
-generic = true # 通用比例，不对应具体平台，不做来源核对
-
-[[social.cover]]
+[[platform]]
 id = "github"
-layout = "cover-og"
+name = "GitHub 仓库社交预览图"
+ratio = "1.91x1"
 width = 1280
 height = 640
 verified_on = "2026-10-13"
 source = "https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/customizing-your-repositorys-social-media-preview"
 
-[[social.cover]]
+[[platform]]
 id = "xiaohongshu"
-layout = "cover-3x4"
+name = "小红书图文笔记封面"
+ratio = "3x4"
 width = 1080
 height = 1440
-verify_note = "未找到官方规格页；按通用规格：图文笔记竖版 3:4，1080x1440"
 basis = "common"
 verified_on = "2026-10-13"
+verify_note = "未找到官方规格页；按通用规格：图文笔记竖版 3:4，1080x1440"
 
-[[social.cover]]
+[[platform]]
 id = "douyin"
-layout = "cover-9x16"
+name = "抖音视频封面"
+ratio = "9x16"
 width = 1080
 height = 1920
-verify_note = "未找到官方规格页；按通用规格：竖版 9:16，1080x1920，底部与右侧有界面遮挡"
 basis = "common"
 verified_on = "2026-10-13"
+verify_note = "未找到官方规格页；按通用规格：竖版 9:16，1080x1920，底部与右侧有界面遮挡"
 
-# ── 国内平台（无官方规格页，按通用规格；导出时按版式铺满后居中裁切）──
-
-[[social.cover]]
+[[platform]]
 id = "wechat-mp"
-layout = "cover-2.7x1"
+name = "微信公众号首条封面"
+ratio = "2.7x1"
 width = 900
 height = 383
 basis = "common"
 verified_on = "2026-10-13"
 verify_note = "微信公众号首条封面，通用规格 900x383（2.35:1），由 2.7:1 版式左右各裁约 6.5%"
 
-[[social.cover]]
+[[platform]]
 id = "wechat-mp-thumb"
-layout = "avatar"
+name = "微信公众号次条封面"
+ratio = "1x1"
 width = 500
 height = 500
 basis = "common"
 verified_on = "2026-10-13"
 verify_note = "微信公众号次条封面为 1:1（常见说法 200x200 或 300x300），按 500x500 高分辨率导出"
 
-[[social.cover]]
+[[platform]]
 id = "weibo"
-layout = "cover-3x1"
+name = "微博主页封面"
+ratio = "3x1"
 width = 980
 height = 300
 basis = "common"
 verified_on = "2026-10-13"
 verify_note = "微博主页封面，通用规格 980x300（另有 920x300 的说法），由 3:1 版式上下各裁约 4%"
 
-[[social.cover]]
+[[platform]]
 id = "wechat-channels"
-layout = "cover-3x4"
+name = "视频号竖版封面"
+ratio = "3x4"
 width = 1080
 height = 1260
 basis = "common"
 verified_on = "2026-10-13"
 verify_note = "视频号竖版封面，通用规格 6:7 即 1080x1260（不是 3:4），由 3:4 版式上下各裁约 6%"
 
-[[social.cover]]
+[[platform]]
 id = "kuaishou"
-layout = "cover-9x16"
+name = "快手视频封面"
+ratio = "9x16"
 width = 1080
 height = 1920
 basis = "common"
 verified_on = "2026-10-13"
 verify_note = "快手竖版封面，按竖屏视频通用规格 9:16，1080x1920"
 
-[[social.cover]]
+[[platform]]
 id = "bilibili"
-layout = "cover-6x1"
+name = "B 站空间头图"
+ratio = "6x1"
 width = 1920
 height = 320
 basis = "generic"
 verified_on = "2026-10-13"
 verify_note = "B 站空间头图未找到官方或可靠的通用尺寸，按通用宽幅横幅 6:1 导出，上传时以平台裁切预览为准"
 
-[[social.cover]]
+[[platform]]
 id = "zhihu"
-layout = "cover-3x1"
+name = "知乎主页背景图"
+ratio = "3x1"
 width = 1500
 height = 500
 basis = "generic"

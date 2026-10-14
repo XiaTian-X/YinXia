@@ -52,7 +52,7 @@ class PlaceholderTest(unittest.TestCase):
 class PathRulesTest(unittest.TestCase):
     def test_system_allowlist(self):
         ok = ["tools/logo.py", "tools/requirements.txt", "tests/test_unit.py", "templates/projects.gitignore",
-              "templates/brief.md", "config/export-profiles.toml", "assets/fonts/fonts.toml",
+              "templates/brief.md", "config/cover-platforms.toml", "assets/fonts/fonts.toml",
               "assets/fonts/inter/LICENSE.txt", ".githooks/projects/pre-commit", ".claude/settings.json",
               ".agents/skills/logo-workflow/SKILL.md", "AGENTS.md", "logo"]
         bad = ["notes.txt", ".env", "trace.py", "tools/run.sh", "tools/debug.log", "config/x.json",
