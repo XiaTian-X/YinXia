@@ -160,6 +160,7 @@ STRUCTURE_MIN_RATIO = 0.6
 STRUCTURE_MIN_INTERIOR = 150  # 彩色版内部分界线少于此像素数视为没有内部结构（如同色图形重叠的抗锯齿接缝）
 STRUCTURE_RENDER_SIZE = 256
 STRUCTURE_CACHE = CACHE / "structure-cache.json"
+HISTORY_CACHE = CACHE / "history-check.json"  # 项目仓库历史扫描结果（按 HEAD 缓存）
 MODE_NAMES = {"color": "彩色", "mono": "单色", "reversed": "反白"}
 STRUCTURE_PALETTE_HINT = "在 [color_modes.mono] 中把部分颜色映射为 #FFFFFF、在 [color_modes.reversed] 中映射为 #000000，作为留白保留细节"
 
@@ -172,6 +173,8 @@ RELEASE_LAYOUT_CHECKLIST = "\n".join((
 
 # Logo 资产：标志版式（svg 目标与单色结构检查的对象）与按需生成的目标
 LOGO_LAYOUTS = ("primary", "icon", "horizontal", "wordmark-cn", "wordmark-en")
+MANUAL_LAYOUTS = ("app-icon", "avatar")  # 自动排版不满意时的手工覆盖
+LAYOUT_NAMES_HINT = "可用：" + "、".join(LOGO_LAYOUTS + MANUAL_LAYOUTS) + " 及 <标志版式>.<配色>.svg"
 TARGET_NAMES = ("svg", "favicon", "ios", "android", "avatar")
 LEGACY_PROFILE_TARGETS = {"general": "svg", "favicon": "favicon", "ios": "ios", "android": "android",
                           "social": "avatar"}  # 旧写法 [export] profiles 的换算
@@ -470,6 +473,18 @@ def project_targets(p: Project) -> list[str]:
 def release_logo_layouts(ldir: Path) -> list[str]:
     """发布中存在的标志版式（svg 目标与单色结构检查的对象），按固定顺序。"""
     return [n for n in LOGO_LAYOUTS if (ldir / f"{n}.svg").exists()]
+
+
+def is_layout_file(name: str) -> bool:
+    """文件名是否为系统认识的发布版式：标志版式、app-icon / avatar 手工覆盖、标志版式的配色覆盖 name.mode.svg。
+    其他文件（如旧发布里的 cover-*.svg）生成时会被忽略。"""
+    if not name.endswith(".svg"):
+        return False
+    stem = name[:-4]
+    if stem in LOGO_LAYOUTS or stem in MANUAL_LAYOUTS:
+        return True
+    m = re.fullmatch(r"(.+)\.([a-z]+)", stem)
+    return bool(m and m.group(1) in LOGO_LAYOUTS)
 
 
 def mark_layout(ldir: Path) -> str:
@@ -869,10 +884,17 @@ def cmd_release(a) -> None:
     rdir = p.dir / "releases" / rid
     layouts = rdir / "layouts"
     src = a.based_on
+    skipped: list[str] = []
     if RELEASE_RE.fullmatch(src):
         root_version = p.release_root_version(src)
-        # 只继承版式；guide.md 为只追加文件，新发布重新起稿，避免误继承
-        shutil.copytree(p.release_dir(src) / "layouts", layouts)
+        # 只继承版式；guide.md 为只追加文件，新发布重新起稿，避免误继承。
+        # 系统不认识的文件（如旧发布中的 cover-*.svg，封面已改由 ./logo cover 管理）不继承
+        layouts.mkdir(parents=True)
+        for f in sorted((p.release_dir(src) / "layouts").glob("*.svg")):
+            if is_layout_file(f.name):
+                shutil.copyfile(f, layouts / f.name)
+            else:
+                skipped.append(f.name)
     elif VERSION_ID_RE.match(src):
         version_svg = p.version_dir(src) / "logo.svg"  # 校验存在
         root_version = src
@@ -889,6 +911,8 @@ def cmd_release(a) -> None:
     p.set_state(stage="releasing", current_release=rid,
                 selected_direction=root_version.split("-")[0], selected_version=root_version)
     print(f"已创建发布：{rid} → {rel(rdir)}（定稿版本：{root_version}）")
+    if skipped:
+        print(f"未继承 {src} 中不属于 Logo 版式的文件：{', '.join(skipped)}（封面请用 ./logo cover 管理）")
     if VERSION_ID_RE.match(src) and (layouts / "primary.svg").exists():
         print(f"已用 {src}/logo.svg 起稿主版 layouts/primary.svg：提交前可调整（如留白），提交后冻结")
     print("其余版式可选（见 release.md 清单）；完成后用 ./logo preview 查看自动排版效果")
@@ -1391,7 +1415,8 @@ def cmd_export(a) -> None:
     shutil.rmtree(build, ignore_errors=True)
     manifest = write_dist_extras(p, rid, rdir, root_version, dist, targets)
     print(f"已生成 {', '.join(targets)} → {rel(dist)}（{rid} ← {root_version}；目录内共 {len(manifest['files'])} 个文件，不提交）")
-    for w in target_warnings(p, ldir):
+    committed = projects_paths("ls-tree", "-r", "--name-only", "-z", "HEAD")
+    for w in target_warnings(p, ldir) + release_doc_warnings(p, rid, committed):
         print(f"⚠ {w}")
 
 
@@ -1524,6 +1549,33 @@ def legacy_config(cfg: dict) -> list[str]:
     return out
 
 
+def release_doc_warnings(p: Project, rid: str, committed: set[str]) -> list[str]:
+    """已提交的发布文档（只追加，不能改写）是否可交付、可追溯。尚未提交的由 check_new_docs 检查，这里跳过。
+
+    - guide.md 留有模板占位：export 会拒绝，追加也补不上，只能新建发布；
+    - release.md 没有引用决策记录：追溯链缺“决策依据”，可补写决策后在末尾追加引用。
+    """
+    out = []
+    rdir = p.release_dir(rid)
+    base = f"{p.slug}/releases/{rid}"
+    guide = rdir / "guide.md"
+    if f"{base}/guide.md" in committed and guide.exists():
+        holes = unfilled_placeholders(f"{base}/guide.md", guide.read_text(encoding="utf-8"))
+        if holes:
+            out.append(f"{rel(guide)}: 发布 {rid} 无法导出——guide.md 已提交但还有 {len(holes)} 处模板占位"
+                       f"（只能追加，补不上）；请 ./logo release {p.slug} --from {rid} 新建发布，并在提交前填完 guide.md")
+    rmd = rdir / "release.md"
+    if f"{base}/release.md" in committed and rmd.exists():
+        refs = DECISION_REF_RE.findall(rmd.read_text(encoding="utf-8"))
+        if not refs:
+            out.append(f"{rel(rmd)}: 发布 {rid} 没有引用决策记录，追溯链缺少“决策依据”；"
+                       f"可用 ./logo decision {p.slug} <短名> 补写决策，再在 release.md 末尾追加引用 decisions/NNN-*.md")
+        for ref in refs:
+            if not (p.dir / "decisions" / ref).exists():
+                out.append(f"{rel(rmd)}: 引用的决策记录不存在 decisions/{ref}")
+    return out
+
+
 def check_project(p: Project, errors: list[str], warnings: list[str], staged: bool = False) -> None:
     try:
         cfg = p.cfg
@@ -1593,6 +1645,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
 
     modes = cfg.get("color_modes", {}).get("modes", ["color"])
     release_versions: dict[str, str] = {}
+    committed = projects_paths("ls-tree", "-r", "--name-only", "-z", "HEAD")  # 已提交（冻结/只追加生效）的文件
+    indexed = projects_paths("ls-files", "-z", "--cached") if staged else set()
     for rd in p.releases():
         try:
             release_versions[rd.name] = p.release_root_version(rd.name)
@@ -1601,15 +1655,30 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
         ldir = rd / "layouts"
         if not (ldir / "primary.svg").exists():
             errors.append(f"{rel(ldir)}: 缺少主版 primary.svg（发布唯一必需的版式）")
+        unknown: dict[str, list[str]] = {"frozen": [], "new": [], "staged": []}
         for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
             check_svg(f, layout_palette(p, f, palette), errors, warnings, staged)
-            m = re.fullmatch(r"(.+)\.([a-z]+)", f.stem)  # 手工配色覆盖文件 name.mode.svg（cover-2.7x1 不算）
+            if not is_layout_file(f.name):
+                path = f.relative_to(PROJECTS).as_posix()
+                kind = "frozen" if path in committed else "new" if not staged else "staged" if path in indexed else ""
+                if kind:
+                    unknown[kind].append(f.name)
+                continue
+            m = re.fullmatch(r"(.+)\.([a-z]+)", f.stem)  # 手工配色覆盖文件 name.mode.svg
             if m:
                 base, mode = m.groups()
                 if not (ldir / f"{base}.svg").exists():
                     errors.append(f"{rel(f)}: 覆盖文件没有对应的基础版式 {base}.svg")
                 if mode == "color" or mode not in modes:
                     errors.append(f"{rel(f)}: 覆盖文件的配色 {mode} 不在 [color_modes] modes 中（color 不可覆盖）")
+        hint = f"不是系统认识的版式（{LAYOUT_NAMES_HINT}），生成时会被忽略"
+        if unknown["frozen"] and rd.name == cur_rel:  # 已冻结无法删除；只对当前发布提醒
+            warnings.append(f"{rel(ldir)}: {', '.join(unknown['frozen'])} {hint}；"
+                            f"已冻结，./logo release {p.slug} --from {rd.name} 不会继承")
+        if unknown["new"]:
+            warnings.append(f"{rel(ldir)}: {', '.join(unknown['new'])} {hint}；提交时会被拦截，请改名或删除（封面请用 ./logo cover）")
+        if unknown["staged"]:
+            errors.append(f"{rel(ldir)}: {', '.join(unknown['staged'])} {hint}；请改名或删除（封面请用 ./logo cover）")
 
     if cur_rel in release_versions:
         root = release_versions[cur_rel]
@@ -1622,6 +1691,7 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
                 warnings.extend(target_warnings(p, ldir))
         except LogoError as e:
             warnings.append(f"{rel(ldir)}: 无法完成版式检查：{e}")
+        warnings.extend(release_doc_warnings(p, cur_rel, committed))
 
     if sel_ver and "selected_version" in valid and (cur_rel not in release_versions
                                                     or release_versions[cur_rel] != sel_ver):
@@ -1761,6 +1831,81 @@ def check_immutability(staged: bool, errors: list[str]) -> None:
             new = git("show", f":{path}", repo="projects").stdout if staged else (PROJECTS / path).read_bytes()
             if not new.startswith(old.rstrip(b"\n")):
                 errors.append(f"projects/{path}: 只允许在末尾追加内容，已有内容不能修改")
+
+
+def projects_paths(*args: str) -> set[str]:
+    """项目仓库中 git 命令（ls-tree / ls-files 等，带 -z）列出的路径；命令失败（如尚无提交）时为空集。"""
+    if not projects_repo_ready():
+        return set()
+    r = git(*args, check=False, repo="projects")
+    return {x for x in r.stdout.decode("utf-8").split("\0") if x} if r.returncode == 0 else set()
+
+
+def check_history(warnings: list[str]) -> None:
+    """扫描项目仓库全部历史中违反不可变规则的提交（冻结文件被改/删、只追加文件被改写）。
+
+    钩子只把守下一次提交，用 --no-verify 绕过的提交事后只能从历史里发现；改写历史（amend / rebase）
+    无法从本地察觉，需要远程仓库保护。结果按 HEAD 与规则缓存，HEAD 不变时不重复扫描。
+    """
+    r = git("rev-parse", "HEAD", check=False, repo="projects")
+    if r.returncode != 0:
+        return
+    rules = "|".join(pt.pattern for pt in FROZEN_PATTERNS + APPEND_ONLY_PATTERNS)
+    key = hashlib.sha256(f"v1|{r.stdout.decode().strip()}|{rules}".encode()).hexdigest()
+    try:
+        cache = json.loads(HISTORY_CACHE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        cache = {}
+    if cache.get("key") != key:
+        found = []
+        log = git("-c", "core.quotePath=false", "log", "--format=@@%H", "--name-status", "--no-renames",
+                  "--diff-filter=MD", repo="projects").stdout.decode("utf-8")
+        commit = ""
+        for line in log.splitlines():
+            if line.startswith("@@"):
+                commit = line[2:]
+                continue
+            status, _, path = line.partition("\t")
+            if not path:
+                continue
+            if any(pt.match(path) for pt in FROZEN_PATTERNS):
+                found.append(f"{commit[:7]} {'删除' if status == 'D' else '修改'}了冻结文件 {path}")
+            elif any(pt.match(path) for pt in APPEND_ONLY_PATTERNS):
+                if status == "D":
+                    found.append(f"{commit[:7]} 删除了只追加文件 {path}")
+                    continue
+                old = git("show", f"{commit}^:{path}", check=False, repo="projects").stdout
+                new = git("show", f"{commit}:{path}", check=False, repo="projects").stdout
+                if not new.startswith(old.rstrip(b"\n")):
+                    found.append(f"{commit[:7]} 改写了只追加文件 {path}")
+        cache = {"key": key, "found": found}
+        HISTORY_CACHE.parent.mkdir(parents=True, exist_ok=True)
+        HISTORY_CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    found = cache["found"]
+    if found:
+        more = f" 等 {len(found)} 处" if len(found) > 5 else ""
+        warnings.append(f"项目仓库历史中有提交违反不可变规则（多半是用 --no-verify 绕过了钩子）：{'；'.join(found[:5])}{more}。"
+                        "历史无法自动修复，请确认是否有意为之")
+
+
+def check_backup(warnings: list[str]) -> None:
+    """两个仓库是否有本机之外的备份：没有远程、没有上游或有未推送的提交时提醒（只读本地记录，不访问网络）。"""
+    for repo, label, cmd in (("system", "系统", "git"), ("projects", "项目", "git -C projects")):
+        if repo == "projects" and not projects_repo_ready():
+            continue
+        if git("rev-parse", "--verify", "HEAD", check=False, repo=repo).returncode != 0:
+            continue  # 尚无提交
+        if not git("remote", check=False, repo=repo).stdout.decode().split():
+            warnings.append(f"{label}仓库没有配置远程仓库：全部历史只存在本机，磁盘损坏即丢失，也无法在服务器端防止历史被改写；"
+                            f"建议添加私有远程（{cmd} remote add origin <地址>）并定期推送")
+            continue
+        up = git("rev-parse", "--abbrev-ref", "@{u}", check=False, repo=repo)
+        if up.returncode != 0:
+            warnings.append(f"{label}仓库当前分支没有设置上游，无法判断是否已备份（{cmd} push -u origin <分支>）")
+            continue
+        ahead = int(git("rev-list", "--count", "@{u}..HEAD", repo=repo).stdout.decode().strip() or 0)
+        if ahead:
+            warnings.append(f"{label}仓库有 {ahead} 个提交尚未推送到 {up.stdout.decode().strip()}")
 
 
 @functools.lru_cache(maxsize=None)
@@ -1973,8 +2118,11 @@ def cmd_check(a) -> None:
         if scope != "projects":
             check_stray_files("system", errors, warnings)
             check_secrets("system", a.staged, errors)
-        if not a.staged:
+        if not a.staged:  # 以下只在手动检查时运行，不拖慢提交
             check_hooks(warnings)
+            check_backup(warnings)
+            if has_projects and scope != "system":
+                check_history(warnings)
         try:
             warnings.extend(profile_warnings())
             import covers  # 延迟导入：covers.py 依赖本模块

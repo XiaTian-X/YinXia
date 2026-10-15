@@ -50,6 +50,15 @@ class PlaceholderTest(unittest.TestCase):
                 self.assertEqual(logo.unfilled_placeholders(path, f.read_text(encoding="utf-8")), [])
 
 
+class LayoutNamesTest(unittest.TestCase):
+    def test_known_and_unknown(self):
+        for ok in ("primary.svg", "icon.mono.svg", "wordmark-cn.reversed.svg", "app-icon.svg", "avatar.svg"):
+            self.assertTrue(logo.is_layout_file(ok), ok)
+        # 旧发布的封面、拼写错误、手工覆盖的配色文件（不会被使用）、非 SVG
+        for bad in ("cover-og.svg", "cover-2.7x1.svg", "primay.svg", "app-icon.mono.svg", "primary.png"):
+            self.assertFalse(logo.is_layout_file(bad), bad)
+
+
 class PathRulesTest(unittest.TestCase):
     def test_system_allowlist(self):
         ok = ["tools/logo.py", "tools/requirements.txt", "tests/test_unit.py", "templates/projects.gitignore",

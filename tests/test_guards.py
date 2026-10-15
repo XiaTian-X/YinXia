@@ -107,6 +107,103 @@ class DocsTest(GuardBase):
         self.assertCommitted(self.ws.commit("projects", "[demo] brief"))  # brief 可随时修改，只提醒不拦截
 
 
+class LegacyDataTest(GuardBase):
+    """规则出台前（或绕过钩子）提交的数据：钩子只看新增文档，这些要由 check 提醒。"""
+
+    def bypass(self, msg: str) -> None:
+        self.ws.git("projects", "add", "-A")
+        self.ws.git("projects", "commit", "-q", "--no-verify", "-m", msg)
+
+    def release(self, src: str) -> str:
+        """发布并填完文档、引用决策记录（不提交），返回发布号。"""
+        out = self.ws.logo("release", "demo", "--from", src).stdout
+        rid = out.split("已创建发布：", 1)[1].split()[0]
+        rdir = self.p / "releases" / rid
+        if not list((self.p / "decisions").glob("*.md")):
+            self.ws.logo("decision", "demo", "finalize-a-v001")
+            fill_doc(next((self.p / "decisions").glob("*.md")))
+        fill_doc(rdir / "release.md")
+        fill_doc(rdir / "guide.md")
+        with (rdir / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-finalize-a-v001.md\n")
+        self.ws.logo("index")
+        return rid
+
+    def test_committed_release_readiness(self):
+        ws = self.ws
+        ws.logo("release", "demo", "--from", "A-v001")
+        ws.logo("index")
+        self.bypass("[demo] legacy r1")  # 模板未填、没有决策记录
+        out = ws.logo("check").stdout
+        self.assertIn("发布 r1 无法导出", out)
+        self.assertIn("发布 r1 没有引用决策记录", out)
+        # 决策依据可以在末尾追加补上；guide.md 补不上，只能新建发布
+        ws.logo("decision", "demo", "finalize-a-v001")
+        fill_doc(next((self.p / "decisions").glob("*.md")))
+        with (self.p / "releases" / "r1" / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n## 决策依据（补记）\ndecisions/001-finalize-a-v001.md\n")
+        self.assertCommitted(ws.commit("projects", "[demo] r1 补记决策依据"))
+        out = ws.logo("check").stdout
+        self.assertNotIn("没有引用决策记录", out)
+        self.assertIn("发布 r1 无法导出", out)
+        self.release("r1")
+        self.assertCommitted(ws.commit("projects", "[demo] r2"))
+        self.assertNotIn("无法导出", ws.logo("check").stdout)  # 只看当前发布
+
+    def test_unknown_layouts(self):
+        ws = self.ws
+        self.release("A-v001")
+        self.assertCommitted(ws.commit("projects", "[demo] r1"))
+        self.release("r1")
+        lay = self.p / "releases" / "r2" / "layouts"
+        for name in ("cover-og.svg", "primay.svg"):
+            (lay / name).write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        out = ws.logo("check").stdout
+        self.assertIn("cover-og.svg, primay.svg 不是系统认识的版式", out)
+        self.assertIn("提交时会被拦截", out)
+        self.assertBlocked(ws.commit("projects", "[demo] r2"), "cover-og.svg, primay.svg 不是系统认识的版式")
+        self.bypass("[demo] legacy r2")
+        self.assertIn("已冻结，./logo release demo --from r2 不会继承", ws.logo("check").stdout)
+        out = ws.logo("release", "demo", "--from", "r2").stdout
+        self.assertIn("未继承 r2 中不属于 Logo 版式的文件：cover-og.svg, primay.svg", out)
+        self.assertEqual(sorted(f.name for f in (self.p / "releases" / "r3" / "layouts").iterdir()), ["primary.svg"])
+
+    def test_bypassed_commits_found_in_history(self):
+        ws = self.ws
+        notes = self.v1 / "notes.md"
+        notes.write_text(notes.read_text(encoding="utf-8") + "\n- 追加的评审意见\n", encoding="utf-8")
+        self.assertCommitted(ws.commit("projects", "[demo] 追加评审"))
+        self.assertNotIn("违反不可变规则", ws.logo("check").stdout)  # 正常追加不算
+        (self.v1 / "logo.svg").write_text(TRIANGLE.format(c=PRIMARY).replace("M10 90", "M20 90"), encoding="utf-8")
+        notes.write_text("改写开头\n" + notes.read_text(encoding="utf-8"), encoding="utf-8")
+        self.bypass("[demo] 绕过钩子")
+        out = ws.logo("check").stdout
+        self.assertIn("违反不可变规则", out)
+        self.assertIn("修改了冻结文件 demo/directions/A-mountain/v001/logo.svg", out)
+        self.assertIn("改写了只追加文件 demo/directions/A-mountain/v001/notes.md", out)
+        self.assertIn("违反不可变规则", ws.logo("check").stdout)  # 走缓存时结果相同
+
+
+class BackupTest(GuardBase):
+    def test_remote_upstream_and_unpushed(self):
+        ws = self.ws
+        out = ws.logo("check").stdout
+        self.assertIn("系统仓库没有配置远程仓库", out)
+        self.assertIn("项目仓库没有配置远程仓库", out)
+        bare = ws.tmp / "projects-remote.git"
+        ws.git("projects", "init", "-q", "--bare", str(bare))
+        ws.git("projects", "remote", "add", "origin", str(bare))
+        self.assertIn("项目仓库当前分支没有设置上游", ws.logo("check").stdout)
+        ws.git("projects", "push", "-q", "-u", "origin", "main")
+        out = ws.logo("check").stdout
+        self.assertNotIn("项目仓库没有配置远程仓库", out)
+        self.assertNotIn("项目仓库当前分支", out)
+        self.assertNotIn("尚未推送", out)
+        ws.new_version()
+        self.assertCommitted(ws.commit("projects", "[demo] A-v002"))
+        self.assertIn("项目仓库有 1 个提交尚未推送到 origin/main", ws.logo("check").stdout)
+
+
 class FontUsageTest(GuardBase):
     OUTLINED = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">\n'
                 '<!-- outline: font={f} size=100 tracking=0 shaper=harfbuzz-14.6.0 features=kern=1 lang=auto text="A" bbox=0,0,1,1 advance=1 -->\n'
