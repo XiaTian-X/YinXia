@@ -122,6 +122,25 @@ def needed_ratios(platform_ids: list[str]) -> list[str]:
     return [k for k in load_config()["ratios"] if k in wanted]
 
 
+class Family:
+    """家族封面的归属方：系列（封面在 projects/_series/<系列>/covers/，同时展示多个成员的 Logo）。
+    与 logo.Project 一样提供 slug（写作 series:<系列名>）与 dir，封面命令据此对两者一视同仁。"""
+
+    def __init__(self, sid: str):
+        import series  # 延迟导入：series.py 依赖 logo
+        series.load_series(sid)
+        self.sid, self.slug, self.dir = sid, f"series:{sid}", series.SERIES_DIR / sid
+
+
+def owner_of(ref: str) -> "logo.Project | Family":
+    """封面命令的归属方参数：项目短名，或 series:<系列名>（家族封面）。"""
+    return Family(ref.split(":", 1)[1]) if ref.startswith("series:") else logo.Project(ref)
+
+
+def is_family(owner) -> bool:
+    return isinstance(owner, Family)
+
+
 def project_covers(p: "logo.Project") -> list[Path]:
     d = p.dir / "covers"
     return sorted(c for c in d.iterdir() if c.is_dir() and COVER_DIR_RE.match(c.name)) if d.exists() else []
@@ -152,10 +171,15 @@ def write_cover_cfg(cdir: Path, cfg: dict) -> None:
     if c.get("skeleton"):  # 套用的系列封面骨架，及套用时各份骨架设计稿的 sha256（骨架修改后据此提醒）
         shas = ", ".join(f"{q(k)} = {q(v)}" for k, v in c.get("skeleton_sha", {}).items())
         skeleton = f'skeleton = {q(c["skeleton"])}\nskeleton_sha = {{ {shas} }}\n'
+    if "members" in c:  # 家族封面：各成员及其所用发布（第一个为主品牌）
+        rels = ", ".join(f"{q(k)} = {q(v)}" for k, v in c["releases"].items())
+        used = f'members = {lst(c["members"])}\nreleases = {{ {rels} }}\n'
+    else:
+        used = f'release = {q(c["release"])}\n'
     (cdir / "cover.toml").write_text(
         "# 封面元数据（唯一事实来源），由 ./logo cover 命令维护，请勿手改\n"
         f'[cover]\nname = {q(c["name"])}\ntitle = {q(c["title"])}\ncreated = {q(c["created"])}\n'
-        f'release = {q(c["release"])}\nplatforms = {lst(c["platforms"])}\n{skeleton}\n'
+        f'{used}platforms = {lst(c["platforms"])}\n{skeleton}\n'
         f'[state]\nstatus = {q(st["status"])}\nlive_on = {lst(st["live_on"])}\n'
         f'live_since = {q(st["live_since"])}\nupdated = {q(st["updated"])}\n', encoding="utf-8")
 
@@ -230,15 +254,17 @@ def canonical(el: ET.Element) -> str:
 
 
 def logo_group(p: "logo.Project", ldir: Path, release: str, layout: str, mode: str,
-               x: float, y: float, height: float) -> str:
-    """把发布中的版式按指定配色原样嵌入为 <g id="logo">，用 transform 定位与缩放。"""
+               x: float, y: float, height: float, gid: str = "logo") -> str:
+    """把发布中的版式按指定配色原样嵌入为 <g id="logo">（家族封面为 logo-<项目>，并标注 data-project），
+    用 transform 定位与缩放。"""
     root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
     vx, vy, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
     root.set("width", logo.fmt_num(vw))
     root.set("height", logo.fmt_num(vh))
     s = height / vh
     n = logo.fmt_num
-    return (f'<g id="logo" data-release="{release}" data-layout="{layout}" data-mode="{mode}" '
+    project = f' data-project="{p.slug}"' if gid != "logo" else ""
+    return (f'<g id="{gid}"{project} data-release="{release}" data-layout="{layout}" data-mode="{mode}" '
             f'transform="translate({n(x)} {n(y)}) scale({n(s)})">' + ET.tostring(root, encoding="unicode") + "</g>")
 
 
@@ -247,7 +273,11 @@ def logo_errors(p: "logo.Project", root: ET.Element, where: str) -> list[str]:
     groups = [el for el in root.iter(f"{{{logo.SVG_NS}}}g") if el.get("id") == "logo"]
     if len(groups) != 1:
         return [f"{where}: 须有且只有一个 <g id=\"logo\">（Logo 由 ./logo cover new / sync-logo 嵌入）"]
-    g = groups[0]
+    return group_errors(p, groups[0], where)
+
+
+def group_errors(p: "logo.Project", g: ET.Element, where: str) -> list[str]:
+    """一个 Logo 分组须与 p 的发布中对应版式一致（只能移动、缩放）。"""
     rid, layout, mode = g.get("data-release", ""), g.get("data-layout", ""), g.get("data-mode", "")
     try:
         ldir = p.release_dir(rid) / "layouts"
@@ -264,6 +294,32 @@ def logo_errors(p: "logo.Project", root: ET.Element, where: str) -> list[str]:
         return [f"{where}: Logo 与 {rid}/{layout}.svg（{mode}）不一致——Logo 只能移动、缩放，不能改动内部；"
                 f"如需更新请运行 ./logo cover sync-logo"]
     return []
+
+
+def family_logo_errors(fam: Family, root: ET.Element, where: str, c: dict) -> list[str]:
+    """家族封面：每个成员恰有一个 <g id="logo-<项目>">，标注的项目与发布与 cover.toml 一致，且与该项目的发布指纹一致。"""
+    out = []
+    groups = [el for el in root.iter(f"{{{logo.SVG_NS}}}g") if (el.get("id") or "").startswith("logo")]
+    ids = [g.get("id") for g in groups]
+    for g in groups:
+        slug = g.get("id")[5:]
+        if g.get("id") == "logo" or slug not in c["members"]:
+            out.append(f"{where}: <g id=\"{g.get('id')}\"> 不是成员 Logo（家族封面的 Logo 分组为 logo-<项目>，"
+                       f"成员：{', '.join(c['members'])}）")
+            continue
+        if g.get("data-project") != slug:
+            out.append(f"{where}: <g id=\"{g.get('id')}\"> 标注的项目 {g.get('data-project')!r} 应为 {slug}")
+            continue
+        found = group_errors(logo.Project(slug), g, f"{where} Logo（{slug}）")
+        out.extend(found)
+        if not found and g.get("data-release") != c["releases"].get(slug):
+            out.append(f"{where}: Logo（{slug}）标注的发布 {g.get('data-release')} 与 cover.toml 记录的 "
+                       f"{c['releases'].get(slug)} 不一致（请用 ./logo cover sync-logo 更新，不要手改）")
+    for slug in c["members"]:
+        n = ids.count(f"logo-{slug}")
+        if n != 1:
+            out.append(f"{where}: 成员 {slug} 的 Logo 分组 <g id=\"logo-{slug}\"> 应有 1 个，实有 {n} 个")
+    return out
 
 
 # -- 设计稿规则 --------------------------------------------------------------------
@@ -320,6 +376,45 @@ def check_covers(p: "logo.Project", errors: list[str], warnings: list[str], stag
         check_cover(p, cdir, errors, warnings, staged)
 
 
+def family_members_ok(fam: Family, c: dict, where: str, errors: list[str]) -> bool:
+    """家族封面的成员：至少两个、都属于该系列、各自记录的发布存在。"""
+    import series  # 延迟导入：series.py 依赖 logo
+    members, rels = c.get("members"), c.get("releases")
+    if not isinstance(members, list) or not isinstance(rels, dict) or len(members) < 2:
+        errors.append(f"{where}: 家族封面须有 members（至少两个成员）与 releases")
+        return False
+    ok = True
+    for slug in members:
+        try:
+            proj = logo.Project(slug)
+        except logo.LogoError:
+            errors.append(f"{where}: 成员 {slug} 不存在")
+            ok = False
+            continue
+        if (series.membership(proj) or {}).get("id") != fam.sid:
+            errors.append(f"{where}: {slug} 不是系列 {fam.sid} 的成员")
+            ok = False
+        try:
+            proj.release_dir(rels.get(slug, ""))
+        except logo.LogoError:
+            errors.append(f"{where}: 成员 {slug} 所用发布 {rels.get(slug)!r} 不存在")
+            ok = False
+    return ok
+
+
+def check_family_covers(errors: list[str], warnings: list[str], staged: bool = False) -> None:
+    """检查各系列的家族封面（projects/_series/<系列>/covers/）。"""
+    import series  # 延迟导入：series.py 依赖 logo
+    try:
+        load_config()
+    except logo.LogoError:
+        return
+    for sid in series.all_series():
+        fam = Family(sid)
+        for cdir in project_covers(fam):
+            check_cover(fam, cdir, errors, warnings, staged)
+
+
 def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list[str], staged: bool = False) -> None:
     """检查一个封面：元数据、画幅稿规则、Logo 指纹、素材登记，以及校对提醒（提交检查与导出共用）。"""
     plats, ratios = platforms_by_id(), load_config()["ratios"]
@@ -339,10 +434,14 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
         errors.append(f"{where}/cover.toml: status 须为 {'/'.join(COVER_STATUSES)}")
     if not set(st.get("live_on", [])) <= set(targets):
         errors.append(f"{where}/cover.toml: live_on 只能是目标平台的子集")
-    try:
-        p.release_dir(c.get("release", ""))
-    except logo.LogoError:
-        errors.append(f"{where}/cover.toml: 所用 Logo 发布 {c.get('release')!r} 不存在")
+    if is_family(p):
+        if not family_members_ok(p, c, f"{where}/cover.toml", errors):
+            return
+    else:
+        try:
+            p.release_dir(c.get("release", ""))
+        except logo.LogoError:
+            errors.append(f"{where}/cover.toml: 所用 Logo 发布 {c.get('release')!r} 不存在")
     # 素材：每张图须有登记记录，且内容与登记的 sha256 一致
     assets: set[str] = set()
     adir = cdir / "assets"
@@ -370,7 +469,12 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
             warnings.append(f"{logo.rel(svg)}: 当前目标平台不需要画幅 {svg.stem}"
                             f"（若是为新平台预备，可用 ./logo cover retarget 加入目标平台）")
         root = check_cover_svg(svg, ratios[svg.stem], assets, errors, staged)
-        if root is not None:
+        if root is not None and is_family(p):
+            errors.extend(family_logo_errors(p, root, logo.rel(svg), c))
+            fonts = {f.get("id") for f in logo.load_fonts()}  # 家族封面不属于项目：转曲字体只须已登记
+            for fid in sorted(set(logo.OUTLINE_FONT_RE.findall(svg.read_text(encoding="utf-8"))) - fonts):
+                errors.append(f"{logo.rel(svg)}: 转曲所用字体 {fid} 未在 fonts.toml 登记")
+        elif root is not None:
             found = logo_errors(p, root, logo.rel(svg))
             errors.extend(found)
             g = next((el for el in root.iter() if el.get("id") == "logo"), None)
@@ -455,10 +559,10 @@ def cover_targets(p: "logo.Project", cdir: Path, names: list[str]) -> tuple[dict
 
 
 def cmd_preview(a) -> None:
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
     cdir = cover_dir(p, a.cover)
     _, platforms = cover_targets(p, cdir, a.platforms)
-    out_dir = logo.CACHE / p.slug / "covers" / cdir.name
+    out_dir = (logo.CACHE / "_series" / p.sid if is_family(p) else logo.CACHE / p.slug) / "covers" / cdir.name
     if out_dir.exists():
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True)
@@ -489,7 +593,7 @@ def cmd_preview(a) -> None:
 
 
 def cmd_export(a) -> None:
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
     cdir = cover_dir(p, a.cover)
     cfg, platforms = cover_targets(p, cdir, a.platforms)
     dist = p.dir / "dist" / "covers" / cdir.name
@@ -497,7 +601,7 @@ def cmd_export(a) -> None:
     old = read_manifest(dist)
     roots: dict[str, ET.Element] = {}
     written, warnings = [], []
-    origin = {"release": cfg["cover"]["release"], "git_head": logo.short_head("projects"),
+    origin = {"release": cfg["cover"].get("release") or cfg["cover"].get("releases"), "git_head": logo.short_head("projects"),
               "system_head": logo.short_head("system"), "renderer": logo.resvg_version()}
     # 暂存目录建在目标旁边（同一磁盘），os.replace 才能原子替换；系统临时目录可能在另一块磁盘上
     with tempfile.TemporaryDirectory(dir=dist.parent, prefix=".build-") as td:
@@ -609,17 +713,18 @@ def masked_alpha(png: Path, size: tuple[int, int], rects: list, inside: bool) ->
     return float(val.strip() or 0)
 
 
-def geometry_warnings(cdir: Path, ratio: str, platforms: list[dict]) -> list[str]:
+def geometry_warnings(cdir: Path, ratio: str, platforms: list[dict], groups=KEY_GROUPS) -> list[str]:
     """按平台检查关键内容（Logo、content）是否会被裁掉、超出安全区或被遮挡，以及 Logo 在手机上的显示高度。"""
     canvas = load_config()["ratios"][ratio]
     svg = cdir / f"{ratio}.svg"
     text = svg.read_text(encoding="utf-8")
-    key = "cover-geometry-v1|" + json.dumps([text, canvas, platforms, rules()], sort_keys=True, ensure_ascii=False)
+    key = "cover-geometry-v1|" + json.dumps([text, canvas, platforms, rules()] + ([list(groups)] if groups != KEY_GROUPS else []),
+                                             sort_keys=True, ensure_ascii=False)
     # 照片不影响结论（只渲染 Logo 与 content），所以只按设计稿文本、画布、平台与规则缓存
-    return logo.cached(key, lambda: _geometry_warnings(cdir, svg, canvas, platforms))
+    return logo.cached(key, lambda: _geometry_warnings(cdir, svg, canvas, platforms, groups))
 
 
-def _geometry_warnings(cdir: Path, svg: Path, canvas: dict, platforms: list[dict]) -> list[str]:
+def _geometry_warnings(cdir: Path, svg: Path, canvas: dict, platforms: list[dict], groups=KEY_GROUPS) -> list[str]:
     out: list[str] = []
     where = logo.rel(svg)
     root = ET.parse(svg).getroot()
@@ -627,7 +732,7 @@ def _geometry_warnings(cdir: Path, svg: Path, canvas: dict, platforms: list[dict
     rw, rh = (800, round(800 * ch / cw)) if cw >= ch else (round(800 * cw / ch), 800)
     s = rw / cw  # 渲染像素 / 画布单位
     with tempfile.TemporaryDirectory() as td:
-        for gid, label in KEY_GROUPS:
+        for gid, label in groups:
             part = keep_only(root, gid)
             if part is None:
                 continue
@@ -644,14 +749,14 @@ def _geometry_warnings(cdir: Path, svg: Path, canvas: dict, platforms: list[dict
                 occ = [[v * s for v in map_box(b, pl, win)] for b in pl.get("occlusions", [])]
                 if occ and masked_alpha(png, (rw, rh), occ, inside=True) > 0.5:
                     out.append(f"{where}：{label}在 {pl['id']} 上会被遮挡（平台头像、按钮等区域）")
-            if gid == "logo":
+            if gid.startswith("logo"):
                 trim = logo.run(["magick", str(png), "-trim", "-format", "%h", "info:"], capture=True).strip()
                 logo_h = float(trim or 0) / s  # Logo 实际高度（画布单位）
                 for pl in platforms:
                     win = crop_window(pl, canvas)
                     shown = logo_h * thumb_width(pl) / win[2]
                     if shown < rules()["min_logo_display_px"]:
-                        out.append(f"{where}：Logo 在 {pl['id']} 手机显示（{thumb_width(pl)}px 宽）中只有约 "
+                        out.append(f"{where}：{'Logo' if gid == 'logo' else label} 在 {pl['id']} 手机显示（{thumb_width(pl)}px 宽）中只有约 "
                                    f"{shown:.0f}px 高，低于 {rules()['min_logo_display_px']}px，可能认不出")
     return out
 
@@ -668,17 +773,33 @@ def outdated_warning(p: "logo.Project", cdir: Path, cfg: dict) -> str | None:
     return f"{logo.rel(cdir)}：使用的 Logo 发布 {used} 不是当前发布 {cur}；可运行 ./logo cover sync-logo"
 
 
+def family_outdated_warning(fam: Family, cdir: Path, cfg: dict) -> str | None:
+    """家族封面：逐个成员对照其当前发布；上线中的优先、已下线的不提醒。"""
+    st = cfg["state"]
+    if st["status"] == "archived":
+        return None
+    stale = [f"{s} 用 {r}（当前 {cur}）" for s, r in cfg["cover"]["releases"].items()
+             if (cur := logo.Project(s).cfg["state"].get("current_release")) and cur != r]
+    if not stale:
+        return None
+    head = (f"上线中的家族封面（{', '.join(st['live_on']) or '—'}）仍在使用旧 Logo" if st["status"] == "live"
+            else "家族封面使用的 Logo 不是成员的当前发布")
+    return f"{logo.rel(cdir)}：{head}：{'、'.join(stale)}；运行 ./logo cover sync-logo {fam.slug} {cdir.name[:3]}"
+
+
 def cover_warnings(p: "logo.Project", cdir: Path) -> list[str]:
     """一个封面的校对提醒（越界、Logo 过小、Logo 过时）；check、preview、export 共用。"""
     cfg = cover_cfg(cdir)
     out = []
-    if (w := outdated_warning(p, cdir, cfg)):
+    if (w := family_outdated_warning(p, cdir, cfg) if is_family(p) else outdated_warning(p, cdir, cfg)):
         out.append(w)
+    groups = ([(f"logo-{s}", f"Logo（{s}）") for s in cfg["cover"]["members"]] + [("content", "关键内容")]
+              if is_family(p) else KEY_GROUPS)
     plats = platforms_by_id()
     for ratio in needed_ratios(cfg["cover"]["platforms"]):
         on_ratio = [plats[t] for t in cfg["cover"]["platforms"] if plats[t]["ratio"] == ratio]
         try:
-            out.extend(geometry_warnings(cdir, ratio, on_ratio))
+            out.extend(geometry_warnings(cdir, ratio, on_ratio, groups))
         except logo.LogoError as e:
             out.append(f"{logo.rel(cdir / (ratio + '.svg'))}: 无法完成越界检查：{e}")
     return out
@@ -700,10 +821,10 @@ def group_span(text: str, group_id: str) -> tuple[int, int]:
     raise logo.LogoError(f'<g id="{group_id}"> 没有闭合')
 
 
-def swap_logo(text: str, p: "logo.Project", ldir: Path, rid: str) -> tuple[str, str]:
+def swap_logo(text: str, p: "logo.Project", ldir: Path, rid: str, gid: str = "logo") -> tuple[str, str]:
     """把设计稿中的 <g id="logo"> 换成 p 的发布 rid 中的 Logo：保留位置、缩放、配色与显示高度（宽度随新比例变化），
     沿用原版式（rid 中没有时退回图标/主版），设计稿其余内容逐字保留。返回 (新文本, 变化说明)。"""
-    a0, a1 = group_span(text, "logo")
+    a0, a1 = group_span(text, gid)
     old = ET.fromstring(text[a0:a1])
     layout = old.get("data-layout", "")
     if layout not in logo.LOGO_LAYOUTS or not (ldir / f"{layout}.svg").exists():
@@ -780,10 +901,47 @@ def from_skeleton(text: str, p: "logo.Project", ldir: Path, rid: str, on_ratio: 
     return text
 
 
+def sync_family(fam: Family, cdir: Path, cfg: dict, a) -> None:
+    """家族封面：逐个成员把 Logo 换成其当前发布（--member 只换一个，可配 --release 指定发布）。"""
+    rels = dict(cfg["cover"]["releases"])
+    if a.release and not a.member:
+        raise logo.LogoError("家族封面指定 --release 时须同时用 --member 指明成员")
+    if a.member and a.member not in rels:
+        raise logo.LogoError(f"{a.member} 不是这张家族封面的成员（成员：{', '.join(rels)}）")
+    wanted = {s: (a.release if a.member else None) or logo.Project(s).cfg["state"].get("current_release")
+              for s in ([a.member] if a.member else rels)}
+    changes = {s: r for s, r in wanted.items() if r and r != rels[s]}
+    if not changes:
+        print(f"{cdir.name} 的成员 Logo 已是目标发布，无需同步")
+        return
+    ratios = load_config()["ratios"]
+    texts, report = {}, []
+    for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):
+        text = svg.read_text(encoding="utf-8")
+        for slug, rid in changes.items():
+            proj = logo.Project(slug)
+            text, change = swap_logo(text, proj, release_layouts(proj, rid), rid, gid=f"logo-{slug}")
+            report.append(f"{svg.stem} {slug}：{change}")
+        texts[svg] = text
+    for svg, text in texts.items():  # 全部生成成功后再写回
+        svg.write_text(text, encoding="utf-8")
+    cfg["cover"]["releases"] = {**rels, **changes}
+    cfg["state"]["updated"] = logo.today()
+    write_cover_cfg(cdir, cfg)
+    print(f"已同步 {cdir.name} 的成员 Logo：\n  " + "\n  ".join(report))
+    for w in cover_warnings(fam, cdir):
+        print(f"⚠ {w}")
+    print(f"请运行 ./logo cover preview {fam.slug} {cdir.name[:3]} 查看效果后提交")
+
+
 def cmd_sync_logo(a) -> None:
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
     cdir = cover_dir(p, a.cover)
     cfg = cover_cfg(cdir)
+    if is_family(p):
+        return sync_family(p, cdir, cfg, a)
+    if a.member:
+        raise logo.LogoError("--member 只用于家族封面")
     rid = a.release or p.cfg["state"].get("current_release")
     ldir = release_layouts(p, rid)
     if cfg["cover"]["release"] == rid:
@@ -859,6 +1017,110 @@ def starter_svg(p: "logo.Project", ldir: Path, rid: str, layout: str, mode: str,
             f'  {guides_xml(on_ratio, canvas)}\n</svg>\n'), note
 
 
+FAMILY_MAIN = 1.25  # 家族封面中主品牌（第一个成员）的 Logo 高度是其他成员的倍数
+FAMILY_GAP = 0.3    # 相邻 Logo 的间距（相对基准高度）
+
+
+def family_starter(fam: Family, logos: list[tuple["logo.Project", Path, str]], on_ratio: list[dict],
+                   canvas: dict) -> tuple[str, str | None]:
+    """家族封面起稿：各成员 Logo 在共同安全区顶部排成一行（主品牌更大），底色取主品牌；
+    按各 Logo 的实际图形高度保证手机显示的最小高度，整行依次尝试居中、靠右、靠左以避开遮挡区。"""
+    main = logos[0][0]
+    try:
+        bg = logo.app_background(main)
+    except logo.LogoError:
+        bg = next(iter(main.palette.values()), "#FFFFFF")
+    texts = [logo.layout_mode_text(p, ldir, logo.mark_layout(ldir), logo.icon_mode(p)) for p, ldir, _ in logos]
+    aspects = []
+    for text in texts:
+        vb = [float(v) for v in re.split(r"[\s,]+", ET.fromstring(text).get("viewBox").strip())]
+        aspects.append(vb[2] / vb[3])
+    factors = [FAMILY_MAIN] + [1.0] * (len(logos) - 1)
+    safe = common_safe(on_ratio, canvas) or (0, 0, canvas["width"], canvas["height"])
+    per_px = max(rules()["min_logo_display_px"] * 1.1 * crop_window(pl, canvas)[2] / thumb_width(pl) for pl in on_ratio)
+    need = max(per_px / logo_fill(text) / f for text, f in zip(texts, factors))  # 基准高度须满足每个 Logo
+    span = sum(f * a for f, a in zip(factors, aspects)) + FAMILY_GAP * (len(logos) - 1)  # 整行宽度 / 基准高度
+    want = max(safe[3] * 0.15, need)
+    for hmax, wmax in ((0.5, 0.9), (0.8, 0.95)):
+        h = min(want, safe[3] * hmax / FAMILY_MAIN, safe[2] * wmax / span)
+        if h >= need:
+            break
+    width, tall = h * span, h * FAMILY_MAIN
+    inset_x, inset_y = min(h * 0.25, (safe[2] - width) / 2), min(h * 0.25, (safe[3] - tall) / 2)
+    y = safe[1] + inset_y
+    candidates = (safe[0] + (safe[2] - width) / 2, safe[0] + safe[2] - inset_x - width, safe[0] + inset_x)
+    occ = [map_box(b, pl, crop_window(pl, canvas)) for pl in on_ratio for b in pl.get("occlusions", [])]
+    x = next((c for c in candidates if not any(intersect((c, y, width, tall), o) for o in occ)), candidates[0])
+    groups = []
+    for (p, ldir, rid), f, a in zip(logos, factors, aspects):
+        lh = h * f
+        groups.append(logo_group(p, ldir, rid, logo.mark_layout(ldir), logo.icon_mode(p), x, y + (tall - lh) / 2, lh,
+                                 gid=f"logo-{p.slug}"))
+        x += lh * a + h * FAMILY_GAP
+    note = None
+    if h < need:
+        note = "画幅太窄，成员 Logo 排成一行后在手机显示中低于最小高度；可减少成员或改用更紧凑的 icon.svg"
+    return (f'<svg xmlns="{logo.SVG_NS}" xmlns:xlink="{logo.XLINK_NS}" viewBox="0 0 {canvas["width"]} {canvas["height"]}">\n'
+            f'  <rect id="background" width="{canvas["width"]}" height="{canvas["height"]}" fill="{bg}"/>\n'
+            + "".join(f"  {g}\n" for g in groups)
+            + f'  <g id="content">\n    <!-- 关键内容（标题、副标题、行动号召）放在这里，须在共同安全区内 -->\n  </g>\n'
+            f'  {guides_xml(on_ratio, canvas)}\n</svg>\n'), note
+
+
+def family_logos(fam: Family, releases: dict[str, str]) -> list[tuple["logo.Project", Path, str]]:
+    return [(logo.Project(s), release_layouts(logo.Project(s), r), r) for s, r in releases.items()]
+
+
+def new_family(fam: Family, a) -> None:
+    """家族封面立项：--members 由用户决定（展示哪些品牌、第一个为主），成员须属于该系列且已发布。"""
+    import series  # 延迟导入：series.py 依赖 logo
+    if a.release or a.from_skeleton or a.no_skeleton:
+        raise logo.LogoError("家族封面的 Logo 取各成员的当前发布，不使用 --release 与封面骨架")
+    if not a.members:
+        raise logo.LogoError("家族封面须用 --members 指定成员（先问用户展示哪些品牌、以谁为主；第一个为主品牌），"
+                             f"如 --members brand,food")
+    members = list(dict.fromkeys(s.strip() for s in a.members.split(",") if s.strip()))
+    if len(members) < 2:
+        raise logo.LogoError("家族封面至少要两个成员；只展示一个品牌请在该项目下做封面")
+    releases = {}
+    for slug in members:
+        proj = logo.Project(slug)
+        if (series.membership(proj) or {}).get("id") != fam.sid:
+            raise logo.LogoError(f"{slug} 不是系列 {fam.sid} 的成员")
+        rid = proj.cfg["state"].get("current_release")
+        if not rid:
+            raise logo.LogoError(f"成员 {slug} 还没有发布，家族封面里的 Logo 只能来自发布")
+        releases[slug] = rid
+    targets = parse_platforms(a.platforms)
+    plats, ratios = platforms_by_id(), load_config()["ratios"]
+    logos = family_logos(fam, releases)
+    nums = [int(c.name[:3]) for c in project_covers(fam)]
+    cid = f"{max(nums, default=0) + 1:03d}-{logo.to_slug(a.name)}"
+    cdir = fam.dir / "covers" / cid
+    texts, notes = {}, []
+    need = needed_ratios(targets)
+    for key in need:
+        on_ratio = [plats[t] for t in targets if plats[t]["ratio"] == key]
+        texts[key], note = family_starter(fam, logos, on_ratio, ratios[key])
+        if note:
+            notes.append(f"{key}.svg：{note}")
+    cdir.mkdir(parents=True)
+    (cdir / "assets").mkdir()
+    write_cover_cfg(cdir, {"cover": {"name": logo.to_slug(a.name), "title": a.title or a.name, "created": logo.today(),
+                                     "members": members, "releases": releases, "platforms": targets},
+                           "state": {"status": "draft", "live_on": [], "live_since": "", "updated": logo.today()}})
+    used = "、".join(f"{s} {r}" for s, r in releases.items())
+    logo.write_new(cdir / "cover.md", logo.render_template(
+        "cover.md", id=cid, title=a.title or a.name, platforms="、".join(plats[t]["name"] for t in targets),
+        release=f"{used}（家族封面，主品牌 {members[0]}）", date=logo.today(), skeleton="无"))
+    for key, text in texts.items():
+        (cdir / f"{key}.svg").write_text(text, encoding="utf-8")
+    print(f"已创建家族封面：{logo.rel(cdir)}（画幅：{', '.join(need)}；成员：{used}）")
+    for n in notes:
+        print(f"⚠ {n}")
+    print("下一步：填写 cover.md；Logo 分组 logo-<项目> 只能移动缩放；关键内容放进 <g id=\"content\">")
+
+
 def parse_platforms(spec: str) -> list[str]:
     targets = list(dict.fromkeys(t.strip() for t in spec.split(",") if t.strip()))
     unknown = [t for t in targets if t not in platforms_by_id()]
@@ -888,7 +1150,11 @@ def skeleton_choice(p: "logo.Project", use: bool, skip: bool) -> str | None:
 
 
 def cmd_new(a) -> None:
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
+    if is_family(p):
+        return new_family(p, a)
+    if a.members:
+        raise logo.LogoError("--members 只用于家族封面（./logo cover new series:<系列名> …）")
     targets = parse_platforms(a.platforms)
     plats = platforms_by_id()
     rid = a.release or p.cfg["state"].get("current_release")
@@ -942,7 +1208,7 @@ def cmd_new(a) -> None:
 
 def cmd_retarget(a) -> None:
     """修改封面的目标平台：新需要的画幅起稿，共用画幅的参考线按新平台组合重画，其余内容逐字保留。"""
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
     cdir = cover_dir(p, a.cover)
     cfg = cover_cfg(cdir)
     old, new = list(cfg["cover"]["platforms"]), parse_platforms(a.platforms)
@@ -953,10 +1219,11 @@ def cmd_retarget(a) -> None:
     if live:
         raise logo.LogoError(f"{', '.join(live)} 正在上线，不能移除；先用 ./logo cover status 调整上线平台")
     plats, ratios = platforms_by_id(), load_config()["ratios"]
-    rid = cfg["cover"]["release"]
-    ldir = release_layouts(p, rid)
-    layout, mode = logo.mark_layout(ldir), logo.icon_mode(p)
-    for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):  # 沿用已有设计稿中 Logo 的版式与配色
+    family = is_family(p)
+    rid = None if family else cfg["cover"]["release"]
+    ldir = None if family else release_layouts(p, rid)
+    layout, mode = (None, None) if family else (logo.mark_layout(ldir), logo.icon_mode(p))
+    for svg in [] if family else sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):  # 沿用已有 Logo 的版式与配色
         try:
             g = next((el for el in ET.parse(svg).getroot().iter() if el.get("id") == "logo"), None)
         except ET.ParseError:
@@ -969,7 +1236,10 @@ def cmd_retarget(a) -> None:
         on_ratio = [plats[t] for t in new if plats[t]["ratio"] == key]
         svg = cdir / f"{key}.svg"
         if not svg.exists():
-            texts[svg], note = starter_svg(p, ldir, rid, layout, mode, on_ratio, ratios[key])
+            if family:  # 家族封面：用 cover.toml 记录的各成员发布起稿，与已有画幅一致
+                texts[svg], note = family_starter(p, family_logos(p, cfg["cover"]["releases"]), on_ratio, ratios[key])
+            else:
+                texts[svg], note = starter_svg(p, ldir, rid, layout, mode, on_ratio, ratios[key])
             report.append(f"{key}.svg：新起稿")
             if note:
                 notes.append(f"{key}.svg：{note}")
@@ -1006,7 +1276,7 @@ def cmd_retarget(a) -> None:
 
 
 def cmd_asset(a) -> None:
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
     cdir = cover_dir(p, a.cover)
     src = Path(a.image)
     if not src.exists():
@@ -1026,7 +1296,7 @@ def cmd_asset(a) -> None:
 
 
 def cmd_status(a) -> None:
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
     cdir = cover_dir(p, a.cover)
     cfg = cover_cfg(cdir)
     targets = cfg["cover"]["platforms"]
@@ -1045,7 +1315,7 @@ def cmd_status(a) -> None:
 
 
 def cmd_list(a) -> None:
-    p = logo.Project(a.slug)
+    p = owner_of(a.slug)
     covers = project_covers(p)
     if not covers:
         print(f"{a.slug} 还没有封面（./logo cover new 创建）")
@@ -1054,7 +1324,8 @@ def cmd_list(a) -> None:
     for cdir in covers:
         cfg = cover_cfg(cdir)
         c, st = cfg["cover"], cfg["state"]
-        row = (cdir.name, st["status"], c["release"], ", ".join(c["platforms"]))
+        used = c.get("release") or " ".join(f"{s}:{r}" for s, r in c.get("releases", {}).items())
+        row = (cdir.name, st["status"], used, ", ".join(c["platforms"]))
         print("".join(pad(v, w) for v, w in zip(row, (26, 10, 8, 40))) + (", ".join(st["live_on"]) or "—"))
 
 
@@ -1063,7 +1334,7 @@ def register(sub) -> None:
     s = sub.add_parser("cover", help="封面（品牌物料）：立项起稿、素材登记、状态与平台登记")
     cs = s.add_subparsers(dest="cover_cmd", required=True, metavar="<封面命令>")
     c = cs.add_parser("new", help="立项：按目标平台推出画幅，生成 cover.toml、cover.md 与各画幅起稿")
-    c.add_argument("slug")
+    c.add_argument("slug", help="项目短名；家族封面写 series:<系列名>")
     c.add_argument("name", help="英文短名，如 spring-campaign")
     c.add_argument("--platforms", required=True, help="目标平台，逗号分隔，如 youtube,x,xiaohongshu")
     c.add_argument("--release", help="所用 Logo 发布（默认 current_release）")
@@ -1071,6 +1342,7 @@ def register(sub) -> None:
     sk = c.add_mutually_exclusive_group()
     sk.add_argument("--from-skeleton", action="store_true", help="套用所在系列登记的封面骨架（系列成员）")
     sk.add_argument("--no-skeleton", action="store_true", help="系列已有骨架但这张封面不套用")
+    c.add_argument("--members", help="家族封面的成员，逗号分隔，第一个为主品牌（先问用户），如 brand,food")
     c.set_defaults(fn=cmd_new)
     c = cs.add_parser("asset", help="登记照片/插画素材（记录来源、授权与 sha256，登记后不可替换）")
     c.add_argument("slug")
@@ -1099,6 +1371,7 @@ def register(sub) -> None:
     c.add_argument("slug")
     c.add_argument("cover")
     c.add_argument("--release", help="目标发布（默认 current_release）")
+    c.add_argument("--member", help="家族封面：只同步这个成员的 Logo")
     c.set_defaults(fn=cmd_sync_logo)
     c = cs.add_parser("status", help="记录封面状态：draft / live / archived")
     c.add_argument("slug")

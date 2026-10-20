@@ -72,6 +72,21 @@
 /_series/*/*
 !/_series/*/series.toml
 !/_series/*/series.md
+# 家族封面：_series/<系列名>/covers/NNN-名称/（./logo cover … series:<系列名>）；dist/ 不在白名单，一律忽略
+!/_series/*/covers/
+/_series/*/covers/*
+!/_series/*/covers/[0-9][0-9][0-9]-*/
+/_series/*/covers/*/*
+!/_series/*/covers/*/cover.toml
+!/_series/*/covers/*/cover.md
+!/_series/*/covers/*/*.svg
+!/_series/*/covers/*/assets/
+/_series/*/covers/*/assets/*
+!/_series/*/covers/*/assets/[0-9][0-9][0-9]-*.md
+!/_series/*/covers/*/assets/[0-9][0-9][0-9]-*.png
+!/_series/*/covers/*/assets/[0-9][0-9][0-9]-*.jpg
+!/_series/*/covers/*/assets/[0-9][0-9][0-9]-*.jpeg
+!/_series/*/covers/*/assets/[0-9][0-9][0-9]-*.webp
 
 # ── 任何位置都排除（放在最后，优先于上面的放行）──
 .DS_Store

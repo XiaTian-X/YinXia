@@ -5,6 +5,7 @@ import re
 import subprocess
 import tomllib
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from helpers import HAS_RENDER, PRIMARY, TRIANGLE, Workspace, fill_doc
@@ -66,6 +67,31 @@ class SeriesBase(unittest.TestCase):
 
     def review(self, result: str, note: str = "用户：可以", ok: bool = True):
         return self.ws.logo("series", "review", "pets", "--result", result, "--note", note, "--with", "food=A-v001", ok=ok)
+
+    def released_family(self, arch: str = "endorsed") -> Path:
+        """family() 之后子品牌 food 也完成系列评审并发布 r1（主版为三角形，与母品牌的正方形不同）。"""
+        ws = self.ws
+        food = self.family(arch)
+        ws.logo("series", "review", "pets", "--result", "pass", "--note", "通过", "--with", "food=A-v001")
+        ws.logo("release", "food", "--from", "A-v001")
+        r = food / "releases" / "r1"
+        (r / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        fill_doc(r / "release.md")
+        with (r / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-x.md\n")
+        ws.logo("decision", "food", "x", "--title", "定稿")
+        fill_doc(next((food / "decisions").glob("*.md")))
+        fill_doc(r / "guide.md")
+        return food
+
+    def release_master_again(self) -> None:
+        """母品牌基于 r1 出 r2（填完发布文档）。"""
+        r = self.ws.projects / "brand" / "releases" / "r2"
+        self.ws.logo("release", "brand", "--from", "r1")
+        fill_doc(r / "release.md")
+        with (r / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-finalize.md\n")
+        fill_doc(r / "guide.md")
 
     def commit_ok(self, msg: str = "x") -> None:
         self.ws.logo("index")
@@ -344,15 +370,6 @@ class SeriesSyncTest(SeriesBase):
         toml.write_text(text, encoding="utf-8")
         self.release_master_again()
 
-    def release_master_again(self) -> None:
-        """母品牌基于 r1 出 r2（填完发布文档）。"""
-        r = self.ws.projects / "brand" / "releases" / "r2"
-        self.ws.logo("release", "brand", "--from", "r1")
-        fill_doc(r / "release.md")
-        with (r / "release.md").open("a", encoding="utf-8") as f:
-            f.write("\n依据：decisions/001-finalize.md\n")
-        fill_doc(r / "guide.md")
-
     def sync(self, palette: str, note: str = "用户：跟随", ok: bool = True):
         return self.ws.logo("series", "sync", "food", "--palette", palette, "--note", note, ok=ok)
 
@@ -422,17 +439,7 @@ class SeriesSkeletonTest(SeriesBase):
     def setUp(self):
         super().setUp()
         ws = self.ws
-        self.food = self.family()
-        ws.logo("series", "review", "pets", "--result", "pass", "--note", "通过", "--with", "food=A-v001")
-        ws.logo("release", "food", "--from", "A-v001")
-        r = self.food / "releases" / "r1"
-        (r / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")  # 与母品牌主版不同
-        fill_doc(r / "release.md")
-        with (r / "release.md").open("a", encoding="utf-8") as f:
-            f.write("\n依据：decisions/001-x.md\n")
-        ws.logo("decision", "food", "x", "--title", "定稿")
-        fill_doc(next((self.food / "decisions").glob("*.md")))
-        fill_doc(r / "guide.md")
+        self.food = self.released_family()
         brand = ws.projects / "brand"
         toml = brand / "project.toml"
         toml.write_text(toml.read_text(encoding="utf-8").replace("used = []", 'used = ["inter"]'), encoding="utf-8")
@@ -533,6 +540,139 @@ class SeriesSkeletonTest(SeriesBase):
         text = (ws.projects / "brand" / "covers" / "002-again" / "3x1.svg").read_text(encoding="utf-8")
         self.assertEqual(text.count("data-skeleton="), 1)  # 只保留新指纹，设计稿仍是合法 XML
         self.assertIn("002-again/3x1.svg: 关键内容仍是骨架原文（来自 food/001-spring）", ws.logo("check").stdout)
+
+
+@unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
+class FamilyCoverTest(SeriesBase):
+    """第二期第 3b 步：家族封面——系列名下同时展示多个成员的 Logo，逐个成员核对、提醒与同步。"""
+
+    def setUp(self):
+        super().setUp()
+        self.released_family()
+        self.fam = self.ws.projects / "_series" / "pets" / "covers" / "001-fam"
+
+    def new_fam(self, *extra: str, ok: bool = True):
+        return self.ws.logo("cover", "new", "series:pets", "fam", "--platforms", "x,youtube", *extra, ok=ok)
+
+    def committed_fam(self) -> None:
+        self.new_fam("--members", "food,brand")
+        fill_doc(self.fam / "cover.md")
+        self.commit_ok("[pets] family cover")
+        tracked = set(self.ws.git("projects", "ls-files", "_series/pets/covers").stdout.split())
+        self.assertEqual(tracked, {f"_series/pets/covers/001-fam/{n}" for n in ("cover.toml", "cover.md", "3x1.svg", "16x9.svg")})
+
+    def test_new_rules(self):
+        ws = self.ws
+        self.assertIn("先问用户展示哪些品牌", self.new_fam(ok=False).stderr)
+        self.assertIn("至少要两个成员", self.new_fam("--members", "food", ok=False).stderr)
+        ws.logo("new", "solo")
+        self.assertIn("不是系列 pets 的成员", self.new_fam("--members", "food,solo", ok=False).stderr)
+        ws.logo("new", "drink", "--series", "pets", "--role", "sub")
+        self.assertIn("成员 drink 还没有发布", self.new_fam("--members", "food,drink", ok=False).stderr)
+        self.assertIn("不使用 --release", self.new_fam("--members", "food,brand", "--release", "r1", ok=False).stderr)
+        self.assertIn("不使用 --release", self.new_fam("--members", "food,brand", "--from-skeleton", ok=False).stderr)
+        self.assertIn("只用于家族封面", ws.logo("cover", "new", "food", "a", "--platforms", "x", "--members", "food,brand",
+                                            ok=False).stderr)
+        self.assertIn("系列不存在：nope", ws.logo("cover", "new", "series:nope", "a", "--platforms", "x", "--members",
+                                             "food,brand", ok=False).stderr)
+        self.assertFalse((ws.projects / "_series" / "pets" / "covers").exists())
+
+    def test_starter_check_and_tamper(self):
+        ws = self.ws
+        self.committed_fam()
+        svg = self.fam / "3x1.svg"
+        root = ET.parse(svg).getroot()
+        shown = {}
+        for g in root.iter("{http://www.w3.org/2000/svg}g"):
+            if (g.get("id") or "").startswith("logo-"):
+                scale = float(re.search(r"scale\(([\d.]+)\)", g.get("transform")).group(1))
+                shown[g.get("id")] = (g.get("data-project"), g.get("data-release"), scale * float(list(g)[0].get("height")))
+        self.assertEqual({k: v[:2] for k, v in shown.items()}, {"logo-food": ("food", "r1"), "logo-brand": ("brand", "r1")})
+        self.assertAlmostEqual(shown["logo-food"][2] / shown["logo-brand"][2], 1.25, places=2)  # 第一个成员为主，更大
+        cfg = tomllib.loads((self.fam / "cover.toml").read_text(encoding="utf-8"))["cover"]
+        self.assertEqual((cfg["members"], cfg["releases"]), (["food", "brand"], {"food": "r1", "brand": "r1"}))
+        self.assertFalse([ln for ln in ws.logo("check").stdout.splitlines() if "001-fam" in ln])  # 起稿即干净
+        good = svg.read_text(encoding="utf-8")
+        brand_part = good[good.index('id="logo-brand"'):]
+        tampered = good.replace(brand_part, brand_part.replace('d="M10 10h80v80H10Z"', 'd="M10 10h70v80H10Z"', 1))
+        a0, a1 = __import__("covers").group_span(good, "logo-food")
+        for text, msg in ((tampered, "Logo（brand）: Logo 与 r1/primary.svg"),
+                          (good[:a0] + good[a1:], "成员 food 的 Logo 分组 <g id=\"logo-food\"> 应有 1 个，实有 0 个"),
+                          (good.replace('data-project="brand"', 'data-project="food"'), "标注的项目 'food' 应为 brand")):
+            with self.subTest(msg=msg):
+                self.assertNotEqual(text, good)
+                svg.write_text(text, encoding="utf-8")
+                r = ws.commit("projects", "bad")
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn(msg, "\n".join(ws.blocked(r)))
+                ws.git("projects", "reset", "-q", "--hard")
+
+    def test_outdated_and_sync(self):
+        ws = self.ws
+        self.committed_fam()
+        self.release_master_again()
+        self.assertIn("家族封面使用的 Logo 不是成员的当前发布：brand 用 r1（当前 r2）", ws.logo("check").stdout)
+        ws.logo("cover", "status", "series:pets", "001", "live", "--on", "x")
+        self.assertIn("上线中的家族封面（x）仍在使用旧 Logo：brand 用 r1（当前 r2）", ws.logo("check").stdout)
+        self.assertIn("须同时用 --member", ws.logo("cover", "sync-logo", "series:pets", "001", "--release", "r1",
+                                                ok=False).stderr)
+        self.assertIn("不是这张家族封面的成员", ws.logo("cover", "sync-logo", "series:pets", "001", "--member", "nope",
+                                                ok=False).stderr)
+        out = ws.logo("cover", "sync-logo", "series:pets", "001").stdout
+        self.assertIn("3x1 brand：r1/primary → r2/primary", out)
+        self.assertNotIn(" food：", out)  # food 已是当前发布，不动
+        self.assertEqual(tomllib.loads((self.fam / "cover.toml").read_text(encoding="utf-8"))["cover"]["releases"],
+                         {"food": "r1", "brand": "r2"})
+        self.assertNotIn("家族封面", ws.logo("check").stdout)
+        self.assertIn("无需同步", ws.logo("cover", "sync-logo", "series:pets", "001").stdout)
+        ws.logo("cover", "sync-logo", "series:pets", "001", "--member", "brand", "--release", "r1")
+        self.assertIn('id="logo-brand" data-project="brand" data-release="r1"', (self.fam / "3x1.svg").read_text(encoding="utf-8"))
+
+    def test_assets_export_and_fonts(self):
+        ws = self.ws
+        self.committed_fam()
+        photo = ws.tmp / "photo.png"
+        subprocess.run(["magick", "-size", "200x100", "xc:#E76F51", str(photo)], check=True)
+        ws.logo("cover", "asset", "series:pets", "001", str(photo), "--name", "photo", "--source", "自摄", "--license", "自有版权")
+        fill_doc(self.fam / "assets" / "001-photo.md")
+        self.commit_ok("[pets] family asset")
+        (self.fam / "assets" / "001-photo.png").write_bytes(photo.read_bytes() + b"\0")
+        r = ws.commit("projects", "replace")
+        self.assertIn("已冻结的文件被修改", "\n".join(ws.blocked(r)))  # 家族封面素材同样登记后不可替换
+        ws.git("projects", "reset", "-q", "--hard")
+        ws.logo("cover", "export", "series:pets", "001", "x")
+        dist = ws.projects / "_series" / "pets" / "dist" / "covers" / "001-fam"
+        import json
+        rec = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))["files"]["x-1500x500.png"]
+        self.assertEqual(rec["release"], {"food": "r1", "brand": "r1"})
+        self.assertEqual(ws.git("projects", "status", "--porcelain").stdout.strip(), "")  # dist 不入库
+        self.assertIn("预览：.cache/_series/pets/covers/001-fam/preview.png", ws.logo("cover", "preview", "series:pets", "001").stdout)
+        svg = self.fam / "3x1.svg"
+        good = svg.read_text(encoding="utf-8")
+        svg.write_text(good.replace('<g id="content">', '<g id="content"><!-- outline: font=nofont size=1 -->'), encoding="utf-8")
+        self.assertIn("转曲所用字体 nofont 未在 fonts.toml 登记", ws.logo("check", ok=False).stdout)
+        svg.write_text(good.replace('<g id="content">', '<g id="content"><!-- outline: font=inter size=1 -->'), encoding="utf-8")
+        self.assertNotIn("✗", ws.logo("check").stdout)  # 已登记字体即可，无须项目 [fonts] used
+
+    def test_geometry_per_member_and_retarget(self):
+        ws = self.ws
+        self.committed_fam()
+        svg = self.fam / "3x1.svg"
+        text = svg.read_text(encoding="utf-8")
+        text = re.sub(r'(id="logo-food"[^>]*transform=")[^"]*"', r'\1translate(40 320) scale(0.5)"', text, count=1)
+        text = re.sub(r'(id="logo-brand"[^>]*transform="translate\([^)]*\) )scale\([^)]*\)', r"\1scale(0.03)", text, count=1)
+        svg.write_text(text, encoding="utf-8")
+        out = ws.logo("check").stdout
+        self.assertIn("Logo（food）在 x 上会被遮挡", out)
+        self.assertIn("Logo（brand） 在 x 手机显示", out)
+        ws.git("projects", "checkout", "--", ".")
+        out = ws.logo("cover", "retarget", "series:pets", "001", "--platforms", "x,youtube,og").stdout
+        self.assertIn("1.91x1.svg：新起稿", out)
+        new = (self.fam / "1.91x1.svg").read_text(encoding="utf-8")
+        self.assertIn('id="logo-food"', new)
+        self.assertIn('id="logo-brand"', new)
+        self.assertIn("food:r1 brand:r1", ws.logo("cover", "list", "series:pets").stdout)
+        self.assertNotIn("✗", ws.logo("check").stdout)
 
 
 if __name__ == "__main__":

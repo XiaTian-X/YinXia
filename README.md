@@ -36,7 +36,7 @@
 ```text
 projects/                     # 项目仓库根目录（独立 .git）
 ├── PROJECTS.md                # 看板：独立项目与各系列分组
-├── _series/<系列名>/          # 品牌系列：series.toml（名称、架构）、series.md（系列规则，只追加）
+├── _series/<系列名>/          # 品牌系列：series.toml（名称、架构、封面骨架）、series.md（系列规则，只追加）、covers/（家族封面）
 └── <slug>/
     ├── project.toml          # 元数据、色板、当前状态（唯一事实来源）
     ├── brief.md              # 品牌理念、偏好、字体策略
@@ -67,6 +67,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 | `./logo series review <系列> --result pass\|revise --note "用户意见"` | 记录系列评审结论（子品牌发布前须通过） |
 | `./logo series sync <子品牌> --palette all\|none\|色名 --note "用户决定"` | 子品牌跟进母品牌新发布（同步色板，旧值保留给冻结的设计） |
 | `./logo series skeleton <系列> --from <项目> <封面> --note "…"` | 登记系列封面骨架；成员立项封面时 `--from-skeleton` 套用 |
+| `./logo cover new series:<系列> <名称> --platforms … --members 主,次` | 家族封面：同时展示多个成员的 Logo（其余封面命令同样接受 `series:<系列>`） |
 | `./logo concept <slug> <图片> --name x --prompt "…"` | 登记概念图 |
 | `./logo direction <slug> A mountain` | 新建方向 |
 | `./logo version <slug> A [--from B-v002 \| --from-master] [--inspired-by 001]` | 新建版本（可引用概念图；系列子品牌可从母品牌主版起稿） |
@@ -136,6 +137,8 @@ brief.md 记录访谈结果（含“需求确认”），未填完时不能开�
 **改版跟进**：母品牌出新发布后，`check` 对每个统一型 / 背书型子品牌提醒并列出色板变化；Agent 按 series.md“改版跟进”的约定逐个向用户确认，用 `series sync --note` 记录并同步。被替换的旧色值若仍被子品牌已有设计使用，会保留为 `<色名>_r<N>`，冻结的版本与发布照常通过检查。
 
 **系列封面骨架**：把一张成员封面登记为骨架后，成员立项封面须明确选择 `--from-skeleton` 或 `--no-skeleton`。套用时 Logo 换成本项目发布（位置不变）、照片换成“图片区”参考框（素材授权按封面登记）、参考线按本封面平台重画；内容仍是骨架原文、或骨架之后被修改时会提醒。
+
+**家族封面**：放在 `projects/_series/<系列>/covers/`，每个成员一个 `<g id="logo-<项目>">`，逐个按该项目的发布核对指纹、提醒越界与过时，`cover sync-logo series:<系列>` 逐个成员更新；第一个成员为主品牌（更大、底色取它）。
 
 ## Logo 资产与封面
 

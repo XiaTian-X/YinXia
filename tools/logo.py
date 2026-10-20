@@ -76,6 +76,7 @@ FROZEN_PATTERNS = [
     re.compile(r"^[^/]+/releases/r\d+/layouts/[^/]+\.svg$"),
     re.compile(r"^[^/]+/concepts/\d{3}-[^/]+\.(png|jpe?g|webp)$"),
     re.compile(r"^[^/]+/covers/[^/]+/assets/\d{3}-[^/]+\.(png|jpe?g|webp)$"),  # 封面素材登记后不可替换
+    re.compile(r"^_series/[^/]+/covers/[^/]+/assets/\d{3}-[^/]+\.(png|jpe?g|webp)$"),  # 家族封面素材同样
 ]
 
 APPEND_ONLY_PATTERNS = [
@@ -87,6 +88,8 @@ APPEND_ONLY_PATTERNS = [
     re.compile(r"^[^/]+/covers/[^/]+/cover\.md$"),
     re.compile(r"^[^/]+/covers/[^/]+/assets/[^/]+\.md$"),
     re.compile(r"^_series/[^/]+/series\.md$"),
+    re.compile(r"^_series/[^/]+/covers/[^/]+/cover\.md$"),
+    re.compile(r"^_series/[^/]+/covers/[^/]+/assets/[^/]+\.md$"),
 ]
 
 # 系统仓库允许提交的文件（相对仓库根目录，精确到目录与文件类型）；与 .gitignore 的白名单保持一致
@@ -103,7 +106,7 @@ SYSTEM_FILE_PATTERNS = [re.compile(p) for p in (
 )]
 # 项目仓库根目录允许的文件；项目目录内的文件见 PROJECT_FILE_PATTERNS，系列记录见 SERIES_FILE_RE
 PROJECTS_ROOT_FILES = {"PROJECTS.md", ".gitignore"}
-SERIES_FILE_RE = re.compile(r"_series/[a-z0-9]+(?:-[a-z0-9]+)*/series\.(toml|md)")
+SERIES_FILE_RE = re.compile(r"_series/([a-z0-9]+(?:-[a-z0-9]+)*)/(.+)")  # 系列目录内：series.toml/md 与家族封面
 
 # 密钥与凭据：文件名特征，以及内容特征（私钥、各平台访问令牌）
 SECRET_NAME_RE = re.compile(
@@ -154,6 +157,8 @@ DOC_TEMPLATES = [
     (re.compile(r"^_series/[^/]+/series\.md$"), "series-unified.md"),
     (re.compile(r"^_series/[^/]+/series\.md$"), "series-endorsed.md"),
     (re.compile(r"^_series/[^/]+/series\.md$"), "series-independent.md"),
+    (re.compile(r"^_series/[^/]+/covers/[^/]+/cover\.md$"), "cover.md"),  # 家族封面
+    (re.compile(r"^_series/[^/]+/covers/[^/]+/assets/\d{3}-[^/]+\.md$"), "cover-asset.md"),
 ]
 OUTLINE_FONT_RE = re.compile(r"<!--\s*outline:\s*font=([A-Za-z0-9_-]+)")  # ./logo outline 写入的来源注释
 DECISION_REF_RE = re.compile(r"decisions/(\d{3}-[a-z0-9-]+\.md)")
@@ -2037,7 +2042,12 @@ def path_allowed(path: str, scope: str) -> bool:
         return path in PROJECTS_ROOT_FILES
     if SLUG_RE.match(parts[0]):
         return any(pt.fullmatch("/".join(parts[1:])) for pt in PROJECT_FILE_PATTERNS)
-    return bool(SERIES_FILE_RE.fullmatch(path))
+    m = SERIES_FILE_RE.fullmatch(path)
+    if not m:
+        return False
+    inner = m.group(2)
+    return inner in ("series.toml", "series.md") or (
+        inner.startswith("covers/") and any(pt.fullmatch(inner) for pt in PROJECT_FILE_PATTERNS))
 
 
 def check_secrets(scope: str, staged: bool, errors: list[str]) -> None:
@@ -2158,6 +2168,8 @@ def cmd_check(a) -> None:
             check_new_docs(staged, perr, warnings)
             import series  # 延迟导入：series.py 依赖本模块
             series.check_series(perr, warnings)
+            import covers  # 延迟导入：covers.py 依赖本模块
+            covers.check_family_covers(perr, warnings, staged)
             check_secrets("projects", staged, perr)
         if scope != "system":
             check_immutability(staged, perr)

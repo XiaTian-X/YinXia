@@ -33,6 +33,16 @@ description: LOGODesign 的封面（品牌物料）制作流程：立项、素�
 - **之后**：问用户本封面的标题文案与图片，写进 cover.md，再替换内容；内容仍是骨架原文时 `check` 会提醒。
   骨架之后被修改，套用过的封面会提醒“可对照调整”（只提醒）。
 
+## 家族封面（系列项目）
+同时展示多个品牌的封面（产品家族介绍、活动总览等），归属于系列，放在 `projects/_series/<系列名>/covers/`。
+- **先问用户**（按 series.md“系列封面 / 家族封面”的约定）：“展示哪些品牌？以谁为主？”——第一个为主品牌，Logo 更大、底色取主品牌。
+- 立项：`./logo cover new series:<系列名> <名称> --platforms … --members 主品牌,成员,…`（`--members` 必填、至少两个；成员须属于该系列且已发布）。
+- 设计稿中每个成员一个 Logo 分组 `<g id="logo-<项目>">`，各自按该项目的发布核对，**只能移动、缩放**；起稿已把它们排成一行、避开遮挡区。
+- 其余命令与项目封面相同，把项目名换成 `series:<系列名>`：`asset`、`preview`、`export`、`retarget`、`status`、`list`。
+  越界、过小提醒逐个 Logo 给出（如“Logo（food）在 x 上会被遮挡”）；文字转曲所用字体只须在 fonts.toml 登记。
+- 成员出新发布后会提醒；`./logo cover sync-logo series:<系列名> <封面>` 逐个成员换成当前发布（`--member <项目> [--release rN]` 只换一个）。
+- 导出到 `projects/_series/<系列名>/dist/covers/`（不提交）。
+
 ## 2. 收集素材
 - 照片、插画：`./logo cover asset <slug> <封面编号> <图片> --name <短名> --source "<来源>" --license "<授权>"`，
   填完同名 `.md` 中的“用途与授权范围”。**未登记的图不能引用**；登记后不可替换，换图要重新登记。

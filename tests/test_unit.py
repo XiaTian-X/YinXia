@@ -78,11 +78,13 @@ class PathRulesTest(unittest.TestCase):
               "acme/concepts/001-ref.md", "acme/directions/A-mountain/direction.md",
               "acme/directions/A-mountain/v001/logo.svg", "acme/decisions/001-secret-garden.md",
               "acme/releases/r1/layouts/cover-2.7x1.svg", "acme/releases/r1/layouts/icon.mono.svg",
-              "_series/pets/series.toml", "_series/pets/series.md"]
+              "_series/pets/series.toml", "_series/pets/series.md", "_series/pets/covers/001-fam/cover.toml",
+              "_series/pets/covers/001-fam/3x1.svg", "_series/pets/covers/001-fam/assets/001-photo.png"]
         bad = ["notes.txt", "acme/trace.py", "acme/directions/A-mountain/v001/debug.png",
                "acme/releases/r1/notes.txt", "acme/concepts/ref.gif", "Acme/project.toml", ".final-build/a",
                "acme/final/png/general/x@64.png", "acme/dist/r1/ios/AppIcon-1024.png",
-               "_series/pets/notes.txt", "_series/series.md", "_series/Pets/series.md", "_series/pets/x/series.md"]
+               "_series/pets/notes.txt", "_series/series.md", "_series/Pets/series.md", "_series/pets/x/series.md",
+               "_series/pets/covers/001-fam/notes.txt", "_series/pets/dist/covers/001-fam/x.png", "_series/pets/project.toml"]
         for p in ok:
             self.assertTrue(logo.path_allowed(p, "projects"), p)
         for p in bad:
