@@ -38,6 +38,14 @@ def load_series(sid: str) -> dict:
     return found[sid]
 
 
+def skeleton_of(sid: str) -> str | None:
+    """系列登记的封面骨架（“项目/封面目录”），没有时为 None。"""
+    try:
+        return logo.load_toml(SERIES_DIR / sid / "series.toml").get("covers", {}).get("skeleton") or None
+    except logo.LogoError:
+        return None
+
+
 def membership(p: "logo.Project") -> dict | None:
     try:
         return p.cfg.get("series") or None
@@ -146,7 +154,7 @@ REVIEW_RESULTS = {"pass": "通过", "revise": "需修改"}
 REVIEW_HEAD_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2}) 系列评审：(通过|需修改)\s*$")
 REVIEW_WITH_RE = re.compile(r"^- \*\*对比\*\*：(.*)$")
 RULE_LINE_RE = re.compile(r"^- \*\*(.+?)\*\*[:：]\s*(.*)$")
-PROCESS_SECTIONS = {"改版跟进"}  # 流程约定，不是设计评审项，不进评审清单
+PROCESS_SECTIONS = {"改版跟进", "系列封面", "家族封面"}  # 流程约定，不是设计评审项，不进评审清单
 
 
 def default_ref(p: "logo.Project") -> str | None:
@@ -525,7 +533,8 @@ def cmd_list(a) -> None:
         print("还没有系列（./logo series new <系列名> --name 名称 --architecture unified|endorsed|independent）")
         return
     for sid, s in found.items():
-        print(f"{sid}  {s.get('name', '')}  [{ARCHITECTURES.get(s.get('architecture'), '?')}]  规则：{rules_path(sid)}")
+        print(f"{sid}  {s.get('name', '')}  [{ARCHITECTURES.get(s.get('architecture'), '?')}]  规则：{rules_path(sid)}"
+              + (f"  封面骨架：{sk}" if (sk := skeleton_of(sid)) else ""))
         ms = members(sid)
         for p, role in sorted(ms, key=lambda x: (x[1] != "master", x[0].slug)):
             extra = f"（基于母品牌 {membership(p).get('master_release')}）" if membership(p).get("master_release") else ""
@@ -553,6 +562,33 @@ def cmd_new(a) -> None:
                                                          date=logo.today()))
     print(f"已创建系列：{logo.rel(d)}（{ARCHITECTURES[a.architecture]}）")
     print(f"下一步：按需求访谈填写 {rules_path(a.id)}，再用 ./logo new <slug> --series {a.id} --role master 创建母品牌")
+
+
+def cmd_skeleton(a) -> None:
+    """登记系列封面骨架：系列成员的一张通过检查的封面；成员立项时可套用（cover new --from-skeleton）。"""
+    import covers  # 延迟导入：covers.py 依赖 logo
+    load_series(a.id)
+    p = logo.Project(a.slug)
+    if (membership(p) or {}).get("id") != a.id:
+        raise logo.LogoError(f"{p.slug} 不是系列 {a.id} 的成员，不能作为系列封面骨架")
+    cdir = covers.cover_dir(p, a.cover)
+    errors: list[str] = []
+    covers.check_cover(p, cdir, errors, [])
+    if errors:
+        raise logo.LogoError("骨架封面未通过检查：\n  " + "\n  ".join(errors))
+    note = " ".join(a.note.split())
+    if not note:
+        raise logo.LogoError("--note 须写明用户的意见（为什么以这张为骨架）")
+    ref = f"{p.slug}/{cdir.name}"
+    path = SERIES_DIR / a.id / "series.toml"
+    path.write_text(toml_set(path.read_text(encoding="utf-8"), "covers", "skeleton", toml_value(ref)), encoding="utf-8")
+    ratios = "、".join(s.stem for s in sorted(cdir.glob("*.svg")))
+    md = SERIES_DIR / a.id / "series.md"
+    if md.exists():
+        md.write_text(md.read_text(encoding="utf-8").rstrip("\n") + (
+            f"\n\n### {logo.today()} 封面骨架：{ref}\n- **画幅**：{ratios}\n- **用户意见**：{note}\n"), encoding="utf-8")
+    print(f"已登记系列 {a.id} 的封面骨架：{ref}（画幅：{ratios}）")
+    print("成员立项封面时须先问用户是否套用：./logo cover new <项目> <名称> --platforms … --from-skeleton | --no-skeleton")
 
 
 def cmd_add(a) -> None:
@@ -604,6 +640,12 @@ def register(sub) -> None:
     c.add_argument("--palette", required=True, help="all 全部跟随 / none 不改色（仅确认已知悉）/ 逗号分隔的色名")
     c.add_argument("--note", required=True, help="用户的决定（原话或要点）")
     c.set_defaults(fn=cmd_sync)
+    c = ss.add_parser("skeleton", help="登记系列封面骨架：成员立项封面时可套用")
+    c.add_argument("id", help="系列名")
+    c.add_argument("--from", dest="slug", required=True, help="提供骨架的成员项目")
+    c.add_argument("cover", help="该项目的封面编号，如 001")
+    c.add_argument("--note", required=True, help="用户的意见（为什么以这张为骨架）")
+    c.set_defaults(fn=cmd_skeleton)
     c = ss.add_parser("add", help="已有项目加入系列（新项目用 ./logo new --series）")
     c.add_argument("id", help="系列名")
     c.add_argument("slug", help="项目短名")

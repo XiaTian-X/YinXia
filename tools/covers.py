@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -147,10 +148,14 @@ def write_cover_cfg(cdir: Path, cfg: dict) -> None:
 
     def lst(v) -> str:
         return "[" + ", ".join(q(x) for x in v) + "]"
+    skeleton = ""
+    if c.get("skeleton"):  # 套用的系列封面骨架，及套用时各份骨架设计稿的 sha256（骨架修改后据此提醒）
+        shas = ", ".join(f"{q(k)} = {q(v)}" for k, v in c.get("skeleton_sha", {}).items())
+        skeleton = f'skeleton = {q(c["skeleton"])}\nskeleton_sha = {{ {shas} }}\n'
     (cdir / "cover.toml").write_text(
         "# 封面元数据（唯一事实来源），由 ./logo cover 命令维护，请勿手改\n"
         f'[cover]\nname = {q(c["name"])}\ntitle = {q(c["title"])}\ncreated = {q(c["created"])}\n'
-        f'release = {q(c["release"])}\nplatforms = {lst(c["platforms"])}\n\n'
+        f'release = {q(c["release"])}\nplatforms = {lst(c["platforms"])}\n{skeleton}\n'
         f'[state]\nstatus = {q(st["status"])}\nlive_on = {lst(st["live_on"])}\n'
         f'live_since = {q(st["live_since"])}\nupdated = {q(st["updated"])}\n', encoding="utf-8")
 
@@ -372,6 +377,15 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
             if not found and g is not None and g.get("data-release") != c.get("release"):
                 errors.append(f"{logo.rel(svg)}: Logo 标注的发布 {g.get('data-release')} 与 cover.toml 记录的 "
                               f"{c.get('release')} 不一致（请用 ./logo cover sync-logo 更新，不要手改）")
+            body = next((el for el in root.iter() if el.get("id") == "content"), None)
+            if body is not None and body.get(SKELETON_ATTR) and len(body) and content_print(body) == body.get(SKELETON_ATTR):
+                warnings.append(f"{logo.rel(svg)}: 关键内容仍是骨架原文（来自 {c.get('skeleton')}）；"
+                                "请按 cover.md 替换标题等文案")
+    for name, sha in c.get("skeleton_sha", {}).items():  # 套用后骨架又被修改：提醒对照调整
+        src = skeleton_dir(c.get("skeleton", "")) / name
+        if not src.exists() or logo.sha256_file(src) != sha:
+            warnings.append(f"{where}: 所套用的骨架 {c.get('skeleton')}/{name} 已{'删除' if not src.exists() else '修改'}，"
+                            "可对照调整本封面")
     if not any(e.startswith(where) for e in errors):  # 已有结构错误时，渲染类提醒不可靠，跳过
         warnings.extend(cover_warnings(p, cdir))
 
@@ -686,6 +700,86 @@ def group_span(text: str, group_id: str) -> tuple[int, int]:
     raise logo.LogoError(f'<g id="{group_id}"> 没有闭合')
 
 
+def swap_logo(text: str, p: "logo.Project", ldir: Path, rid: str) -> tuple[str, str]:
+    """把设计稿中的 <g id="logo"> 换成 p 的发布 rid 中的 Logo：保留位置、缩放、配色与显示高度（宽度随新比例变化），
+    沿用原版式（rid 中没有时退回图标/主版），设计稿其余内容逐字保留。返回 (新文本, 变化说明)。"""
+    a0, a1 = group_span(text, "logo")
+    old = ET.fromstring(text[a0:a1])
+    layout = old.get("data-layout", "")
+    if layout not in logo.LOGO_LAYOUTS or not (ldir / f"{layout}.svg").exists():
+        layout = logo.mark_layout(ldir)
+    mode = old.get("data-mode", "color")
+    inner = list(old)[0] if len(old) else None
+    old_h = float(inner.get("height")) if inner is not None and inner.get("height") else None
+    root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
+    vx, vy, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
+    h = old_h or vh  # 保持原来的显示高度，宽度随新 Logo 的比例变化
+    root.set("width", logo.fmt_num(h * vw / vh))
+    root.set("height", logo.fmt_num(h))
+    opening = re.match(r"<g\b[^>]*>", text[a0:a1]).group(0)
+    opening = re.sub(r'data-release="[^"]*"', f'data-release="{rid}"', opening)
+    opening = re.sub(r'data-layout="[^"]*"', f'data-layout="{layout}"', opening)
+    change = f"{old.get('data-release')}/{old.get('data-layout')} → {rid}/{layout}（{mode}）"
+    return text[:a0] + opening + ET.tostring(root, encoding="unicode") + "</g>" + text[a1:], change
+
+
+# -- 系列封面骨架：在骨架设计稿上逐字改写，换 Logo、照片转为图片区、参考线重画、标记内容原文 -----------
+SKELETON_ATTR = "data-skeleton"
+IMAGE_RE = re.compile(r"<image\b[^>]*?(?:/>|>.*?</image\s*>)", re.S)
+GUIDES_MARK = "\x00guides\x00"
+
+
+def skeleton_dir(ref: str) -> Path:
+    """骨架引用 “项目/封面目录” 对应的封面目录。"""
+    slug, _, cover = ref.partition("/")
+    return logo.PROJECTS / slug / "covers" / cover
+
+
+def content_print(el: ET.Element) -> str:
+    """关键内容分组的指纹（不含指纹属性本身；忽略空白与属性顺序），用于判断是否仍是骨架原文。"""
+    copy = ET.fromstring(ET.tostring(el))
+    copy.attrib.pop(SKELETON_ATTR, None)
+    canon = ET.canonicalize(ET.tostring(copy, encoding="unicode"), strip_text=True)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:16]
+
+
+def from_skeleton(text: str, p: "logo.Project", ldir: Path, rid: str, on_ratio: list[dict], canvas: dict) -> str:
+    """以骨架设计稿为起稿：Logo 换成本项目发布、照片换成参考线里的“图片区”（素材授权按封面登记，不能沿用）、
+    参考线按本封面平台重画、关键内容保留作位置参考并记下原文指纹。其余内容（含转曲注释）逐字保留。"""
+    text, _ = swap_logo(text, p, ldir, rid)
+    try:
+        g0, g1 = group_span(text, "guides")
+        text = text[:g0] + GUIDES_MARK + text[g1:]
+    except logo.LogoError:  # 骨架没有参考线层：补在末尾
+        end = text.rindex("</svg>")
+        text = text[:end] + "  " + GUIDES_MARK + "\n" + text[end:]
+    boxes = []
+
+    def drop(m: re.Match) -> str:
+        attrs = dict(re.findall(r'\b(x|y|width|height)="([^"]*)"', m.group(0)))
+        box = [attrs.get("x", "0"), attrs.get("y", "0"), attrs.get("width", ""), attrs.get("height", "")]
+        if all(re.fullmatch(r"-?[\d.]+", v) for v in box):  # 带单位或缺尺寸的无法标注位置，只删除
+            boxes.append(box)
+        return ""
+    text = IMAGE_RE.sub(drop, text)
+    guides = guides_xml(on_ratio, canvas)
+    if boxes:
+        n, unit = logo.fmt_num, max(canvas["width"], canvas["height"]) / 400
+        marks = "".join(
+            f'\n  <rect x="{x}" y="{y}" width="{w}" height="{h}" stroke="#FF8C00" stroke-dasharray="{n(unit * 4)} {n(unit * 3)}"/>'
+            f'\n  <text x="{n(float(x) + unit * 4)}" y="{n(float(y) + unit * 12)}" fill="#FF8C00" stroke="none">图片区（换成本封面登记的素材）</text>'
+            for x, y, w, h in boxes)
+        guides = guides[:guides.rindex("</g>")] + marks.replace("\n", "\n  ") + "\n  </g>"
+    text = text.replace(GUIDES_MARK, guides)
+    body = next((el for el in ET.fromstring(text).iter() if el.get("id") == "content"), None)
+    if body is not None and len(body):
+        c0, c1 = group_span(text, "content")
+        opening = re.match(r"<g\b[^>]*>", text[c0:c1]).group(0)
+        bare = re.sub(rf'\s{SKELETON_ATTR}="[^"]*"', "", opening)  # 骨架本身也可能是套用骨架得来的：换掉旧指纹
+        text = text[:c0] + bare[:-1] + f' {SKELETON_ATTR}="{content_print(body)}">' + text[c0 + len(opening):]
+    return text
+
+
 def cmd_sync_logo(a) -> None:
     p = logo.Project(a.slug)
     cdir = cover_dir(p, a.cover)
@@ -698,26 +792,8 @@ def cmd_sync_logo(a) -> None:
     new_texts, report = {}, []
     ratios = load_config()["ratios"]
     for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):  # 含预备中的画幅，免得发布不一致
-        ratio = svg.stem
-        text = svg.read_text(encoding="utf-8")
-        a0, a1 = group_span(text, "logo")
-        old = ET.fromstring(text[a0:a1])
-        layout = old.get("data-layout", "")
-        if layout not in logo.LOGO_LAYOUTS or not (ldir / f"{layout}.svg").exists():
-            layout = logo.mark_layout(ldir)
-        mode = old.get("data-mode", "color")
-        inner = list(old)[0] if len(old) else None
-        old_h = float(inner.get("height")) if inner is not None and inner.get("height") else None
-        root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
-        vx, vy, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
-        h = old_h or vh  # 保持原来的显示高度，宽度随新 Logo 的比例变化
-        root.set("width", logo.fmt_num(h * vw / vh))
-        root.set("height", logo.fmt_num(h))
-        opening = re.match(r"<g\b[^>]*>", text[a0:a1]).group(0)
-        opening = re.sub(r'data-release="[^"]*"', f'data-release="{rid}"', opening)
-        opening = re.sub(r'data-layout="[^"]*"', f'data-layout="{layout}"', opening)
-        new_texts[svg] = text[:a0] + opening + ET.tostring(root, encoding="unicode") + "</g>" + text[a1:]
-        report.append(f"{ratio}：{old.get('data-release')}/{old.get('data-layout')} → {rid}/{layout}（{mode}）")
+        new_texts[svg], change = swap_logo(svg.read_text(encoding="utf-8"), p, ldir, rid)
+        report.append(f"{svg.stem}：{change}")
     for svg, text in new_texts.items():  # 全部生成成功后再写回
         svg.write_text(text, encoding="utf-8")
     cfg["cover"]["release"] = rid
@@ -798,6 +874,19 @@ def release_layouts(p: "logo.Project", rid: str) -> Path:
     return ldir
 
 
+def skeleton_choice(p: "logo.Project", use: bool, skip: bool) -> str | None:
+    """系列成员立项时是否套用系列封面骨架：系列已登记骨架时必须明确选择（先问用户）。返回骨架 “项目/封面” 或 None。"""
+    import series  # 延迟导入：series.py 依赖 logo
+    m = series.membership(p)
+    skeleton = series.skeleton_of(m["id"]) if m else None
+    if use and not skeleton:
+        raise logo.LogoError(f"{p.slug} 所在的系列没有登记封面骨架（./logo series skeleton 登记）")
+    if skeleton and not (use or skip):
+        raise logo.LogoError(f"系列 {m['id']} 已登记封面骨架 {skeleton}：请先问用户是否套用，"
+                             "再用 --from-skeleton（套用）或 --no-skeleton（不套用）")
+    return skeleton if use else None
+
+
 def cmd_new(a) -> None:
     p = logo.Project(a.slug)
     targets = parse_platforms(a.platforms)
@@ -812,10 +901,19 @@ def cmd_new(a) -> None:
     ratios = load_config()["ratios"]
     need = needed_ratios(targets)
     layout = logo.mark_layout(ldir)
-    texts, notes = {}, []
+    skeleton = skeleton_choice(p, a.from_skeleton, a.no_skeleton)
+    skdir = skeleton_dir(skeleton) if skeleton else None
+    texts, notes, shas = {}, [], {}
     for key in need:  # 先全部生成，成功后再落盘
         on_ratio = [plats[t] for t in targets if plats[t]["ratio"] == key]
+        if skdir and (skdir / f"{key}.svg").exists():
+            texts[key] = from_skeleton((skdir / f"{key}.svg").read_text(encoding="utf-8"), p, ldir, rid, on_ratio,
+                                       ratios[key])
+            shas[f"{key}.svg"] = logo.sha256_file(skdir / f"{key}.svg")
+            continue
         texts[key], note = starter_svg(p, ldir, rid, layout, logo.icon_mode(p), on_ratio, ratios[key])
+        if skdir:
+            notes.append(f"{key}.svg：骨架 {skeleton} 没有这个画幅，已按常规起稿")
         if note:
             notes.append(f"{key}.svg：{note}")
     cdir.mkdir(parents=True)
@@ -823,14 +921,20 @@ def cmd_new(a) -> None:
     cfg = {"cover": {"name": logo.to_slug(a.name), "title": a.title or a.name, "created": logo.today(),
                      "release": rid, "platforms": targets},
            "state": {"status": "draft", "live_on": [], "live_since": "", "updated": logo.today()}}
+    if shas:
+        cfg["cover"].update(skeleton=skeleton, skeleton_sha=shas)
     write_cover_cfg(cdir, cfg)
     logo.write_new(cdir / "cover.md", logo.render_template(
         "cover.md", id=cid, title=a.title or a.name, platforms="、".join(plats[t]["name"] for t in targets),
-        release=rid, date=logo.today()))
+        release=rid, date=logo.today(), skeleton=f"{skeleton}（替换其中的标题等文案与图片）" if shas else "无"))
     for key, text in texts.items():
         (cdir / f"{key}.svg").write_text(text, encoding="utf-8")
+    for fid in sorted({f for text in texts.values() for f in logo.OUTLINE_FONT_RE.findall(text)}):
+        if p.add_font(fid):  # 骨架中转曲文字所用的字体，与 ./logo outline --project 一样写入 [fonts] used
+            print(f"骨架中的文字使用字体 {fid}，已写入 {p.slug} 的 [fonts] used")
     (p.dir / "covers" / ".gitkeep").unlink(missing_ok=True)
-    print(f"已创建封面：{logo.rel(cdir)}（画幅：{', '.join(need)}；Logo：{rid}/{layout}）")
+    print(f"已创建封面：{logo.rel(cdir)}（画幅：{', '.join(need)}；Logo：{rid}/{layout}"
+          + (f"；套用骨架 {skeleton}" if shas else "") + "）")
     for n in notes:
         print(f"⚠ {n}")
     print("下一步：填写 cover.md；在主视觉画幅定稿后延展到其他画幅；关键内容放进 <g id=\"content\">")
@@ -964,6 +1068,9 @@ def register(sub) -> None:
     c.add_argument("--platforms", required=True, help="目标平台，逗号分隔，如 youtube,x,xiaohongshu")
     c.add_argument("--release", help="所用 Logo 发布（默认 current_release）")
     c.add_argument("--title", help="中文标题")
+    sk = c.add_mutually_exclusive_group()
+    sk.add_argument("--from-skeleton", action="store_true", help="套用所在系列登记的封面骨架（系列成员）")
+    sk.add_argument("--no-skeleton", action="store_true", help="系列已有骨架但这张封面不套用")
     c.set_defaults(fn=cmd_new)
     c = cs.add_parser("asset", help="登记照片/插画素材（记录来源、授权与 sha256，登记后不可替换）")
     c.add_argument("slug")

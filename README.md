@@ -66,6 +66,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 | `./logo series compare <系列> [--with 项目=版本]` | 系列对比图（彩色 / 单色 / 32px）与评审清单 |
 | `./logo series review <系列> --result pass\|revise --note "用户意见"` | 记录系列评审结论（子品牌发布前须通过） |
 | `./logo series sync <子品牌> --palette all\|none\|色名 --note "用户决定"` | 子品牌跟进母品牌新发布（同步色板，旧值保留给冻结的设计） |
+| `./logo series skeleton <系列> --from <项目> <封面> --note "…"` | 登记系列封面骨架；成员立项封面时 `--from-skeleton` 套用 |
 | `./logo concept <slug> <图片> --name x --prompt "…"` | 登记概念图 |
 | `./logo direction <slug> A mountain` | 新建方向 |
 | `./logo version <slug> A [--from B-v002 \| --from-master] [--inspired-by 001]` | 新建版本（可引用概念图；系列子品牌可从母品牌主版起稿） |
@@ -133,6 +134,8 @@ brief.md 记录访谈结果（含“需求确认”），未填完时不能开�
 **系列评审**：统一型 / 背书型子品牌定稿前，Agent 用 `series compare` 生成对比图并按 series.md 逐条向用户提问，用 `series review --note` 记录用户结论；没有该版本通过的评审时 `./logo release` 拒绝（以同一版本最近一次评审为准）。
 
 **改版跟进**：母品牌出新发布后，`check` 对每个统一型 / 背书型子品牌提醒并列出色板变化；Agent 按 series.md“改版跟进”的约定逐个向用户确认，用 `series sync --note` 记录并同步。被替换的旧色值若仍被子品牌已有设计使用，会保留为 `<色名>_r<N>`，冻结的版本与发布照常通过检查。
+
+**系列封面骨架**：把一张成员封面登记为骨架后，成员立项封面须明确选择 `--from-skeleton` 或 `--no-skeleton`。套用时 Logo 换成本项目发布（位置不变）、照片换成“图片区”参考框（素材授权按封面登记）、参考线按本封面平台重画；内容仍是骨架原文、或骨架之后被修改时会提醒。
 
 ## Logo 资产与封面
 

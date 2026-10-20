@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import re
+import subprocess
 import tomllib
 import unittest
 from pathlib import Path
 
-from helpers import PRIMARY, TRIANGLE, Workspace, fill_doc
+from helpers import HAS_RENDER, PRIMARY, TRIANGLE, Workspace, fill_doc
 
 SQUARE = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="{PRIMARY}" d="M10 10h80v80H10Z"/></svg>\n'
 
@@ -412,6 +413,126 @@ class SeriesSyncTest(SeriesBase):
     def test_independent_sub_needs_no_sync(self):
         self.family("independent")
         self.assertIn("无需跟进", self.sync("all", ok=False).stderr)
+
+
+@unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
+class SeriesSkeletonTest(SeriesBase):
+    """第二期第 3a 步：系列封面骨架——登记、套用（换 Logo、照片转图片区、参考线重画、原文提醒）与必须先问用户。"""
+
+    def setUp(self):
+        super().setUp()
+        ws = self.ws
+        self.food = self.family()
+        ws.logo("series", "review", "pets", "--result", "pass", "--note", "通过", "--with", "food=A-v001")
+        ws.logo("release", "food", "--from", "A-v001")
+        r = self.food / "releases" / "r1"
+        (r / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")  # 与母品牌主版不同
+        fill_doc(r / "release.md")
+        with (r / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-x.md\n")
+        ws.logo("decision", "food", "x", "--title", "定稿")
+        fill_doc(next((self.food / "decisions").glob("*.md")))
+        fill_doc(r / "guide.md")
+        brand = ws.projects / "brand"
+        toml = brand / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace("used = []", 'used = ["inter"]'), encoding="utf-8")
+        ws.logo("cover", "new", "brand", "main", "--platforms", "x,youtube")
+        self.main = brand / "covers" / "001-main"
+        fill_doc(self.main / "cover.md")
+        photo = ws.tmp / "photo.png"
+        subprocess.run(["magick", "-size", "200x100", "xc:#E76F51", str(photo)], check=True)
+        ws.logo("cover", "asset", "brand", "001", str(photo), "--name", "photo", "--source", "自摄", "--license", "自有版权")
+        fill_doc(self.main / "assets" / "001-photo.md")
+        svg = self.main / "3x1.svg"
+        svg.write_text(svg.read_text(encoding="utf-8").replace('<g id="content">', (
+            '<image href="assets/001-photo.png" x="800" y="60" width="600" height="380" preserveAspectRatio="none"/>'
+            '<g id="content"><!-- outline: font=inter size=10 text="SALE" -->'
+            '<rect x="700" y="200" width="300" height="80" fill="#FFFFFF"/>')), encoding="utf-8")
+        self.commit_ok("[brand] cover 001 + [food] r1")
+
+    def skeleton(self, *extra: str, ok: bool = True):
+        return self.ws.logo("series", "skeleton", "pets", "--from", "brand", "001", "--note", "用户：以首张封面为骨架",
+                            *extra, ok=ok)
+
+    def test_register_rules(self):
+        ws = self.ws
+        ws.logo("new", "solo")
+        self.assertIn("不是系列 pets 的成员", ws.logo("series", "skeleton", "pets", "--from", "solo", "001", "--note", "x",
+                                                ok=False).stderr)
+        svg = self.main / "3x1.svg"
+        good = svg.read_text(encoding="utf-8")
+        svg.write_text(good.replace("assets/001-photo.png", "assets/002-nope.png"), encoding="utf-8")
+        self.assertIn("骨架封面未通过检查", self.skeleton(ok=False).stderr)  # 只能登记通过检查的封面
+        svg.write_text(good, encoding="utf-8")
+        self.assertIn("--note", ws.logo("series", "skeleton", "pets", "--from", "brand", "001", "--note", " ",
+                                         ok=False).stderr)
+        self.skeleton()
+        self.assertEqual(tomllib.loads((ws.projects / "_series" / "pets" / "series.toml").read_text(encoding="utf-8"))
+                         ["covers"]["skeleton"], "brand/001-main")
+        md = (ws.projects / "_series" / "pets" / "series.md").read_text(encoding="utf-8")
+        self.assertIn("封面骨架：brand/001-main\n- **画幅**：16x9、3x1\n- **用户意见**：用户：以首张封面为骨架", md)
+        self.assertIn("封面骨架：brand/001-main", ws.logo("series").stdout)
+        self.commit_ok("[pets] skeleton")
+
+    def test_members_must_choose(self):
+        ws = self.ws
+        self.assertIn("没有登记封面骨架", ws.logo("cover", "new", "food", "a", "--platforms", "x", "--from-skeleton",
+                                           ok=False).stderr)
+        self.skeleton()
+        for slug in ("food", "brand"):  # 母品牌也是成员
+            self.assertIn("请先问用户是否套用", ws.logo("cover", "new", slug, "a", "--platforms", "x", ok=False).stderr)
+        self.assertNotEqual(ws.logo("cover", "new", "food", "a", "--platforms", "x", "--from-skeleton", "--no-skeleton",
+                                    ok=False).returncode, 0)
+        ws.logo("cover", "new", "food", "plain", "--platforms", "x", "--no-skeleton")
+        plain = self.food / "covers" / "001-plain"
+        self.assertNotIn("skeleton", (plain / "cover.toml").read_text(encoding="utf-8"))
+        self.assertIn("- **封面骨架**：无", (plain / "cover.md").read_text(encoding="utf-8"))
+
+    def test_derive_from_skeleton(self):
+        ws = self.ws
+        self.skeleton()
+        out = ws.logo("cover", "new", "food", "spring", "--platforms", "x,weibo,og", "--from-skeleton").stdout
+        self.assertIn("1.91x1.svg：骨架 brand/001-main 没有这个画幅，已按常规起稿", out)
+        self.assertIn("已写入 food 的 [fonts] used", out)
+        c = self.food / "covers" / "001-spring"
+        derived, source = (c / "3x1.svg").read_text(encoding="utf-8"), (self.main / "3x1.svg").read_text(encoding="utf-8")
+        logo_tag = re.compile(r'<g id="logo"[^>]*>')
+        self.assertIn('data-release="r1"', logo_tag.search(derived).group(0))  # food 自己的 r1（提交时按 food 的发布核对指纹）
+        logo_part = derived[logo_tag.search(derived).start():derived.index('id="content"')]
+        self.assertIn('d="M10 90 50 10 90 90Z"', logo_part)  # food 的三角形主版，而不是母品牌的正方形
+        self.assertNotIn('d="M10 10h80v80H10Z"', logo_part)
+        self.assertEqual(re.search(r'transform="[^"]*"', logo_tag.search(derived).group(0)).group(0),
+                         re.search(r'transform="[^"]*"', logo_tag.search(source).group(0)).group(0))  # 位置不变
+        self.assertNotIn("<image", derived)  # 照片授权按封面登记，不沿用
+        self.assertIn("图片区", derived)
+        self.assertIn('<!-- outline: font=inter size=10 text="SALE" -->', derived)  # 转曲注释逐字保留
+        g0, g1 = __import__("covers").group_span(derived, "guides")
+        self.assertIn(">weibo<", derived[g0:g1])
+        self.assertNotIn(">youtube<", derived[g0:g1])  # 参考线按本封面平台重画
+        cfg = tomllib.loads((c / "cover.toml").read_text(encoding="utf-8"))["cover"]
+        self.assertEqual((cfg["skeleton"], list(cfg["skeleton_sha"])), ("brand/001-main", ["3x1.svg"]))
+        self.assertIn("- **封面骨架**：brand/001-main", (c / "cover.md").read_text(encoding="utf-8"))
+        self.assertIn("inter", self.toml("food")["fonts"]["used"])
+        self.assertIn("001-spring/3x1.svg: 关键内容仍是骨架原文（来自 brand/001-main）", ws.logo("check").stdout)
+        (c / "3x1.svg").write_text(derived.replace('fill="#FFFFFF"/>', 'fill="#000000"/>', 1), encoding="utf-8")
+        self.assertNotIn("骨架原文", ws.logo("check").stdout)
+        fill_doc(c / "cover.md")
+        self.commit_ok("[food] cover from skeleton")  # 派生封面完整通过提交检查
+        skel = self.main / "3x1.svg"
+        skel.write_text(skel.read_text(encoding="utf-8") + "<!-- 调整 -->\n", encoding="utf-8")
+        self.assertIn("所套用的骨架 brand/001-main/3x1.svg 已修改", ws.logo("check").stdout)
+
+    def test_derived_cover_can_become_skeleton(self):
+        ws = self.ws
+        self.skeleton()
+        ws.logo("cover", "new", "food", "spring", "--platforms", "x", "--from-skeleton")
+        c = self.food / "covers" / "001-spring"
+        fill_doc(c / "cover.md")
+        ws.logo("series", "skeleton", "pets", "--from", "food", "001", "--note", "用户：改用 food 的封面作骨架")
+        ws.logo("cover", "new", "brand", "again", "--platforms", "x", "--from-skeleton")
+        text = (ws.projects / "brand" / "covers" / "002-again" / "3x1.svg").read_text(encoding="utf-8")
+        self.assertEqual(text.count("data-skeleton="), 1)  # 只保留新指纹，设计稿仍是合法 XML
+        self.assertIn("002-again/3x1.svg: 关键内容仍是骨架原文（来自 food/001-spring）", ws.logo("check").stdout)
 
 
 if __name__ == "__main__":
