@@ -39,7 +39,8 @@ description: LOGODesign 的核心操作流，包括需求访谈、独立/系列�
 - **已有项目加入系列**：`./logo series add <系列名> <slug> --role master|sub`（只登记关系，不改已有设计）。
 
 建好后把访谈结果写进 `brief.md`，包括“需求确认”一节（确认日期、用户确认的要点），再开始第 2 步。
-系列项目的每个版本都要对照 `series.md` 设计与评审；`[series]` 由命令写入，不要手改。
+系列项目的每个版本都要对照 `series.md` 设计与评审（见第 3.5 节）；`[series]` 由命令写入，不要手改。
+**子品牌立项时**：先 `./logo series compare <系列名>` 把系列现有成员与 `series.md` 给用户看，再问子品牌沿用哪些基因、主题色是什么，写进 brief。
 
 ## 1. 新建项目（细节）
 1. 按第 0 步的命令新建；`project.toml` 的 `[series]`（所属系列与角色）与 brief 的“项目类型与架构”由命令写入。
@@ -72,6 +73,15 @@ description: LOGODesign 的核心操作流，包括需求访谈、独立/系列�
    然后 `./logo state <slug> selected_version=<字母>-vNNN`（方向会自动对齐）。
 9. `./logo index && ./logo check`
 10. 提交：`git -C projects add -A && git -C projects commit -m "[<slug>] <字母>-vNNN: <说明>"`。提交后该版本冻结。
+
+## 3.5 系列评审（系列项目）
+子品牌（统一型 / 背书型）定稿前必须与用户做系列评审，否则 `./logo release` 拒绝：
+1. `./logo series compare <系列名> [--with <子品牌>=<版本>]`：生成对比图（每列一个成员；彩色 / 单色 / 32px 三行），并打印评审清单。
+2. **把对比图给用户看，按清单逐条提问**（有提问工具时用选择题），例如“线条与圆角：子品牌的线宽与母品牌一致吗？——一致 / 偏粗 / 偏细”；
+   不要替用户下结论。
+3. 记录用户结论：`./logo series review <系列名> --result pass|revise --note "<用户原话或要点>" --with <子品牌>=<版本>`
+   （追加到 series.md；`--note` 必填）。需修改时按意见出新版本，再对比、再评审；以同一版本最近一次评审为准。
+4. 通过后才能 `./logo release <子品牌> --from <版本>`。母品牌发布与基于发布的再发布不设门槛；独立型系列不设门槛。
 
 ## 4. 定稿发布
 1. 定稿决策：`./logo decision <slug> finalize-<字母>-vNNN`（为什么这个版本可以定稿）。

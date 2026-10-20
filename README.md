@@ -63,6 +63,8 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 |---|---|
 | `./logo new <slug> --name 名称 [--series 系列 --role master\|sub] [--targets svg,ios]` | 按需求访谈结果新建独立或系列项目 |
 | `./logo series [new\|add]` | 查看系列与成员 / 新建系列（统一型、背书型、独立型）/ 已有项目加入系列 |
+| `./logo series compare <系列> [--with 项目=版本]` | 系列对比图（彩色 / 单色 / 32px）与评审清单 |
+| `./logo series review <系列> --result pass\|revise --note "用户意见"` | 记录系列评审结论（子品牌发布前须通过） |
 | `./logo concept <slug> <图片> --name x --prompt "…"` | 登记概念图 |
 | `./logo direction <slug> A mountain` | 新建方向 |
 | `./logo version <slug> A [--from B-v002 \| --from-master] [--inspired-by 001]` | 新建版本（可引用概念图；系列子品牌可从母品牌主版起稿） |
@@ -90,7 +92,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 - SVG 不合规（缺 viewBox、写死宽高、`<text>`/位图/脚本/事件属性、外部引用与 CSS 外部资源、色板外颜色）；
 - 新建文档仍留有模板占位；发布未引用决策记录；版本引用了未登记的概念图；
 - 状态自相矛盾（选定版本不属于选定方向、发布阶段却没有当前发布）、发布的追溯链断裂；
-- 需求访谈未完成（brief.md 未填完）就开始设计（`./logo direction` 拒绝）；系列关系不一致（系列不存在、角色非法、一个系列多个母品牌、继承型子品牌缺母品牌或其发布）；系列规则 series.md 未填完或被改写；
+- 需求访谈未完成（brief.md 未填完）就开始设计（`./logo direction` 拒绝）；系列关系不一致（系列不存在、角色非法、一个系列多个母品牌、继承型子品牌缺母品牌或其发布）；子品牌未通过系列评审就发布；系列规则 series.md 未填完或被改写；
 - 发布缺少主版 `primary.svg`；新放入发布的文件不是系统认识的版式名（如拼错的 `primay.svg`、旧式 `cover-*.svg`，否则生成时会被静默忽略）；`final/` 等生成物被提交；
 - 字体未登记、校验值不符；SVG 中转曲用到的字体未在项目 `[fonts] used` 声明；非开源字体缺少或未通过授权复核（`LICENSE-REVIEW.md`）；字体文件被提交到系统仓库；
 - 目录结构外的文件（临时文件请放 `.cache/`）；系统仓库按目录和文件类型精确限定（如 `tools/` 只收 `*.py`）；
@@ -125,7 +127,9 @@ AI Agent 生成 Logo 之前，先按 [logo-workflow 技能](.agents/skills/logo-
 | 独立型子品牌 | 同上 | 只登记归属，不继承 |
 
 三种架构：**统一型**（子品牌 = 母品牌标志 + 名称，如 Google 地图）、**背书型**（子品牌有自己的标志并注明母品牌出品，如 Courtyard by Marriott）、**独立型**（各自独立，只归组管理，如宝洁旗下各品牌）。
-brief.md 记录访谈结果（含“需求确认”），未填完时不能开始设计；看板按系列分组显示。
+brief.md 记录访谈结果（含“需求确认”），未填完时不能开始设计；看板按系列分组显示，子品牌落后于母品牌当前发布时标出。
+
+**系列评审**：统一型 / 背书型子品牌定稿前，Agent 用 `series compare` 生成对比图并按 series.md 逐条向用户提问，用 `series review --note` 记录用户结论；没有该版本通过的评审时 `./logo release` 拒绝（以同一版本最近一次评审为准）。
 
 ## Logo 资产与封面
 

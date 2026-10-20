@@ -11,7 +11,9 @@ from helpers import PRIMARY, TRIANGLE, Workspace, fill_doc
 SQUARE = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><path fill="{PRIMARY}" d="M10 10h80v80H10Z"/></svg>\n'
 
 
-class SeriesTest(unittest.TestCase):
+class SeriesBase(unittest.TestCase):
+    """系列测试的公共工作区与辅助方法（本身不含测试）。"""
+
     def setUp(self):
         self.ws = Workspace()
         self.addCleanup(self.ws.cleanup)
@@ -48,6 +50,9 @@ class SeriesTest(unittest.TestCase):
         r = self.ws.commit("projects", msg)
         self.assertEqual(r.returncode, 0, self.ws.blocked(r))
 
+
+
+class SeriesTest(SeriesBase):
     # -- 独立项目与访谈门槛 ----------------------------------------------------------
     def test_standalone_project_from_intake(self):
         ws = self.ws
@@ -229,6 +234,96 @@ class SeriesTest(unittest.TestCase):
         ws.logo("index")
         r = ws.commit("projects", "junk", add=False)
         self.assertIn("_series/pets/notes.txt: 不在规定的目录结构中", "\n".join(ws.blocked(r)))
+
+
+class SeriesReviewTest(SeriesBase):
+    """第二期第 1 步：系列对比、评审记录与子品牌发布门槛（先给用户看、听用户结论，再发布）。"""
+
+    def family(self, arch: str = "endorsed") -> Path:
+        """母品牌 brand（已发布 r1）+ 子品牌 food（A-v001 以母品牌主版起稿，已填完）。"""
+        ws = self.ws
+        self.released_master("brand")
+        self.series("pets", arch)
+        ws.logo("series", "add", "pets", "brand", "--role", "master")
+        ws.logo("new", "food", "--series", "pets", "--role", "sub")
+        food = ws.projects / "food"
+        fill_doc(food / "brief.md")
+        ws.logo("direction", "food", "A", "paw")
+        fill_doc(next((food / "directions").glob("A-*")) / "direction.md")
+        if arch == "independent":
+            ws.new_version("food", "A", "paw")
+        else:
+            ws.logo("version", "food", "A", "--from-master")
+            fill_doc(food / "directions" / "A-paw" / "v001" / "notes.md")
+        return food
+
+    def review(self, result: str, note: str = "用户：可以", ok: bool = True):
+        return self.ws.logo("series", "review", "pets", "--result", result, "--note", note, "--with", "food=A-v001", ok=ok)
+
+    def test_compare_and_checklist(self):
+        self.family()
+        out = self.ws.logo("series", "compare", "pets").stdout
+        self.assertIn("brand（母品牌，r1）、food（子品牌，A-v001）", out)  # 母品牌在前；未发布的子品牌取最新版本
+        self.assertIn("1. 共享的视觉基因 · 构图与网格：测试内容", out)  # 评审清单来自 series.md
+        self.assertNotIn("系列名", out)
+        self.assertIn("--with brand=r1 --with food=A-v001", out)
+        png = self.ws.root / ".cache" / "_series" / "pets" / "compare.png"
+        import subprocess
+        w, h = (int(v) for v in subprocess.run(["magick", "identify", "-format", "%w %h", str(png)],
+                                               capture_output=True, text=True, check=True).stdout.split())
+        self.assertGreater(h, w)  # 2 列 × 3 行
+        for bad, msg in (("food=A-v009", "版本不存在"), ("nobody=A-v001", "不是系列 pets 的成员"), ("food", "写法为")):
+            self.assertIn(msg, self.ws.logo("series", "compare", "pets", "--with", bad, ok=False).stderr)
+
+    def test_sub_release_needs_passed_review(self):
+        ws = self.ws
+        self.family()
+        r = ws.logo("release", "food", "--from", "A-v001", ok=False)
+        self.assertIn("须先做系列评审", r.stderr)
+        self.assertFalse((ws.projects / "food" / "releases" / "r1").exists())
+        self.assertIn("--note", self.review("pass", "   ", ok=False).stderr)  # 必须写明用户意见
+        self.review("revise", "猫耳太尖，\n和母品牌不一致")
+        self.assertIn("须先做系列评审", ws.logo("release", "food", "--from", "A-v001", ok=False).stderr)
+        self.review("pass")
+        md = (ws.projects / "_series" / "pets" / "series.md").read_text(encoding="utf-8")
+        self.assertIn("系列评审：需修改\n- **对比**：brand r1、food A-v001\n- **用户意见**：猫耳太尖， 和母品牌不一致", md)
+        self.review("revise", "又改主意了")  # 以最近一次评审为准
+        self.assertIn("须先做系列评审", ws.logo("release", "food", "--from", "A-v001", ok=False).stderr)
+        self.review("pass")
+        ws.logo("release", "food", "--from", "A-v001")
+        self.assertNotIn("没有通过的系列评审", ws.logo("check").stdout)
+        series_md = ws.projects / "_series" / "pets" / "series.md"
+        series_md.write_text(series_md.read_text(encoding="utf-8").replace("系列评审：通过", "系列评审：需修改"),
+                             encoding="utf-8")
+        self.assertIn("当前发布 r1（A-v001）没有通过的系列评审记录", ws.logo("check").stdout)  # 历史发布只提醒
+        ws.logo("release", "brand", "--from", "r1")  # 母品牌与基于发布的再发布不设门槛
+        ws.logo("release", "food", "--from", "r1")
+
+    def test_missing_rules_file_does_not_crash(self):
+        ws = self.ws
+        self.family()
+        (ws.projects / "_series" / "pets" / "series.md").unlink()
+        self.assertIn("缺少系列规则 series.md", ws.logo("check", ok=False).stdout)  # 报错而不是中断检查
+        self.assertIn("须先做系列评审", ws.logo("release", "food", "--from", "A-v001", ok=False).stderr)
+        self.assertIn("缺少系列规则", self.review("pass", ok=False).stderr)
+        self.assertIn("food（子品牌，A-v001）", ws.logo("series", "compare", "pets").stdout)
+
+    def test_independent_sub_has_no_gate(self):
+        self.family("independent")
+        self.ws.logo("release", "food", "--from", "A-v001")
+
+    def test_board_shows_master_release(self):
+        ws = self.ws
+        self.family()
+        ws.logo("index")
+        board = (ws.projects / "PROJECTS.md").read_text(encoding="utf-8")
+        self.assertIn("| 项目 | 角色 | 母品牌发布 |", board)
+        self.assertIn("| [food](food/brief.md) | 子品牌 | r1 |", board)
+        self.assertIn("| [brand](brand/brief.md) | 母品牌 | — |", board)
+        ws.logo("release", "brand", "--from", "r1")
+        ws.logo("index")
+        self.assertIn("| [food](food/brief.md) | 子品牌 | r1（最新 r2） |",
+                      (ws.projects / "PROJECTS.md").read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

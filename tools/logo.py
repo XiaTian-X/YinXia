@@ -936,6 +936,8 @@ def cmd_release(a) -> None:
                 skipped.append(f.name)
     elif VERSION_ID_RE.match(src):
         version_svg = p.version_dir(src) / "logo.svg"  # 校验存在
+        import series  # 延迟导入：series.py 依赖本模块
+        series.release_gate(p, src)  # 系列子品牌：须先通过系列评审
         root_version = src
         layouts.mkdir(parents=True)
         if version_svg.exists():
@@ -2111,7 +2113,7 @@ def build_index() -> str:
     import series  # 延迟导入：series.py 依赖本模块
     header = "| 项目 | 名称 | 阶段 | 方向数 | 选定方向 | 选定版本 | 当前发布 | 更新 |"
     groups = series.index_groups()
-    grouped = {p.slug for _, ms in groups for p, _ in ms}
+    grouped = {p.slug for _, ms in groups for p, _, _ in ms}
     lines = ["# 项目看板", "", "<!-- 由 ./logo index 自动生成，请勿手改 -->", ""]
     if groups:
         lines += ["## 独立项目", ""]
@@ -2119,8 +2121,8 @@ def build_index() -> str:
     solo = [index_row(p) for p in all_projects() if p.slug not in grouped]
     lines += solo or ["| — | 暂无项目 | | | | | | |"]
     for title, ms in groups:
-        lines += ["", f"## {title}", "", header.replace("| 项目 |", "| 项目 | 角色 |"), "|---" * 9 + "|"]
-        lines += [index_row(p, role) for p, role in ms] or ["| — | | 暂无成员 | | | | | | |"]
+        lines += ["", f"## {title}", "", header.replace("| 项目 |", "| 项目 | 角色 | 母品牌发布 |"), "|---" * 10 + "|"]
+        lines += [index_row(p, f"{role} | {based}") for p, role, based in ms] or ["| — | | | 暂无成员 | | | | | | |"]
     return "\n".join(lines) + "\n"
 
 

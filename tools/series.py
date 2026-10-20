@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import tempfile
 from pathlib import Path
 
 import logo
@@ -139,6 +140,163 @@ def master_start(p: "logo.Project") -> tuple[Path, str]:
 
 
 # ---------------------------------------------------------------------------
+# 系列评审：并排对比、评审清单、评审记录与子品牌发布门槛
+# ---------------------------------------------------------------------------
+REVIEW_RESULTS = {"pass": "通过", "revise": "需修改"}
+REVIEW_HEAD_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2}) 系列评审：(通过|需修改)\s*$")
+REVIEW_WITH_RE = re.compile(r"^- \*\*对比\*\*：(.*)$")
+RULE_LINE_RE = re.compile(r"^- \*\*(.+?)\*\*[:：]\s*(.*)$")
+
+
+def default_ref(p: "logo.Project") -> str | None:
+    """对比时默认取的版本：当前发布 → 选定版本 → 各方向中最后新建的版本。"""
+    st = p.cfg["state"]
+    if st.get("current_release"):
+        return st["current_release"]
+    if st.get("selected_version"):
+        return st["selected_version"]
+    latest = [vid for d in p.directions() if (vid := p.latest_version_id(d))]
+    return max(latest, key=lambda v: (int(v.split("-v")[1]), v)) if latest else None
+
+
+def ref_text(p: "logo.Project", ref: str, mode: str) -> str:
+    """成员某个版本（版本号或发布号）在某配色下的 SVG 文本；发布取主版。"""
+    if logo.RELEASE_RE.fullmatch(ref):
+        ldir = p.release_dir(ref) / "layouts"
+        if not (ldir / "primary.svg").exists():
+            raise logo.LogoError(f"{p.slug} 的 {ref} 缺少 primary.svg")
+        return logo.layout_mode_text(p, ldir, "primary", mode)
+    return logo.recolor_svg(p.version_dir(ref) / "logo.svg", p.mode_map(mode))
+
+
+def compare_set(sid: str, with_: list[str] | None) -> list[tuple["logo.Project", str, str]]:
+    """参与对比的 [(项目, 角色, 版本)]：母品牌在前；--with slug=版本 覆盖默认版本。没有版本的成员跳过。"""
+    load_series(sid)
+    ms = sorted(members(sid), key=lambda x: (x[1] != "master", x[0].slug))
+    picks: dict[str, str] = {}
+    for item in with_ or []:
+        slug, _, ref = item.partition("=")
+        if not ref:
+            raise logo.LogoError(f"--with 写法为 项目=版本，如 food=A-v003 或 brand=r2，收到：{item}")
+        picks[slug] = ref
+    unknown = [s for s in picks if s not in {p.slug for p, _ in ms}]
+    if unknown:
+        raise logo.LogoError(f"不是系列 {sid} 的成员：{', '.join(unknown)}")
+    out = []
+    for p, role in ms:
+        ref = picks.get(p.slug) or default_ref(p)
+        if not ref:
+            continue
+        if logo.RELEASE_RE.fullmatch(ref):
+            p.release_dir(ref)
+        else:
+            p.version_dir(ref)  # 校验存在
+        out.append((p, role, ref))
+    if not out:
+        raise logo.LogoError(f"系列 {sid} 还没有可对比的成员版本")
+    return out
+
+
+def rules_lines(sid: str) -> list[str]:
+    """series.md 的各行；文件缺失时为空（缺失由 check_series 报错，这里不中断检查与命令）。"""
+    md = SERIES_DIR / sid / "series.md"
+    return md.read_text(encoding="utf-8").splitlines() if md.exists() else []
+
+
+def checklist(sid: str) -> list[str]:
+    """评审清单：series.md 中评审追加区之前的规则条目（字段与段落），供 Agent 逐条向用户提问。"""
+    out, section = [], ""
+    for line in rules_lines(sid):
+        s = line.strip()
+        if s.startswith("## "):
+            section = s[3:]
+            if "追加" in section:
+                break
+            continue
+        if not s or s.startswith(("#", ">")) or not section:  # 首个 ## 之前是标题与元数据（系列名、架构等）
+            continue
+        m = RULE_LINE_RE.match(s)
+        out.append(f"{section} · {m.group(1)}：{m.group(2)}" if m else f"{section}：{s}")
+    return out
+
+
+def cmd_compare(a) -> None:
+    items = compare_set(a.id, a.with_)
+    out = logo.CACHE / "_series" / a.id / "compare.png"
+    with tempfile.TemporaryDirectory() as td:
+        cells = []
+        for row, (mode, size) in enumerate((("color", 300), ("mono", 300), ("color", 32))):
+            for i, (p, role, ref) in enumerate(items):
+                png = logo.render_text(ref_text(p, ref, mode), Path(td) / f"{row}-{i}.png", size)
+                if size < 100:  # 小尺寸放大显示，看清像素级效果
+                    logo.run(["magick", str(png), "-filter", "point", "-resize", "800%", str(png)])
+                cell = Path(td) / f"cell-{row}-{i}.png"
+                logo.run(["magick", str(png), "-background", "white", "-gravity", "center", "-extent", "320x320",
+                          str(cell)])
+                cells += ["-label", f"{p.slug} · {role} · {ref} · {'32px' if size < 100 else mode}", str(cell)]
+        out.parent.mkdir(parents=True, exist_ok=True)
+        logo.run(["magick", "montage", *cells, "-tile", f"{len(items)}x3", "-geometry", "+8+8",
+                  "-background", "#DDDDDD", str(out)])
+    print(f"系列对比图：{logo.rel(out)}")
+    print("每列一个成员：" + "、".join(f"{p.slug}（{ROLES.get(role, role)}，{ref}）" for p, role, ref in items))
+    print("三行依次为：彩色、单色（看结构是否一致）、32px 放大（看小尺寸下是否还像一家）")
+    rules = checklist(a.id)
+    if rules:
+        print(f"\n评审清单（来自 {rules_path(a.id)}，请逐条向用户确认）：")
+        for i, r in enumerate(rules, 1):
+            print(f"  {i}. {r}")
+    with_ = " ".join(f"--with {p.slug}={ref}" for p, _, ref in items)
+    print(f"\n用户给出结论后记录：./logo series review {a.id} --result pass|revise --note \"用户意见\" {with_}")
+
+
+def reviews(sid: str) -> list[dict]:
+    """series.md 中的评审记录（按出现顺序）：[{date, result, pairs: {(slug, 版本)}}]。"""
+    out: list[dict] = []
+    for line in rules_lines(sid):
+        if (m := REVIEW_HEAD_RE.match(line)):
+            out.append({"date": m.group(1), "result": m.group(2), "pairs": set()})
+        elif out and (m := REVIEW_WITH_RE.match(line)):
+            out[-1]["pairs"] |= {tuple(x.split(" ", 1)) for x in m.group(1).split("、") if " " in x}
+    return out
+
+
+def review_passed(sid: str, slug: str, vid: str) -> bool:
+    """该成员版本最近一次参与的系列评审结论为“通过”。"""
+    hits = [r for r in reviews(sid) if (slug, vid) in r["pairs"]]
+    return bool(hits) and hits[-1]["result"] == "通过"
+
+
+def release_gate(p: "logo.Project", vid: str) -> None:
+    """统一型 / 背书型子品牌以版本定稿发布前，须有该版本通过的系列评审（先给用户看对比、听用户结论）。"""
+    m = membership(p)
+    if not m or m.get("role") != "sub" or load_series(m["id"]).get("architecture") not in INHERITING:
+        return
+    if not review_passed(m["id"], p.slug, vid):
+        raise logo.LogoError(
+            f"{p.slug} 是系列 {m['id']} 的子品牌，发布 {vid} 前须先做系列评审：./logo series compare {m['id']} "
+            f"--with {p.slug}={vid}，按清单向用户逐条确认，用户通过后 ./logo series review {m['id']} --result pass "
+            f"--note \"用户意见\" --with {p.slug}={vid}")
+
+
+def cmd_review(a) -> None:
+    items = compare_set(a.id, a.with_)
+    note = " ".join(a.note.split())  # 合并为一行，保持记录格式固定
+    if not note:
+        raise logo.LogoError("--note 须写明用户的意见（原话或要点）")
+    md = SERIES_DIR / a.id / "series.md"
+    if not md.exists():
+        raise logo.LogoError(f"缺少系列规则 {rules_path(a.id)}，无法记录评审")
+    body = md.read_text(encoding="utf-8").rstrip("\n")
+    record = (f"\n\n### {logo.today()} 系列评审：{REVIEW_RESULTS[a.result]}\n"
+              f"- **对比**：{'、'.join(f'{p.slug} {ref}' for p, _, ref in items)}\n"
+              f"- **用户意见**：{note}\n")
+    md.write_text(body + record, encoding="utf-8")
+    print(f"已记录系列评审（{REVIEW_RESULTS[a.result]}）→ {rules_path(a.id)}")
+    if a.result == "revise":
+        print("结论为需修改：按用户意见出新版本后重新对比与评审")
+
+
+# ---------------------------------------------------------------------------
 # 检查与看板
 # ---------------------------------------------------------------------------
 def check_series(errors: list[str], warnings: list[str]) -> None:
@@ -199,15 +357,30 @@ def check_series(errors: list[str], warnings: list[str]) -> None:
             logo.Project(slugs[0]).release_dir(rid or "")
         except logo.LogoError:
             errors.append(f"{r}: [series] master_release {rid!r} 不是母品牌 {slugs[0]} 的发布")
+        cur = p.cfg["state"].get("current_release")
+        try:
+            root = p.release_root_version(cur) if cur else None
+        except logo.LogoError:
+            root = None  # 追溯链问题由 check_project 报告
+        if root and not review_passed(m["id"], p.slug, root):
+            warnings.append(f"{logo.rel(p.dir)}: 当前发布 {cur}（{root}）没有通过的系列评审记录；"
+                            f"可 ./logo series compare {m['id']} 后与用户补做评审")
 
 
-def index_groups() -> list[tuple[str, list[tuple["logo.Project", str]]]]:
-    """看板分组：[(系列标题, [(项目, 角色名)])]，母品牌在前。"""
+def index_groups() -> list[tuple[str, list[tuple["logo.Project", str, str]]]]:
+    """看板分组：[(系列标题, [(项目, 角色名, 母品牌发布)])]，母品牌在前；子品牌落后于母品牌当前发布时标出最新。"""
     out = []
     for sid, s in all_series().items():
         ms = sorted(members(sid), key=lambda x: (x[1] != "master", x[0].slug))
+        master = next((p for p, role in ms if role == "master"), None)
+        latest = master.cfg["state"].get("current_release") if master else None
+        rows = []
+        for p, role in ms:
+            based = (membership(p) or {}).get("master_release") or ""
+            shown = "—" if not based else based if based == latest else f"{based}（最新 {latest or '—'}）"
+            rows.append((p, ROLES.get(role, role), shown))
         title = f"系列：{s.get('name', sid)}（{sid}，{ARCHITECTURES.get(s.get('architecture'), '?')}）"
-        out.append((title, [(p, ROLES.get(role, role)) for p, role in ms]))
+        out.append((title, rows))
     return out
 
 
@@ -283,6 +456,17 @@ def register(sub) -> None:
     c.add_argument("--architecture", required=True, choices=list(ARCHITECTURES),
                    help="unified 统一型 / endorsed 背书型 / independent 独立型")
     c.set_defaults(fn=cmd_new)
+    c = ss.add_parser("compare", help="系列对比图（彩色/单色/小尺寸）与评审清单")
+    c.add_argument("id", help="系列名")
+    c.add_argument("--with", dest="with_", action="append", metavar="项目=版本",
+                   help="指定某成员参与对比的版本，如 food=A-v003（默认：当前发布 → 选定版本 → 最新版本），可重复")
+    c.set_defaults(fn=cmd_compare)
+    c = ss.add_parser("review", help="记录系列评审结论（用户的意见），追加到 series.md")
+    c.add_argument("id", help="系列名")
+    c.add_argument("--result", required=True, choices=list(REVIEW_RESULTS), help="pass 通过 / revise 需修改")
+    c.add_argument("--note", required=True, help="用户的意见（原话或要点）")
+    c.add_argument("--with", dest="with_", action="append", metavar="项目=版本", help="同 compare")
+    c.set_defaults(fn=cmd_review)
     c = ss.add_parser("add", help="已有项目加入系列（新项目用 ./logo new --series）")
     c.add_argument("id", help="系列名")
     c.add_argument("slug", help="项目短名")
