@@ -35,7 +35,8 @@
 
 ```text
 projects/                     # 项目仓库根目录（独立 .git）
-├── PROJECTS.md
+├── PROJECTS.md                # 看板：独立项目与各系列分组
+├── _series/<系列名>/          # 品牌系列：series.toml（名称、架构）、series.md（系列规则，只追加）
 └── <slug>/
     ├── project.toml          # 元数据、色板、当前状态（唯一事实来源）
     ├── brief.md              # 品牌理念、偏好、字体策略
@@ -60,10 +61,11 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 
 | 命令 | 作用 |
 |---|---|
-| `./logo new <slug> --name 名称` | 新建项目 |
+| `./logo new <slug> --name 名称 [--series 系列 --role master\|sub] [--targets svg,ios]` | 按需求访谈结果新建独立或系列项目 |
+| `./logo series [new\|add]` | 查看系列与成员 / 新建系列（统一型、背书型、独立型）/ 已有项目加入系列 |
 | `./logo concept <slug> <图片> --name x --prompt "…"` | 登记概念图 |
 | `./logo direction <slug> A mountain` | 新建方向 |
-| `./logo version <slug> A [--from B-v002] [--inspired-by 001]` | 新建版本（可引用概念图） |
+| `./logo version <slug> A [--from B-v002 \| --from-master] [--inspired-by 001]` | 新建版本（可引用概念图；系列子品牌可从母品牌主版起稿） |
 | `./logo preview <slug> A-v001` / `compare <slug>` | 预览 / 多版本对比（输出到 `.cache/`） |
 | `./logo decision <slug> select-direction-a` | 新建决策记录 |
 | `./logo state <slug> [key=value…]` | 查看/更新状态 |
@@ -88,6 +90,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 - SVG 不合规（缺 viewBox、写死宽高、`<text>`/位图/脚本/事件属性、外部引用与 CSS 外部资源、色板外颜色）；
 - 新建文档仍留有模板占位；发布未引用决策记录；版本引用了未登记的概念图；
 - 状态自相矛盾（选定版本不属于选定方向、发布阶段却没有当前发布）、发布的追溯链断裂；
+- 需求访谈未完成（brief.md 未填完）就开始设计（`./logo direction` 拒绝）；系列关系不一致（系列不存在、角色非法、一个系列多个母品牌、继承型子品牌缺母品牌或其发布）；系列规则 series.md 未填完或被改写；
 - 发布缺少主版 `primary.svg`；新放入发布的文件不是系统认识的版式名（如拼错的 `primay.svg`、旧式 `cover-*.svg`，否则生成时会被静默忽略）；`final/` 等生成物被提交；
 - 字体未登记、校验值不符；SVG 中转曲用到的字体未在项目 `[fonts] used` 声明；非开源字体缺少或未通过授权复核（`LICENSE-REVIEW.md`）；字体文件被提交到系统仓库；
 - 目录结构外的文件（临时文件请放 `.cache/`）；系统仓库按目录和文件类型精确限定（如 `tools/` 只收 `*.py`）；
@@ -108,6 +111,21 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 这几项只在手动检查时运行，不拖慢提交。
 
 `./logo export` 先在临时目录生成点名的目标，全部成功后才逐个替换 `dist/` 中对应目录（其他目标保留）；只用 resvg 渲染，同一发布再导出逐字节相同；发布的 `guide.md` 未填完时拒绝导出。
+
+## 需求访谈与品牌系列
+
+AI Agent 生成 Logo 之前，先按 [logo-workflow 技能](.agents/skills/logo-workflow/SKILL.md)第 0 步向使用者提问：独立 Logo 还是品牌系列、系列架构与角色、品牌、视觉偏好、使用场景，最后复述需求请用户确认。答案决定建出什么样的项目：
+
+| 需求 | 命令 | 结果 |
+|---|---|---|
+| 独立 Logo | `./logo new <slug> --targets …` | 普通项目 |
+| 新系列 | `./logo series new <系列名> --architecture …` | `_series/<系列名>/`：系列规则模板随架构不同 |
+| 母品牌 | `./logo new <slug> --series <系列名> --role master` | 项目登记为系列母品牌 |
+| 统一型 / 背书型子品牌 | `./logo new <slug> --series <系列名> --role sub` | 须母品牌已发布；继承其色板、配色模式与 App 图标配色，记录所依据的发布；统一型可 `version --from-master` 以母品牌主版起稿 |
+| 独立型子品牌 | 同上 | 只登记归属，不继承 |
+
+三种架构：**统一型**（子品牌 = 母品牌标志 + 名称，如 Google 地图）、**背书型**（子品牌有自己的标志并注明母品牌出品，如 Courtyard by Marriott）、**独立型**（各自独立，只归组管理，如宝洁旗下各品牌）。
+brief.md 记录访谈结果（含“需求确认”），未填完时不能开始设计；看板按系列分组显示。
 
 ## Logo 资产与封面
 

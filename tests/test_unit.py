@@ -44,7 +44,8 @@ class PlaceholderTest(unittest.TestCase):
                         "version-notes.md": "x/directions/A-a/v001/notes.md", "release.md": "x/releases/r1/release.md",
                         "release-guide.md": "x/releases/r1/guide.md", "decision.md": "x/decisions/001-a.md",
                         "concept.md": "x/concepts/001-a.md", "cover.md": "x/covers/001-a/cover.md",
-                        "cover-asset.md": "x/covers/001-a/assets/001-p.md"}[tpl]
+                        "cover-asset.md": "x/covers/001-a/assets/001-p.md", "series-unified.md": "_series/x/series.md",
+                        "series-endorsed.md": "_series/x/series.md", "series-independent.md": "_series/x/series.md"}[tpl]
                 self.assertTrue(logo.unfilled_placeholders(path, f.read_text(encoding="utf-8")))
                 fill_doc(f)
                 self.assertEqual(logo.unfilled_placeholders(path, f.read_text(encoding="utf-8")), [])
@@ -76,10 +77,12 @@ class PathRulesTest(unittest.TestCase):
         ok = ["PROJECTS.md", ".gitignore", "acme/project.toml", "acme/brief.md", "acme/concepts/001-ref.png",
               "acme/concepts/001-ref.md", "acme/directions/A-mountain/direction.md",
               "acme/directions/A-mountain/v001/logo.svg", "acme/decisions/001-secret-garden.md",
-              "acme/releases/r1/layouts/cover-2.7x1.svg", "acme/releases/r1/layouts/icon.mono.svg"]
+              "acme/releases/r1/layouts/cover-2.7x1.svg", "acme/releases/r1/layouts/icon.mono.svg",
+              "_series/pets/series.toml", "_series/pets/series.md"]
         bad = ["notes.txt", "acme/trace.py", "acme/directions/A-mountain/v001/debug.png",
                "acme/releases/r1/notes.txt", "acme/concepts/ref.gif", "Acme/project.toml", ".final-build/a",
-               "acme/final/png/general/x@64.png", "acme/dist/r1/ios/AppIcon-1024.png"]
+               "acme/final/png/general/x@64.png", "acme/dist/r1/ios/AppIcon-1024.png",
+               "_series/pets/notes.txt", "_series/series.md", "_series/Pets/series.md", "_series/pets/x/series.md"]
         for p in ok:
             self.assertTrue(logo.path_allowed(p, "projects"), p)
         for p in bad:

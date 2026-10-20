@@ -86,6 +86,7 @@ APPEND_ONLY_PATTERNS = [
     re.compile(r"^[^/]+/concepts/[^/]+\.md$"),
     re.compile(r"^[^/]+/covers/[^/]+/cover\.md$"),
     re.compile(r"^[^/]+/covers/[^/]+/assets/[^/]+\.md$"),
+    re.compile(r"^_series/[^/]+/series\.md$"),
 ]
 
 # 系统仓库允许提交的文件（相对仓库根目录，精确到目录与文件类型）；与 .gitignore 的白名单保持一致
@@ -100,8 +101,9 @@ SYSTEM_FILE_PATTERNS = [re.compile(p) for p in (
     r"tools/[a-z0-9_]+\.py", r"tools/requirements\.txt",
     r"tests/[a-z0-9_]+\.py",
 )]
-# 项目仓库根目录允许的文件；项目目录内的文件见 PROJECT_FILE_PATTERNS
+# 项目仓库根目录允许的文件；项目目录内的文件见 PROJECT_FILE_PATTERNS，系列记录见 SERIES_FILE_RE
 PROJECTS_ROOT_FILES = {"PROJECTS.md", ".gitignore"}
+SERIES_FILE_RE = re.compile(r"_series/[a-z0-9]+(?:-[a-z0-9]+)*/series\.(toml|md)")
 
 # 密钥与凭据：文件名特征，以及内容特征（私钥、各平台访问令牌）
 SECRET_NAME_RE = re.compile(
@@ -148,6 +150,10 @@ DOC_TEMPLATES = [
     (re.compile(r"^[^/]+/concepts/\d{3}-[^/]+\.md$"), "concept.md"),
     (re.compile(r"^[^/]+/covers/[^/]+/cover\.md$"), "cover.md"),
     (re.compile(r"^[^/]+/covers/[^/]+/assets/\d{3}-[^/]+\.md$"), "cover-asset.md"),
+    # 系列规则按架构使用不同模板，同一路径匹配多个模板时合并检测
+    (re.compile(r"^_series/[^/]+/series\.md$"), "series-unified.md"),
+    (re.compile(r"^_series/[^/]+/series\.md$"), "series-endorsed.md"),
+    (re.compile(r"^_series/[^/]+/series\.md$"), "series-independent.md"),
 ]
 OUTLINE_FONT_RE = re.compile(r"<!--\s*outline:\s*font=([A-Za-z0-9_-]+)")  # ./logo outline 写入的来源注释
 DECISION_REF_RE = re.compile(r"decisions/(\d{3}-[a-z0-9-]+\.md)")
@@ -794,13 +800,35 @@ def cmd_new(a) -> None:
     d = PROJECTS / slug
     if d.exists():
         raise LogoError(f"项目已存在：{rel(d)}")
+    import series  # 延迟导入：series.py 依赖本模块
+    if bool(a.series) != bool(a.role):
+        raise LogoError("--series 与 --role 须同时给出（独立项目两者都不填）")
+    master = series.check_join(a.series, a.role, slug) if a.series else None  # 先校验，避免留下半成品
+    targets = [x.strip() for x in (a.targets or "svg,favicon").split(",") if x.strip()]
+    unknown = [x for x in targets if x not in TARGET_NAMES]
+    if unknown or not targets:
+        raise LogoError(f"--targets 含未知目标：{', '.join(unknown) or '（空）'}（可选：{', '.join(TARGET_NAMES)}）")
+    targets = [x for x in TARGET_NAMES if x in targets]
+    kind, rules = series.describe(a.series, a.role)
     vals = {"name": a.name or slug, "slug": slug, "date": today()}
-    write_new(d / "project.toml", render_template("project.toml", **vals))
-    write_new(d / "brief.md", render_template("brief.md", **vals))
+    toml = render_template("project.toml", **vals).replace(
+        'targets = ["svg", "favicon"]', "targets = [" + ", ".join(f'"{x}"' for x in targets) + "]")
+    if master:
+        toml = series.inherit_from(toml, master)
+    if a.series:
+        rid = master.cfg["state"]["current_release"] if master else None
+        toml = toml.rstrip("\n") + "\n\n" + series.series_section(a.series, a.role, rid)
+    write_new(d / "project.toml", toml)
+    write_new(d / "brief.md", render_template("brief.md", project_type=kind, series_rules=rules,
+                                              targets="、".join(targets), **vals))
     for sub in ("concepts", "directions", "decisions", "releases"):
         (d / sub).mkdir(parents=True, exist_ok=True)
         (d / sub / ".gitkeep").touch()
-    print(f"已创建项目：{rel(d)}\n下一步：填写 {rel(d / 'brief.md')} 与 project.toml 中的色板")
+    print(f"已创建项目：{rel(d)}（{kind}）")
+    if master:
+        print(f"色板与配色模式已继承母品牌 {master.slug}（{master.cfg['state']['current_release']}）")
+    print(f"下一步：按需求访谈填完 {rel(d / 'brief.md')}"
+          + ("" if master else " 与 project.toml 中的色板") + "，经用户确认后再 ./logo direction 开始设计")
 
 
 def cmd_direction(a) -> None:
@@ -810,6 +838,11 @@ def cmd_direction(a) -> None:
         raise LogoError("方向编号必须是单个大写字母，例如 A")
     if any(d.name.split("-", 1)[0] == letter for d in p.directions()):
         raise LogoError(f"方向 {letter} 已存在")
+    brief = p.dir / "brief.md"
+    holes = unfilled_placeholders(f"{p.slug}/brief.md", brief.read_text(encoding="utf-8")) if brief.exists() else ["（缺少 brief.md）"]
+    if holes:  # 先问清楚再设计：需求访谈的结果写进 brief.md 并经用户确认后才能开始
+        raise LogoError(f"{rel(brief)} 还有 {len(holes)} 处未填写（如“{holes[0]}”）；"
+                        "请先完成需求访谈（logo-workflow 技能第 0 步）并经用户确认，再开始设计")
     d = p.dir / "directions" / f"{letter}-{to_slug(a.name)}"
     write_new(d / "direction.md", render_template(
         "direction.md", letter=letter, name=a.name, title=a.title or a.name, date=today()))
@@ -826,8 +859,14 @@ def cmd_version(a) -> None:
     existing = p.versions_in(ddir)
     num = int(existing[-1].name[1:]) + 1 if existing else 1
     vid = f"{letter}-v{num:03d}"
-    base = a.based_on or (None if a.blank else p.latest_version_id(ddir))
-    base_svg = p.version_dir(base) / "logo.svg" if base else None  # 先校验，避免留下半成品目录
+    if a.from_master and (a.based_on or a.blank):
+        raise LogoError("--from-master 不能与 --from / --blank 同时使用")
+    if a.from_master:
+        import series  # 延迟导入：series.py 依赖本模块
+        base_svg, base = series.master_start(p)
+    else:
+        base = a.based_on or (None if a.blank else p.latest_version_id(ddir))
+        base_svg = p.version_dir(base) / "logo.svg" if base else None  # 先校验，避免留下半成品目录
     inspired = p.concept_ref(a.inspired_by) if a.inspired_by else "无"
     vdir = ddir / f"v{num:03d}"
     vdir.mkdir(parents=True)
@@ -1926,11 +1965,9 @@ def template_placeholders(template_name: str) -> tuple[str, ...]:
 
 def unfilled_placeholders(path: str, text: str) -> list[str]:
     """返回文档中仍原样保留的模板占位行；path 为相对项目仓库的路径。"""
-    for pat, tpl in DOC_TEMPLATES:
-        if pat.match(path):
-            lines = {ln.strip() for ln in text.splitlines()}
-            return [ph for ph in template_placeholders(tpl) if ph in lines]
-    return []
+    lines = {ln.strip() for ln in text.splitlines()}
+    holes = [ph for pat, tpl in DOC_TEMPLATES if pat.match(path) for ph in template_placeholders(tpl)]
+    return [ph for ph in dict.fromkeys(holes) if ph in lines]
 
 
 def check_new_docs(staged: bool, errors: list[str], warnings: list[str]) -> None:
@@ -1998,7 +2035,7 @@ def path_allowed(path: str, scope: str) -> bool:
         return path in PROJECTS_ROOT_FILES
     if SLUG_RE.match(parts[0]):
         return any(pt.fullmatch("/".join(parts[1:])) for pt in PROJECT_FILE_PATTERNS)
-    return False
+    return bool(SERIES_FILE_RE.fullmatch(path))
 
 
 def check_secrets(scope: str, staged: bool, errors: list[str]) -> None:
@@ -2060,19 +2097,30 @@ def check_stray_files(scope: str, errors: list[str], warnings: list[str]) -> Non
             (errors if path in tracked else warnings).append(msg)
 
 
-def build_index() -> str:
-    lines = ["# 项目看板", "", "<!-- 由 ./logo index 自动生成，请勿手改 -->", "",
-             "| 项目 | 名称 | 阶段 | 方向数 | 选定方向 | 选定版本 | 当前发布 | 更新 |",
-             "|---|---|---|---|---|---|---|---|"]
-    for p in all_projects():
-        c = p.cfg
-        st = c.get("state", {})
-        lines.append(
-            f"| [{p.slug}]({p.slug}/brief.md) | {c.get('project', {}).get('name', '')} | "
+def index_row(p: Project, role: str | None = None) -> str:
+    c = p.cfg
+    st = c.get("state", {})
+    return (f"| [{p.slug}]({p.slug}/brief.md) | " + (f"{role} | " if role else "")
+            + f"{c.get('project', {}).get('name', '')} | "
             f"{st.get('stage', '')} | {len(p.directions())} | {st.get('selected_direction') or '—'} | "
             f"{st.get('selected_version') or '—'} | {st.get('current_release') or '—'} | {st.get('updated', '')} |")
-    if len(lines) == 6:
-        lines.append("| — | 暂无项目 | | | | | | |")
+
+
+def build_index() -> str:
+    """项目看板：独立项目一张表；有系列时每个系列一张表（含角色，母品牌在前）。"""
+    import series  # 延迟导入：series.py 依赖本模块
+    header = "| 项目 | 名称 | 阶段 | 方向数 | 选定方向 | 选定版本 | 当前发布 | 更新 |"
+    groups = series.index_groups()
+    grouped = {p.slug for _, ms in groups for p, _ in ms}
+    lines = ["# 项目看板", "", "<!-- 由 ./logo index 自动生成，请勿手改 -->", ""]
+    if groups:
+        lines += ["## 独立项目", ""]
+    lines += [header, "|---|---|---|---|---|---|---|---|"]
+    solo = [index_row(p) for p in all_projects() if p.slug not in grouped]
+    lines += solo or ["| — | 暂无项目 | | | | | | |"]
+    for title, ms in groups:
+        lines += ["", f"## {title}", "", header.replace("| 项目 |", "| 项目 | 角色 |"), "|---" * 9 + "|"]
+        lines += [index_row(p, role) for p, role in ms] or ["| — | | 暂无成员 | | | | | | |"]
     return "\n".join(lines) + "\n"
 
 
@@ -2106,6 +2154,8 @@ def cmd_check(a) -> None:
                 (perr if staged else warnings).append(msg)
             check_stray_files("projects", perr, warnings)
             check_new_docs(staged, perr, warnings)
+            import series  # 延迟导入：series.py 依赖本模块
+            series.check_series(perr, warnings)
             check_secrets("projects", staged, perr)
         if scope != "system":
             check_immutability(staged, perr)
@@ -2198,6 +2248,9 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("new", help="新建项目")
     s.add_argument("slug", help="项目短名（小写英文/数字/短横线）")
     s.add_argument("--name", help="项目显示名称，可用中文")
+    s.add_argument("--series", help="所属系列（先用 ./logo series new 创建）；独立项目不填")
+    s.add_argument("--role", choices=["master", "sub"], help="在系列中的角色：master 母品牌 / sub 子品牌")
+    s.add_argument("--targets", help="生成目标，逗号分隔（默认 svg,favicon）：" + ", ".join(TARGET_NAMES))
     s.set_defaults(fn=cmd_new)
 
     s = sub.add_parser("direction", help="新建设计方向")
@@ -2212,6 +2265,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("direction", help="方向编号，如 A")
     s.add_argument("--from", dest="based_on", help="基于哪个版本，如 B-v002（默认：该方向最新版本）")
     s.add_argument("--blank", action="store_true", help="从空白画布开始")
+    s.add_argument("--from-master", action="store_true",
+                   help="系列子品牌（统一型/背书型）以母品牌发布的主版起稿")
     s.add_argument("--inspired-by", help="灵感来源的概念图编号，如 001 或 001-mountain（须先用 ./logo concept 登记）")
     s.set_defaults(fn=cmd_version)
 
@@ -2300,6 +2355,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     import covers  # 延迟导入：covers.py 依赖本模块
     covers.register(sub)
+    import series  # 延迟导入：series.py 依赖本模块
+    series.register(sub)
 
     s = sub.add_parser("index", help="重新生成 PROJECTS.md")
     s.set_defaults(fn=cmd_index)

@@ -1,14 +1,15 @@
 # LOGODesign 全局规则
 
-- **两个 Git 仓库**：仓库根目录是**系统仓库**（`tools/`、`templates/`、`config/`、`assets/`、规则文档）；`projects/` 是独立的**项目仓库**（各项目与 `PROJECTS.md`）。设计工作只提交到项目仓库：`git -C projects add -A && git -C projects commit -m "[<slug>] …"`；只有修改系统本身时才在根目录提交，且系统改动与项目改动绝不混在同一次提交里。
-- **唯一操作入口**：项目创建、方向、版本、概念图、决策记录、发布、状态流转、导出，必须通过 `./logo`，绝不允许手动建文件夹。
-- **状态唯一来源**：`project.toml` 的 `[state]` 只能由 `./logo state / direction / version / release` 修改，禁止手改；`[palette]`、`[color_modes]`、`[fonts]`、`[export]` 属于项目配置，可以手工维护。
+- **两个 Git 仓库**：仓库根目录是**系统仓库**（`tools/`、`templates/`、`config/`、`assets/`、规则文档）；`projects/` 是独立的**项目仓库**（各项目、系列记录 `_series/` 与 `PROJECTS.md`）。设计工作只提交到项目仓库：`git -C projects add -A && git -C projects commit -m "[<slug>] …"`；只有修改系统本身时才在根目录提交，且系统改动与项目改动绝不混在同一次提交里。
+- **先访谈再设计**：用户要做 Logo 时，先按 `logo-workflow` 技能第 0 步向用户提问，明确是独立 Logo 还是品牌系列、系列架构（统一型 / 背书型 / 独立型）与角色、品牌、视觉与使用场景，并经用户确认；据此用 `./logo new`（系列项目先 `./logo series new`）建立对应结构的项目。brief.md 未填完不得开始设计（`./logo direction` 会拒绝）。系列规则在 `projects/_series/<系列名>/series.md`，只追加，系列内每个项目都按它设计与评审。
+- **唯一操作入口**：项目与系列创建、方向、版本、概念图、决策记录、发布、状态流转、导出，必须通过 `./logo`，绝不允许手动建文件夹。
+- **状态唯一来源**：`project.toml` 的 `[state]` 只能由 `./logo state / direction / version / release` 修改、`[series]` 只能由 `./logo new --series` / `./logo series add` 写入，禁止手改；`[palette]`、`[color_modes]`、`[fonts]`、`[export]` 属于项目配置，可以手工维护。
 - **不可变性 (Immutability)**：以下文件提交后绝不允许修改或删除——
   - `directions/*/vNNN/logo.svg`：要改就用 `./logo version` 产生新版本；
   - `releases/rN/layouts/*.svg`：要改就用 `./logo release --from rN` 产生新发布；
   - `concepts/NNN-*.png|jpg|webp`：概念图原样保存；
   - `covers/*/assets/NNN-*.png|jpg|webp`：封面素材登记后不可替换，换图要重新登记。
-- **只追加文件**：`notes.md`、`direction.md`、`release.md`、`guide.md`（releases 下）、`decisions/*.md`、`concepts/*.md`、`covers/*/cover.md`、`covers/*/assets/*.md`，已有内容不得修改，只能在末尾追加评审记录。
+- **只追加文件**：`notes.md`、`direction.md`、`release.md`、`guide.md`（releases 下）、`decisions/*.md`、`concepts/*.md`、`_series/*/series.md`、`covers/*/cover.md`、`covers/*/assets/*.md`，已有内容不得修改，只能在末尾追加评审记录。
 - **交付物按需生成、不提交**：发布只需主版 `primary.svg`（可选 `icon.svg`、横版/字标与 `app-icon.svg`/`avatar.svg` 手工覆盖）；各目标由 `./logo export` / `./logo render` 生成到 `projects/<slug>/dist/`（被忽略、不提交），结果可重复。封面属于品牌物料，不在 Logo 资产流程内：由独立的封面模块 `tools/covers.py` 管理，平台与画幅登记在 `config/cover-platforms.toml`（`./logo cover platforms` 查看）。处理封面时参照 `cover-workflow` 技能：封面里的 Logo 只能来自发布、只能移动缩放；照片须先用 `./logo cover asset` 登记来源与授权，登记后不可替换；Logo 改版后用 `./logo cover sync-logo` 更新封面，不要手改 Logo 分组。
 - **密钥绝不入库**：`.env`、私钥、证书、凭据文件以及任何 API key/token 都不得出现在两个仓库的提交中；系统仓库的 `.gitignore` 是白名单，钩子还会按文件名与内容扫描拦截。需要密钥时放在仓库之外或环境变量中。
 - **目录纪律**：两个仓库里都只允许出现规定结构内的文件。描摹中间件、临时脚本、测试输出一律放 `.cache/`（已被 Git 忽略）或用完删除，绝不提交到根目录或项目目录。

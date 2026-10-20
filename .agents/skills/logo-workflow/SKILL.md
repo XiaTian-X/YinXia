@@ -1,6 +1,6 @@
 ---
 name: logo-workflow
-description: LOGODesign 的核心操作流，包括立项、概念图、设计方向、迭代评审、决策记录、文字转曲、发布、检查导出。
+description: LOGODesign 的核心操作流，包括需求访谈、独立/系列立项、概念图、设计方向、迭代评审、决策记录、文字转曲、发布、检查导出。
 ---
 
 # Logo Workflow
@@ -11,10 +11,40 @@ description: LOGODesign 的核心操作流，包括立项、概念图、设计�
 > **模板占位必须在提交前填完**：新建的 direction.md、notes.md、release.md、guide.md、决策与概念记录提交后只能追加，
 > 带着“（…）”提示或空字段提交会被钩子拦截。
 
-## 1. 新建项目
-1. `./logo new <slug> --name <名称>`
+## 0. 需求访谈（任何设计之前）
+**先问清楚再生成。** 用户提出做 Logo 时，不要直接画：按下面的轮次向用户提问（有提问工具时用选择题，每轮最多 4 题；
+用户已经说清的不再重复问），据答案建立对应结构的项目。brief.md 未填完时 `./logo direction` 会拒绝开始设计。
+
+| 轮次 | 问什么 | 答案用于 |
+|---|---|---|
+| 1. 项目类型 | 独立 Logo / 新建品牌系列 / 加入已有系列（`./logo series` 查看已有系列） | 是否需要系列 |
+| 2. 系列（仅系列） | 架构：统一型 / 背书型 / 独立型（不熟悉时用下方说明与例子解释）；本项目是母品牌还是子品牌；新系列要统一哪些视觉基因 | `series new`、`--series/--role`、series.md |
+| 3. 品牌 | 名称；Logo 里放不放文字（中文 / 英文 / 不放）；行业、受众、关键词、品牌故事 | brief 品牌理念、字体策略 |
+| 4. 视觉 | 喜欢与禁忌的风格、色彩倾向；有没有参考图（有则 `./logo concept` 登记） | brief 视觉偏好、概念图 |
+| 5. 使用场景 | 网站 / App / 社交头像 / 印刷；需要哪些平台的封面（`./logo cover platforms`） | `--targets`、计划的封面平台 |
+| 6. 确认 | 把整理好的需求摘要复述给用户，确认或修改 | brief“需求确认”一节 |
+
+三种系列架构（向用户解释时可用）：
+- **统一型**：子品牌就是母品牌加名字，如 Google 地图、Google 日历。子品牌不设计新图形，用母品牌标志加名称或换主题色。
+- **背书型**：子品牌有自己的标志，注明“母品牌出品”，如 Courtyard by Marriott。子品牌沿用系列的视觉基因（线条、圆角、配色体系）。
+- **独立型**：各品牌独立，如宝洁旗下的海飞丝与汰渍。视觉上不要求统一，只归为一组管理。
+
+据答案建项目：
+- **独立 Logo**：`./logo new <slug> --name <名称> --targets <目标>`
+- **新建系列**：`./logo series new <系列名> --name <名称> --architecture unified|endorsed|independent`，填完 `projects/_series/<系列名>/series.md`
+  （系列规则，全系列的设计依据，只追加）；再 `./logo new <slug> --series <系列名> --role master --targets …` 建母品牌。
+- **子品牌**：`./logo new <slug> --series <系列名> --role sub --targets …`。统一型 / 背书型须母品牌已发布：
+  色板、配色模式与 App 图标配色自动继承母品牌当前发布；统一型子品牌开始设计时用 `./logo version <slug> A --from-master`
+  以母品牌主版起稿。独立型子品牌不继承，按独立项目设计。
+- **已有项目加入系列**：`./logo series add <系列名> <slug> --role master|sub`（只登记关系，不改已有设计）。
+
+建好后把访谈结果写进 `brief.md`，包括“需求确认”一节（确认日期、用户确认的要点），再开始第 2 步。
+系列项目的每个版本都要对照 `series.md` 设计与评审；`[series]` 由命令写入，不要手改。
+
+## 1. 新建项目（细节）
+1. 按第 0 步的命令新建；`project.toml` 的 `[series]`（所属系列与角色）与 brief 的“项目类型与架构”由命令写入。
 2. 填写 `projects/<slug>/brief.md`（含字体策略，引用 fonts.toml 的 id）。
-3. 在 `project.toml` 中定义 `[palette]`、按需调整 `[color_modes]` 与 `[export]`（生成目标、App 图标底色与图形配色）。
+3. 在 `project.toml` 中定义 `[palette]`（系列子品牌已继承母品牌，按 series.md 调整）、按需调整 `[color_modes]` 与 `[export]`（生成目标、App 图标底色与图形配色）。
    生成哪些标志版式以发布中实际存在的文件为准；`check` 提示“旧写法”时按提示迁移（`[layouts]`、`profiles` 等已被取代）。
    `[state]` 不要手改。
 

@@ -66,6 +66,13 @@
 !/*/covers/*/assets/[0-9][0-9][0-9]-*.jpeg
 !/*/covers/*/assets/[0-9][0-9][0-9]-*.webp
 
+# ── 系列记录：_series/<系列名>/ 只放行元数据与系列规则（./logo series 管理）──
+/_series/*
+!/_series/[a-z0-9]*/
+/_series/*/*
+!/_series/*/series.toml
+!/_series/*/series.md
+
 # ── 任何位置都排除（放在最后，优先于上面的放行）──
 .DS_Store
 Thumbs.db
