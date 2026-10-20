@@ -848,6 +848,11 @@ def cmd_direction(a) -> None:
     if holes:  # 先问清楚再设计：需求访谈的结果写进 brief.md 并经用户确认后才能开始
         raise LogoError(f"{rel(brief)} 还有 {len(holes)} 处未填写（如“{holes[0]}”）；"
                         "请先完成需求访谈（logo-workflow 技能第 0 步）并经用户确认，再开始设计")
+    import series  # 延迟导入：series.py 依赖本模块
+    if (holes := series.rules_holes(p)):  # 系列成员：系列层面的访谈（系列规则）也须先完成
+        sid = series.membership(p)["id"]
+        raise LogoError(f"系列规则 {series.rules_path(sid)} 还有 {len(holes)} 处未填写（如“{holes[0]}”）；"
+                        "请先与用户确定系列规则，再开始设计系列成员")
     d = p.dir / "directions" / f"{letter}-{to_slug(a.name)}"
     write_new(d / "direction.md", render_template(
         "direction.md", letter=letter, name=a.name, title=a.title or a.name, date=today()))
@@ -2125,11 +2130,13 @@ def build_index() -> str:
     groups = series.index_groups()
     grouped = {p.slug for _, ms in groups for p, _, _ in ms}
     lines = ["# 项目看板", "", "<!-- 由 ./logo index 自动生成，请勿手改 -->", ""]
-    if groups:
-        lines += ["## 独立项目", ""]
-    lines += [header, "|---|---|---|---|---|---|---|---|"]
     solo = [index_row(p) for p in all_projects() if p.slug not in grouped]
-    lines += solo or ["| — | 暂无项目 | | | | | | |"]
+    if groups and solo:
+        lines += ["## 独立项目", ""]
+    if solo or not groups:  # 全部项目都在系列中时，不显示空的独立项目表
+        lines += [header, "|---|---|---|---|---|---|---|---|"] + (solo or ["| — | 暂无项目 | | | | | | |"])
+    else:
+        lines.pop()  # 去掉表头前的空行，系列表自带分隔
     for title, ms in groups:
         lines += ["", f"## {title}", "", header.replace("| 项目 |", "| 项目 | 角色 | 母品牌发布 |"), "|---" * 10 + "|"]
         lines += [index_row(p, f"{role} | {based}") for p, role, based in ms] or ["| — | | | 暂无成员 | | | | | | |"]

@@ -54,11 +54,39 @@ def membership(p: "logo.Project") -> dict | None:
 
 
 def members(sid: str) -> list[tuple["logo.Project", str]]:
-    return [(p, m["role"]) for p in logo.all_projects() if (m := membership(p)) and m.get("id") == sid]
+    """系列成员与角色；角色缺失时记为 “?”（由 check_series 报错，这里不中断看板与列表）。"""
+    return [(p, m.get("role") or "?") for p in logo.all_projects() if (m := membership(p)) and m.get("id") == sid]
 
 
 def master_of(sid: str) -> "logo.Project | None":
     return next((p for p, role in members(sid) if role == "master"), None)
+
+
+def rules_holes(p: "logo.Project") -> list[str]:
+    """系列成员开始设计前，系列规则 series.md 须已填完（系列层面的需求访谈）；返回未填写的占位，非成员为空。"""
+    m = membership(p)
+    if not m or not m.get("id"):
+        return []
+    md = SERIES_DIR / m["id"] / "series.md"
+    if not md.exists():
+        return [f"（缺少 {rules_path(m['id'])}）"]
+    return logo.unfilled_placeholders(rules_path(m["id"]), md.read_text(encoding="utf-8"))
+
+
+def skeleton_problem(sid: str, ref: str) -> str | None:
+    """登记的封面骨架是否仍然有效：封面目录存在、所属项目仍是该系列成员。"""
+    import covers  # 延迟导入：covers.py 依赖 logo
+    slug, _, cover = ref.partition("/")
+    if not covers.COVER_DIR_RE.match(cover):
+        return f"系列 {sid} 的封面骨架记录 {ref!r} 格式应为 项目/NNN-名称"
+    if not covers.skeleton_dir(ref).is_dir():
+        return f"系列 {sid} 登记的封面骨架 {ref} 不存在"
+    try:
+        if (membership(logo.Project(slug)) or {}).get("id") != sid:
+            return f"系列 {sid} 的封面骨架 {ref} 所属项目 {slug} 已不是系列成员"
+    except logo.LogoError:
+        return f"系列 {sid} 的封面骨架 {ref} 所属项目 {slug} 不存在"
+    return None
 
 
 def rules_path(sid: str) -> str:
@@ -457,6 +485,9 @@ def check_series(errors: list[str], warnings: list[str]) -> None:
             errors.append(f"{where}/series.toml: 缺少 name")
         if not (d / "series.md").exists():
             errors.append(f"{where}: 缺少系列规则 series.md")
+        if (ref := s and logo.load_toml(d / "series.toml").get("covers", {}).get("skeleton")):
+            if (problem := skeleton_problem(d.name, ref)):
+                errors.append(f"{where}/series.toml: {problem}（重新 ./logo series skeleton 登记）")
         valid[d.name] = s
     masters: dict[str, list[str]] = {}
     for p in logo.all_projects():

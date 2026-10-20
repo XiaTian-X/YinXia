@@ -168,7 +168,7 @@ def write_cover_cfg(cdir: Path, cfg: dict) -> None:
     def lst(v) -> str:
         return "[" + ", ".join(q(x) for x in v) + "]"
     skeleton = ""
-    if c.get("skeleton"):  # 套用的系列封面骨架，及套用时各份骨架设计稿的 sha256（骨架修改后据此提醒）
+    if c.get("skeleton"):  # 套用的系列封面骨架，及套用时各份骨架设计稿的版式指纹（骨架修改后据此提醒）
         shas = ", ".join(f"{q(k)} = {q(v)}" for k, v in c.get("skeleton_sha", {}).items())
         skeleton = f'skeleton = {q(c["skeleton"])}\nskeleton_sha = {{ {shas} }}\n'
     if "members" in c:  # 家族封面：各成员及其所用发布（第一个为主品牌）
@@ -258,7 +258,7 @@ def logo_group(p: "logo.Project", ldir: Path, release: str, layout: str, mode: s
     """把发布中的版式按指定配色原样嵌入为 <g id="logo">（家族封面为 logo-<项目>，并标注 data-project），
     用 transform 定位与缩放。"""
     root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
-    vx, vy, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
+    _, _, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
     root.set("width", logo.fmt_num(vw))
     root.set("height", logo.fmt_num(vh))
     s = height / vh
@@ -487,7 +487,7 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
                                 "请按 cover.md 替换标题等文案")
     for name, sha in c.get("skeleton_sha", {}).items():  # 套用后骨架又被修改：提醒对照调整
         src = skeleton_dir(c.get("skeleton", "")) / name
-        if not src.exists() or logo.sha256_file(src) != sha:
+        if not src.exists() or skeleton_print(src.read_text(encoding="utf-8")) != sha:
             warnings.append(f"{where}: 所套用的骨架 {c.get('skeleton')}/{name} 已{'删除' if not src.exists() else '修改'}，"
                             "可对照调整本封面")
     if not any(e.startswith(where) for e in errors):  # 已有结构错误时，渲染类提醒不可靠，跳过
@@ -833,7 +833,7 @@ def swap_logo(text: str, p: "logo.Project", ldir: Path, rid: str, gid: str = "lo
     inner = list(old)[0] if len(old) else None
     old_h = float(inner.get("height")) if inner is not None and inner.get("height") else None
     root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
-    vx, vy, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
+    _, _, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
     h = old_h or vh  # 保持原来的显示高度，宽度随新 Logo 的比例变化
     root.set("width", logo.fmt_num(h * vw / vh))
     root.set("height", logo.fmt_num(h))
@@ -854,6 +854,17 @@ def skeleton_dir(ref: str) -> Path:
     """骨架引用 “项目/封面目录” 对应的封面目录。"""
     slug, _, cover = ref.partition("/")
     return logo.PROJECTS / slug / "covers" / cover
+
+
+def skeleton_print(text: str) -> str:
+    """骨架设计稿的版式指纹：Logo 只计位置与缩放，不计其内部图形、发布号与版式名——
+    骨架项目 sync-logo 换了新 Logo 不算骨架修改，挪动 Logo、改动其余内容才算。"""
+    try:
+        a0, a1 = group_span(text, "logo")
+    except logo.LogoError:
+        return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    opening = re.sub(r'\s(data-release|data-layout)="[^"]*"', "", re.match(r"<g\b[^>]*>", text[a0:a1]).group(0))
+    return hashlib.sha256((text[:a0] + opening + "</g>" + text[a1:]).encode("utf-8")).hexdigest()
 
 
 def content_print(el: ET.Element) -> str:
@@ -1146,6 +1157,8 @@ def skeleton_choice(p: "logo.Project", use: bool, skip: bool) -> str | None:
     if skeleton and not (use or skip):
         raise logo.LogoError(f"系列 {m['id']} 已登记封面骨架 {skeleton}：请先问用户是否套用，"
                              "再用 --from-skeleton（套用）或 --no-skeleton（不套用）")
+    if use and (problem := series.skeleton_problem(m["id"], skeleton)):
+        raise logo.LogoError(f"{problem}，无法套用；请重新 ./logo series skeleton 登记")
     return skeleton if use else None
 
 
@@ -1175,7 +1188,7 @@ def cmd_new(a) -> None:
         if skdir and (skdir / f"{key}.svg").exists():
             texts[key] = from_skeleton((skdir / f"{key}.svg").read_text(encoding="utf-8"), p, ldir, rid, on_ratio,
                                        ratios[key])
-            shas[f"{key}.svg"] = logo.sha256_file(skdir / f"{key}.svg")
+            shas[f"{key}.svg"] = skeleton_print((skdir / f"{key}.svg").read_text(encoding="utf-8"))
             continue
         texts[key], note = starter_svg(p, ldir, rid, layout, logo.icon_mode(p), on_ratio, ratios[key])
         if skdir:

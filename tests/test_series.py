@@ -132,6 +132,17 @@ class SeriesTest(SeriesBase):
         fill_doc(brief)
         ws.logo("direction", "solo", "A", "mountain")
 
+    def test_direction_requires_series_rules(self):
+        ws = self.ws
+        ws.logo("series", "new", "group", "--architecture", "independent")  # 系列规则还没填
+        ws.logo("new", "one", "--series", "group", "--role", "sub")
+        fill_doc(ws.projects / "one" / "brief.md")
+        r = ws.logo("direction", "one", "A", "own", ok=False)
+        self.assertIn("系列规则 _series/group/series.md 还有", r.stderr)
+        self.assertIn("请先与用户确定系列规则", r.stderr)
+        fill_doc(ws.projects / "_series" / "group" / "series.md")
+        ws.logo("direction", "one", "A", "own")
+
     # -- 系列规则 -------------------------------------------------------------------
     def test_series_rules_by_architecture(self):
         ws = self.ws
@@ -248,6 +259,14 @@ class SeriesTest(SeriesBase):
                 self.assertNotEqual(r.returncode, 0)
                 self.assertIn(msg, "\n".join(ws.blocked(r)))
                 ws.git("projects", "reset", "-q", "--hard")
+        food.write_text(good.replace('role = "sub"\n', ""), encoding="utf-8")  # [series] 缺 role：报错而不是崩溃
+        out = ws.logo("check", ok=False).stdout
+        self.assertIn("role 须为 master / sub", out)
+        self.assertNotIn("Traceback", out)
+        ws.logo("index")
+        self.assertIn("| [food](food/brief.md) | ? |", (ws.projects / "PROJECTS.md").read_text(encoding="utf-8"))
+        self.assertIn("?  food", ws.logo("series").stdout)
+        food.write_text(good, encoding="utf-8")
         brand = ws.projects / "brand" / "project.toml"  # 继承型系列的母品牌离开后，子品牌失去依据
         brand.write_text(brand.read_text(encoding="utf-8").split("\n[series]")[0] + "\n", encoding="utf-8")
         self.assertIn("没有母品牌", ws.logo("check", ok=False).stdout)
@@ -349,6 +368,8 @@ class SeriesReviewTest(SeriesBase):
         self.assertIn("| 项目 | 角色 | 母品牌发布 |", board)
         self.assertIn("| [food](food/brief.md) | 子品牌 | r1 |", board)
         self.assertIn("| [brand](brand/brief.md) | 母品牌 | — |", board)
+        self.assertNotIn("独立项目", board)  # 全部项目都在系列中：不显示空的独立项目表
+        self.assertNotIn("暂无项目", board)
         ws.logo("release", "brand", "--from", "r1")
         ws.logo("index")
         self.assertIn("| [food](food/brief.md) | 子品牌 | r1（最新 r2） |",
@@ -525,9 +546,33 @@ class SeriesSkeletonTest(SeriesBase):
         self.assertNotIn("骨架原文", ws.logo("check").stdout)
         fill_doc(c / "cover.md")
         self.commit_ok("[food] cover from skeleton")  # 派生封面完整通过提交检查
+        self.release_master_again()  # 骨架项目换了新 Logo：版式没变，不算骨架修改
+        ws.logo("cover", "sync-logo", "brand", "001")
+        self.assertNotIn("所套用的骨架", ws.logo("check").stdout)
         skel = self.main / "3x1.svg"
-        skel.write_text(skel.read_text(encoding="utf-8") + "<!-- 调整 -->\n", encoding="utf-8")
+        skel.write_text(re.sub(r'(id="logo"[^>]*transform="translate\()[^ ]*', r"\g<1>300", skel.read_text(encoding="utf-8"),
+                               count=1), encoding="utf-8")  # 挪动 Logo 是版式修改
         self.assertIn("所套用的骨架 brand/001-main/3x1.svg 已修改", ws.logo("check").stdout)
+
+    def test_dangling_skeleton(self):
+        ws = self.ws
+        self.skeleton()
+        brand = ws.projects / "brand" / "project.toml"
+        good = brand.read_text(encoding="utf-8")
+        brand.write_text(good.split("\n[series]")[0] + "\n", encoding="utf-8")  # 骨架所属项目离开系列
+        self.assertIn("封面骨架 brand/001-main 所属项目 brand 已不是系列成员", ws.logo("check", ok=False).stdout)
+        brand.write_text(good, encoding="utf-8")
+        toml = ws.projects / "_series" / "pets" / "series.toml"
+        rec = toml.read_text(encoding="utf-8")
+        toml.write_text(rec.replace('skeleton = "brand/001-main"', 'skeleton = "brand"'), encoding="utf-8")  # 手改坏的记录
+        self.assertIn("封面骨架记录 'brand' 格式应为 项目/NNN-名称", ws.logo("check", ok=False).stdout)
+        toml.write_text(rec, encoding="utf-8")
+        import shutil
+        shutil.rmtree(self.main)  # 骨架封面被删
+        self.assertIn("系列 pets 登记的封面骨架 brand/001-main 不存在", ws.logo("check", ok=False).stdout)
+        r = ws.logo("cover", "new", "food", "a", "--platforms", "x", "--from-skeleton", ok=False)
+        self.assertIn("无法套用", r.stderr)
+        self.assertFalse((self.food / "covers").exists() and any((self.food / "covers").iterdir()))
 
     def test_derived_cover_can_become_skeleton(self):
         ws = self.ws
