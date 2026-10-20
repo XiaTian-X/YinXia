@@ -45,6 +45,27 @@ class SeriesBase(unittest.TestCase):
         fill_doc(d / "series.md")
         return d
 
+    def family(self, arch: str = "endorsed") -> Path:
+        """母品牌 brand（已发布 r1）+ 子品牌 food（A-v001 以母品牌主版起稿，已填完）。"""
+        ws = self.ws
+        self.released_master("brand")
+        self.series("pets", arch)
+        ws.logo("series", "add", "pets", "brand", "--role", "master")
+        ws.logo("new", "food", "--series", "pets", "--role", "sub")
+        food = ws.projects / "food"
+        fill_doc(food / "brief.md")
+        ws.logo("direction", "food", "A", "paw")
+        fill_doc(next((food / "directions").glob("A-*")) / "direction.md")
+        if arch == "independent":
+            ws.new_version("food", "A", "paw")
+        else:
+            ws.logo("version", "food", "A", "--from-master")
+            fill_doc(food / "directions" / "A-paw" / "v001" / "notes.md")
+        return food
+
+    def review(self, result: str, note: str = "用户：可以", ok: bool = True):
+        return self.ws.logo("series", "review", "pets", "--result", result, "--note", note, "--with", "food=A-v001", ok=ok)
+
     def commit_ok(self, msg: str = "x") -> None:
         self.ws.logo("index")
         r = self.ws.commit("projects", msg)
@@ -239,33 +260,14 @@ class SeriesTest(SeriesBase):
 class SeriesReviewTest(SeriesBase):
     """第二期第 1 步：系列对比、评审记录与子品牌发布门槛（先给用户看、听用户结论，再发布）。"""
 
-    def family(self, arch: str = "endorsed") -> Path:
-        """母品牌 brand（已发布 r1）+ 子品牌 food（A-v001 以母品牌主版起稿，已填完）。"""
-        ws = self.ws
-        self.released_master("brand")
-        self.series("pets", arch)
-        ws.logo("series", "add", "pets", "brand", "--role", "master")
-        ws.logo("new", "food", "--series", "pets", "--role", "sub")
-        food = ws.projects / "food"
-        fill_doc(food / "brief.md")
-        ws.logo("direction", "food", "A", "paw")
-        fill_doc(next((food / "directions").glob("A-*")) / "direction.md")
-        if arch == "independent":
-            ws.new_version("food", "A", "paw")
-        else:
-            ws.logo("version", "food", "A", "--from-master")
-            fill_doc(food / "directions" / "A-paw" / "v001" / "notes.md")
-        return food
-
-    def review(self, result: str, note: str = "用户：可以", ok: bool = True):
-        return self.ws.logo("series", "review", "pets", "--result", result, "--note", note, "--with", "food=A-v001", ok=ok)
-
     def test_compare_and_checklist(self):
         self.family()
         out = self.ws.logo("series", "compare", "pets").stdout
         self.assertIn("brand（母品牌，r1）、food（子品牌，A-v001）", out)  # 母品牌在前；未发布的子品牌取最新版本
         self.assertIn("1. 共享的视觉基因 · 构图与网格：测试内容", out)  # 评审清单来自 series.md
         self.assertNotIn("系列名", out)
+        self.assertNotIn("改版跟进", out)  # 流程约定不是设计评审项
+        self.assertIn("背书组合 · 位置与比例", out)
         self.assertIn("--with brand=r1 --with food=A-v001", out)
         png = self.ws.root / ".cache" / "_series" / "pets" / "compare.png"
         import subprocess
@@ -324,6 +326,92 @@ class SeriesReviewTest(SeriesBase):
         ws.logo("index")
         self.assertIn("| [food](food/brief.md) | 子品牌 | r1（最新 r2） |",
                       (ws.projects / "PROJECTS.md").read_text(encoding="utf-8"))
+
+
+class SeriesSyncTest(SeriesBase):
+    """第二期第 2 步：母品牌出新发布后，按用户决定跟进色板，旧色值保护冻结的设计。"""
+
+    def master_update(self) -> None:
+        """母品牌改色（secondary、ink 改值，新增 accent，单色版 secondary 改为留白）并发布 r2。"""
+        toml = self.ws.projects / "brand" / "project.toml"
+        text = toml.read_text(encoding="utf-8")
+        for old, new in (('secondary = "#666666"', 'secondary = "#777777"'), ('ink = "#111111"', 'ink = "#222222"\naccent = "#ABCDEF"'),
+                         ('[color_modes.mono]\nprimary = "#000000"\nsecondary = "#000000"',
+                          '[color_modes.mono]\nprimary = "#000000"\nsecondary = "#FFFFFF"')):
+            self.assertEqual(text.count(old), 1, old)
+            text = text.replace(old, new)
+        toml.write_text(text, encoding="utf-8")
+        self.release_master_again()
+
+    def release_master_again(self) -> None:
+        """母品牌基于 r1 出 r2（填完发布文档）。"""
+        r = self.ws.projects / "brand" / "releases" / "r2"
+        self.ws.logo("release", "brand", "--from", "r1")
+        fill_doc(r / "release.md")
+        with (r / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-finalize.md\n")
+        fill_doc(r / "guide.md")
+
+    def sync(self, palette: str, note: str = "用户：跟随", ok: bool = True):
+        return self.ws.logo("series", "sync", "food", "--palette", palette, "--note", note, ok=ok)
+
+    def test_follow_all_keeps_frozen_colors(self):
+        ws = self.ws
+        self.family()
+        ws.new_version("food", "A", "paw", svg=SQUARE.replace(PRIMARY, "#666666"))  # A-v002 用母品牌原来的 secondary
+        self.commit_ok("[food] A-v001 A-v002")
+        self.master_update()
+        out = ws.logo("check").stdout
+        self.assertIn("母品牌 brand 已发布 r2（子品牌依据 r1），secondary #666666→#777777、ink #111111→#222222、"
+                      "新增 accent #ABCDEF", out)
+        self.assertIn("--note", self.sync("all", "  ", ok=False).stderr)  # 必须写明用户的决定
+        self.assertIn("可选：secondary, ink, accent", self.sync("nope", ok=False).stderr)
+        self.sync("all", "用户：全部跟随")
+        cfg = self.toml("food")
+        self.assertEqual({k: cfg["palette"].get(k) for k in ("secondary", "secondary_r1", "ink", "ink_r1", "accent")},
+                         {"secondary": "#777777", "secondary_r1": "#666666", "ink": "#222222", "ink_r1": None,
+                          "accent": "#ABCDEF"})  # 只有仍被设计使用的旧值才保留
+        self.assertEqual((cfg["color_modes"]["mono"]["secondary"], cfg["color_modes"]["mono"]["secondary_r1"]),
+                         ("#FFFFFF", "#000000"))  # 新值沿用母品牌映射，旧值沿用子品牌原映射
+        self.assertEqual(cfg["series"]["master_release"], "r2")
+        md = (ws.projects / "_series" / "pets" / "series.md").read_text(encoding="utf-8")
+        self.assertIn("改版跟进：food r1 → brand r2\n- **色板**：secondary #666666→#777777（旧值仍被已有设计使用，保留为 "
+                      "secondary_r1）、ink #111111→#222222、新增 accent #ABCDEF\n- **用户意见**：用户：全部跟随", md)
+        self.assertNotIn("母品牌 brand 已发布", ws.logo("check").stdout)
+        self.commit_ok("[food] 跟进 brand r2")  # 冻结的 A-v002 仍通过检查
+        self.assertIn("无需同步", self.sync("all").stdout)
+
+    def test_selected_none_and_name_collision(self):
+        ws = self.ws
+        food = self.family()
+        ws.new_version("food", "A", "paw", svg=SQUARE.replace(PRIMARY, "#666666"))
+        toml = food / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('ink = "#111111"', 'ink = "#111111"\nsecondary_r1 = "#010101"'),
+                        encoding="utf-8")  # 旧值色名已被占用（值不同）
+        self.master_update()
+        self.sync("secondary", "用户：只跟 secondary")
+        cfg = self.toml("food")
+        self.assertEqual((cfg["palette"]["secondary"], cfg["palette"]["secondary_r1"], cfg["palette"]["secondary_r1_2"]),
+                         ("#777777", "#010101", "#666666"))
+        self.assertEqual((cfg["palette"]["ink"], "accent" in cfg["palette"]), ("#111111", False))
+        md = (ws.projects / "_series" / "pets" / "series.md").read_text(encoding="utf-8")
+        self.assertIn("；未跟随：ink、accent", md)
+
+    def test_acknowledge_without_color_change(self):
+        ws = self.ws
+        self.family()
+        self.release_master_again()  # 只出新发布、色板不变
+        self.assertIn("母品牌 brand 已发布 r2（子品牌依据 r1），色板无变化", ws.logo("check").stdout)
+        before = self.toml("food")["palette"]
+        self.sync("none", "用户：已知悉，暂不改版")
+        self.assertEqual(self.toml("food")["palette"], before)
+        self.assertEqual(self.toml("food")["series"]["master_release"], "r2")
+        self.assertIn("- **色板**：不改\n", (ws.projects / "_series" / "pets" / "series.md").read_text(encoding="utf-8"))
+        self.assertIn("不是系列子品牌", ws.logo("series", "sync", "brand", "--palette", "all", "--note", "x", ok=False).stderr)
+
+    def test_independent_sub_needs_no_sync(self):
+        self.family("independent")
+        self.assertIn("无需跟进", self.sync("all", ok=False).stderr)
 
 
 if __name__ == "__main__":

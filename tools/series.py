@@ -146,6 +146,7 @@ REVIEW_RESULTS = {"pass": "通过", "revise": "需修改"}
 REVIEW_HEAD_RE = re.compile(r"^### (\d{4}-\d{2}-\d{2}) 系列评审：(通过|需修改)\s*$")
 REVIEW_WITH_RE = re.compile(r"^- \*\*对比\*\*：(.*)$")
 RULE_LINE_RE = re.compile(r"^- \*\*(.+?)\*\*[:：]\s*(.*)$")
+PROCESS_SECTIONS = {"改版跟进"}  # 流程约定，不是设计评审项，不进评审清单
 
 
 def default_ref(p: "logo.Project") -> str | None:
@@ -213,7 +214,7 @@ def checklist(sid: str) -> list[str]:
             if "追加" in section:
                 break
             continue
-        if not s or s.startswith(("#", ">")) or not section:  # 首个 ## 之前是标题与元数据（系列名、架构等）
+        if not s or s.startswith(("#", ">")) or not section or section in PROCESS_SECTIONS:  # 首个 ## 之前是标题与元数据
             continue
         m = RULE_LINE_RE.match(s)
         out.append(f"{section} · {m.group(1)}：{m.group(2)}" if m else f"{section}：{s}")
@@ -297,6 +298,132 @@ def cmd_review(a) -> None:
 
 
 # ---------------------------------------------------------------------------
+# 改版跟进：母品牌出新发布后，逐个子品牌征求用户意见并同步色板
+# ---------------------------------------------------------------------------
+def palette_diff(sub: "logo.Project", master: "logo.Project") -> tuple[dict, dict]:
+    """母品牌色板相对子品牌的变化：(改了值的 {色名: (旧, 新)}, 新增的 {色名: 值})。子品牌已有相同值的不算变化。"""
+    mine, theirs = sub.palette, master.palette
+    changed = {k: (mine[k], v) for k, v in theirs.items() if k in mine and mine[k] != v}
+    added = {k: v for k, v in theirs.items() if k not in mine}
+    return changed, added
+
+
+def diff_text(changed: dict, added: dict) -> str:
+    parts = [f"{k} {a}→{b}" for k, (a, b) in changed.items()] + [f"新增 {k} {v}" for k, v in added.items()]
+    return "、".join(parts) or "色板无变化"
+
+
+def pending_update(p: "logo.Project") -> tuple[str, "logo.Project", str, str] | None:
+    """继承型子品牌是否落后于母品牌：(系列名, 母品牌, 子品牌依据的发布, 母品牌当前发布)；不需要跟进时为 None。"""
+    m = membership(p)
+    if not m or m.get("role") != "sub":
+        return None
+    try:
+        arch = load_series(m["id"]).get("architecture")
+    except logo.LogoError:
+        return None
+    master = master_of(m["id"])
+    if arch not in INHERITING or not master:
+        return None
+    latest = master.cfg["state"].get("current_release")
+    based = m.get("master_release")
+    return (m["id"], master, based, latest) if latest and based != latest else None
+
+
+def palette_users(p: "logo.Project") -> set[str]:
+    """子品牌受色板约束的 SVG（各版本与发布版式）中用到的颜色。"""
+    files = [v / "logo.svg" for d in p.directions() for v in p.versions_in(d)]
+    files += [f for rd in p.releases() for f in (rd / "layouts").glob("*.svg")]
+    return {c.upper() for f in files if f.exists() for c in logo.HEX_IN_TEXT_RE.findall(f.read_text(encoding="utf-8"))}
+
+
+def toml_set(text: str, table: str, key: str, literal: str) -> str:
+    """在 TOML 文本的 [table] 中设置 key（已有则替换该行，否则加到表末尾；表不存在则新建），保留其余内容与注释。"""
+    m = re.search(rf"^\[{re.escape(table)}\]\s*$", text, re.M)
+    line = f"{key} = {literal}"
+    if not m:
+        return text.rstrip("\n") + f"\n\n[{table}]\n{line}\n"
+    start = m.end()
+    nxt = re.search(r"^\[", text[start:], re.M)
+    end = start + nxt.start() if nxt else len(text)
+    section = text[start:end]
+    pat = re.compile(rf"^{re.escape(key)}\s*=.*$", re.M)
+    if pat.search(section):
+        section = pat.sub(lambda _: line, section, count=1)
+    else:
+        body = section.rstrip("\n")
+        section = body + "\n" + line + "\n" + ("\n" if nxt else "")
+    return text[:start] + section + text[end:]
+
+
+def cmd_sync(a) -> None:
+    p = logo.Project(a.slug)
+    m = membership(p)
+    if not m or m.get("role") != "sub":
+        raise logo.LogoError(f"{p.slug} 不是系列子品牌")
+    if load_series(m["id"]).get("architecture") not in INHERITING:
+        raise logo.LogoError("独立型系列的子品牌不继承母品牌，无需跟进")
+    master = master_of(m["id"])
+    latest = master.cfg["state"].get("current_release") if master else None
+    if not latest:
+        raise logo.LogoError(f"系列 {m['id']} 的母品牌还没有发布")
+    note = " ".join(a.note.split())
+    if not note:
+        raise logo.LogoError("--note 须写明用户的决定（跟随哪些颜色、是否需要改版）")
+    changed, added = palette_diff(p, master)
+    offered = {**{k: v[1] for k, v in changed.items()}, **added}
+    if m.get("master_release") == latest and not offered:
+        print(f"{p.slug} 已跟进母品牌 {master.slug} {latest}，色板一致，无需同步")
+        return
+    if a.palette == "all":
+        keys = list(offered)
+    elif a.palette == "none":
+        keys = []
+    else:
+        keys = [k.strip() for k in a.palette.split(",") if k.strip()]
+        bad = [k for k in keys if k not in offered]
+        if bad:
+            raise logo.LogoError(f"不是母品牌有变化的颜色：{', '.join(bad)}（可选：{', '.join(offered) or '无'}）")
+    text = p.toml_path.read_text(encoding="utf-8")
+    cfg_modes = p.cfg.get("color_modes", {})
+    master_modes = master.cfg.get("color_modes", {})
+    used, palette = palette_users(p), p.palette
+    based = m.get("master_release") or "旧版"
+    report = []
+    for k in keys:
+        new = offered[k]
+        if k in changed and changed[k][0] in used:  # 旧值仍被冻结的设计使用：换个名字保留下来
+            old, legacy, n = changed[k][0], f"{k}_{based}", 2
+            while legacy in palette and palette[legacy] != old:
+                legacy, n = f"{k}_{based}_{n}", n + 1
+            text = toml_set(text, "palette", legacy, toml_value(old))
+            for mode, table in cfg_modes.items():
+                if isinstance(table, dict) and k in table:
+                    text = toml_set(text, f"color_modes.{mode}", legacy, toml_value(table[k]))
+            report.append(f"{k} {old}→{new}（旧值仍被已有设计使用，保留为 {legacy}）")
+        else:
+            report.append(f"{k} {changed[k][0]}→{new}" if k in changed else f"新增 {k} {new}")
+        text = toml_set(text, "palette", k, toml_value(new))
+        for mode, table in master_modes.items():
+            if isinstance(table, dict) and k in table:
+                text = toml_set(text, f"color_modes.{mode}", k, toml_value(table[k]))
+    text = toml_set(text, "series", "master_release",
+                    toml_value(latest) + "  # 继承母品牌色板与起稿所依据的发布")
+    p.toml_path.write_text(text, encoding="utf-8")
+    skipped = [k for k in offered if k not in keys]
+    md = SERIES_DIR / m["id"] / "series.md"
+    if md.exists():
+        md.write_text(md.read_text(encoding="utf-8").rstrip("\n") + (
+            f"\n\n### {logo.today()} 改版跟进：{p.slug} {based} → {master.slug} {latest}\n"
+            f"- **色板**：{'、'.join(report) or '不改'}" + (f"；未跟随：{'、'.join(skipped)}" if skipped else "") + "\n"
+            f"- **用户意见**：{note}\n"), encoding="utf-8")
+    print(f"{p.slug} 已跟进母品牌 {master.slug} {latest}：" + ("；".join(report) or "色板不改"))
+    if skipped:
+        print(f"未跟随：{'、'.join(skipped)}")
+    print("如母品牌的图形也有调整、子品牌需要改版：出新版本后用 ./logo series compare 与用户重新评审")
+
+
+# ---------------------------------------------------------------------------
 # 检查与看板
 # ---------------------------------------------------------------------------
 def check_series(errors: list[str], warnings: list[str]) -> None:
@@ -365,6 +492,11 @@ def check_series(errors: list[str], warnings: list[str]) -> None:
         if root and not review_passed(m["id"], p.slug, root):
             warnings.append(f"{logo.rel(p.dir)}: 当前发布 {cur}（{root}）没有通过的系列评审记录；"
                             f"可 ./logo series compare {m['id']} 后与用户补做评审")
+        if (up := pending_update(p)):
+            _, master, based, latest = up
+            warnings.append(f"{logo.rel(p.dir)}: 母品牌 {master.slug} 已发布 {latest}（子品牌依据 {based}），"
+                            f"{diff_text(*palette_diff(p, master))}；请向用户确认是否跟进：./logo series sync {p.slug} "
+                            "--palette all|none|色名,… --note \"用户的决定\"")
 
 
 def index_groups() -> list[tuple[str, list[tuple["logo.Project", str, str]]]]:
@@ -467,6 +599,11 @@ def register(sub) -> None:
     c.add_argument("--note", required=True, help="用户的意见（原话或要点）")
     c.add_argument("--with", dest="with_", action="append", metavar="项目=版本", help="同 compare")
     c.set_defaults(fn=cmd_review)
+    c = ss.add_parser("sync", help="子品牌跟进母品牌新发布：按用户决定同步色板并记录到 series.md")
+    c.add_argument("slug", help="子品牌项目")
+    c.add_argument("--palette", required=True, help="all 全部跟随 / none 不改色（仅确认已知悉）/ 逗号分隔的色名")
+    c.add_argument("--note", required=True, help="用户的决定（原话或要点）")
+    c.set_defaults(fn=cmd_sync)
     c = ss.add_parser("add", help="已有项目加入系列（新项目用 ./logo new --series）")
     c.add_argument("id", help="系列名")
     c.add_argument("slug", help="项目短名")
