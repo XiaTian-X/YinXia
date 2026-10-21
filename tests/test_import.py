@@ -236,3 +236,115 @@ class SeriesImportTest(SeriesBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
+class CoverImportTest(unittest.TestCase):
+    """封面导入：外部图作为底图，Logo 由系统嵌入；图中有 Logo 拒绝；比例不符逐个画幅由用户决定。"""
+
+    def setUp(self):
+        from test_workflow import prepare_release
+        self.ws = Workspace()
+        self.addCleanup(self.ws.cleanup)
+        self.p = self.ws.new_project()
+        self.ws.new_version()
+        assert self.ws.commit("projects", "[demo] A-v001").returncode == 0
+        prepare_release(self.ws)
+        self.inbox = self.ws.root / "inbox" / "demo"
+        self.inbox.mkdir(parents=True)
+
+    def image(self, name: str, size: str, color: str = "#E76F51") -> str:
+        f = self.inbox / name
+        subprocess.run(["magick", "-size", size, f"xc:{color}", "-set", "comment", "GPS 31.2,121.4", f"PNG:{f}"], check=True)
+        (self.inbox / f"{name}.import.toml").write_text('source = "ImageTool"\n', encoding="utf-8")
+        return f"demo/{name}"
+
+    def ci(self, *args: str, ok: bool = True):
+        return self.ws.logo("cover", "import", "demo", *args, ok=ok)
+
+    def test_new_cover_with_ratio_decisions(self):
+        ws = self.ws
+        img = self.image("hero.png", "1600x900")
+        base = (img, "--platforms", "youtube,x", "--contains-logo", "no", "--contains-text", "no")
+        out = self.ci(*base, "--analyze").stdout
+        self.assertIn("16x9（2560×1440）：裁切铺满", out)  # 比例一致
+        self.assertIn("3x1（1500×500）：比例与图片不符，需要用户决定", out)
+        self.assertIn("--fit 3x1=crop", out)
+        self.assertTrue((ws.root / ".cache" / "import" / "hero-cover-preview.png").exists())
+        self.assertIn("请先用同样的文件", self.ci(*base, "--terms", "可商用", "--kind", "final", ok=False).stderr)
+        self.ci(*base, "--fit", "3x1=pad", "--analyze")
+        self.assertIn("请先用同样的文件", self.ci(*base, "--fit", "3x1=pad", "--name", "other", "--terms", "x", "--kind", "final",
+                                              ok=False).stderr)  # 改了名称也须重新预演
+        self.assertIn("--terms", self.ci(*base, "--fit", "3x1=pad", ok=False).stderr)
+        self.ci(*base, "--fit", "3x1=pad", "--terms", "可商用", "--kind", "final")
+        c = self.p / "covers" / "001-hero"
+        wide, banner = (c / "16x9.svg").read_text(encoding="utf-8"), (c / "3x1.svg").read_text(encoding="utf-8")
+        self.assertIn('id="imported-background" href="assets/001-hero.png"', wide)
+        self.assertIn('preserveAspectRatio="xMidYMid slice"', wide)
+        self.assertIn('preserveAspectRatio="xMidYMid meet"', banner)  # 用户选择留边
+        self.assertIn('<g id="logo"', wide)  # Logo 仍由系统从发布嵌入
+        asset = c / "assets" / "001-hero.png"
+        self.assertNotIn(b"GPS", asset.read_bytes())
+        md = (c / "assets" / "001-hero.md").read_text(encoding="utf-8")
+        self.assertIn("- **铺放**: 16x9 裁切铺满；3x1 完整放入（留边）", md)
+        self.assertIn("- **图中文字**: 无", md)
+        self.assertFalse((self.inbox / "hero.png").exists())
+        fill_doc(c / "cover.md")
+        fill_doc(c / "assets" / "001-hero.md")
+        ws.logo("index")
+        r = ws.commit("projects", "[demo] cover import")
+        self.assertEqual(r.returncode, 0, ws.blocked(r))  # 导入的封面完整通过提交检查
+
+    def test_logo_in_image_refused_and_text_recorded(self):
+        img = self.image("a.png", "1500x500")
+        self.assertIn("封面里的 Logo 只能来自发布", self.ci(img, "--platforms", "x", "--contains-logo", "yes",
+                                                     "--contains-text", "no", "--analyze", ok=False).stderr)
+        base = (img, "--platforms", "x", "--contains-logo", "no", "--contains-text", "yes")
+        self.assertIn("图中有文字：位图文字无法转曲", self.ci(*base, "--analyze").stdout)
+        self.ci(*base, "--terms", "不清楚", "--kind", "candidate")
+        md = (self.p / "covers" / "001-a" / "assets" / "001-a.md").read_text(encoding="utf-8")
+        self.assertIn("- **图中文字**: 有", md)
+        self.assertIn("**授权**：未确认", md)
+
+    def test_existing_cover_per_ratio(self):
+        ws = self.ws
+        ws.logo("cover", "new", "demo", "spring", "--platforms", "x,youtube")
+        c = self.p / "covers" / "001-spring"
+        img = self.image("banner.png", "1500x500")
+        common = ("--contains-logo", "no", "--contains-text", "no")
+        self.assertIn("须用 --ratio", self.ci(img, "--cover", "001", *common, "--analyze", ok=False).stderr)
+        self.assertIn("只用于给已有封面", self.ci(img, "--ratio", "3x1", "--platforms", "x", *common, "--analyze", ok=False).stderr)
+        self.assertIn("没有画幅 9x16", self.ci(img, "--cover", "001", "--ratio", "9x16", *common, "--analyze", ok=False).stderr)
+        base = (img, "--cover", "001", "--ratio", "3x1", *common)
+        self.ci(*base, "--analyze")
+        self.ci(*base, "--terms", "可商用", "--kind", "final")
+        self.assertIn("imported-background", (c / "3x1.svg").read_text(encoding="utf-8"))
+        self.assertNotIn("imported-background", (c / "16x9.svg").read_text(encoding="utf-8"))  # 只动指定画幅
+        img2 = self.image("banner2.png", "1500x500", "#264653")
+        base2 = (img2, "--cover", "001", "--ratio", "3x1", *common)
+        self.ci(*base2, "--analyze")
+        self.ci(*base2, "--terms", "可商用", "--kind", "final")
+        text = (c / "3x1.svg").read_text(encoding="utf-8")
+        self.assertEqual(text.count('id="imported-background"'), 1)  # 再导入是替换，不是叠加
+        self.assertIn("assets/002-banner2.png", text)
+
+    def test_svg_image_rendered(self):
+        f = self.inbox / "art.svg"
+        f.write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 300 100"><rect width="300" height="100" fill="#264653"/></svg>',
+                     encoding="utf-8")
+        (self.inbox / "art.svg.import.toml").write_text('source = "VectorTool"\n', encoding="utf-8")
+        base = ("demo/art.svg", "--platforms", "x", "--contains-logo", "no", "--contains-text", "no")
+        self.assertIn("SVG 已按原样渲染为 PNG", self.ci(*base, "--analyze").stdout)
+        self.ci(*base, "--terms", "自有版权", "--kind", "final")
+        self.assertTrue((self.p / "covers" / "001-art" / "assets" / "001-art.png").exists())
+        f.write_text('<?xml version="1.0"?><!DOCTYPE svg [<!ENTITY a "x">]><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3 1"/>',
+                     encoding="utf-8")
+        self.assertIn("DOCTYPE / ENTITY", self.ci(*base, "--analyze", ok=False).stderr)
+
+    def test_cover_brief(self):
+        out = self.ws.logo("handoff", "brief", "demo", "--type", "cover", "--platforms", "x,youtube").stdout
+        for part in ("设计封面底图", "不要画任何 Logo", "### 16x9：2560×1440 像素", "### 3x1：1500×500 像素",
+                     "共同安全区：", "遮挡区（头像、按钮会挡住", "inbox/demo/<英文短名>-<画幅>.png"):
+            self.assertIn(part, out)
+        self.assertNotIn("SVG 硬性要求", out)
+        self.assertIn("--platforms", self.ws.logo("handoff", "brief", "demo", "--type", "cover", ok=False).stderr)

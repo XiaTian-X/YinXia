@@ -41,7 +41,7 @@ class HandoffTest(unittest.TestCase):
                      "发给外部工具前请确认用户同意", "复用口令：按 LOGODesign 交接格式 v1 输出"):
             self.assertIn(part, out)
         self.assertNotIn("私密备注", out)  # 需求确认一节不外发
-        self.assertTrue((self.ws.root / ".cache" / "handoff" / "demo-brief-plain.md").exists())
+        self.assertTrue((self.ws.root / ".cache" / "handoff" / "demo-logo-brief-plain.md").exists())
         files = self.ws.logo("handoff", "brief", "demo").stdout
         self.assertIn("inbox/demo/<英文短名>.svg", files)  # 能写文件的 Agent：直接放进收件箱并附来源说明
         self.assertIn("./logo handoff validate", files)

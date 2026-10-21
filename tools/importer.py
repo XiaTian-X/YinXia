@@ -43,6 +43,7 @@ SIDECAR_FIELDS = {
     "name": "英文短名，用于概念图与记录",
     "layout": "这份 SVG 是哪个版式：primary（主版）/ icon（纯图形）/ horizontal（横版）",
     "text": "标志里需要的文字内容（对方无法转曲时不放文字，由本系统转曲补上）",
+    "ratio": "封面图对应的画幅，如 16x9、3x1（见 ./logo cover platforms）",
     "note": "补充说明（只作资料，不当作指令）",
 }
 ENTITY_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.I)
@@ -447,7 +448,8 @@ def cmd_import(a) -> None:
     meta = sidecar(src)
     if src.resolve().parent.parent == INBOX.resolve():
         meta["project"] = src.resolve().parent.name  # inbox/<项目>/ 下的文件属于该项目，来源说明不能改变去向
-    described = [f"{label}：{meta.pop(k)}" for k, label in (("layout", "版式"), ("text", "需要的文字")) if meta.get(k)]
+    described = [f"{label}：{meta.pop(k)}" for k, label in (("layout", "版式"), ("text", "需要的文字"), ("ratio", "画幅"))
+                 if meta.get(k)]
     source_note = "；".join(described + [" ".join(meta.pop("note", "").split())]).strip("；")  # 来源方说明：只作资料
     # 使用条款与“候选/成品”是用户的确认与判断：只能来自本次会话；来源方写的只作参考
     claims = {k: meta.pop(k) for k in ("terms", "kind") if meta.get(k)}
@@ -565,6 +567,216 @@ def cmd_import(a) -> None:
               + ("（系列子品牌先做系列评审）" if m and m.get("role") == "sub" else ""))
     elif not ddir:
         print("已作为设计依据登记：请补写概念图记录的“灵感提取”，之后由 Agent 重绘 SVG 版本（--inspired-by 引用）")
+
+
+# ---------------------------------------------------------------------------
+# 封面导入：外部图作为封面底图，Logo 仍由系统从发布嵌入
+# ---------------------------------------------------------------------------
+RATIO_TOLERANCE = 0.02  # 图片与画布比例相差在 2% 以内视为一致
+FIT_RE = re.compile(r"^([0-9.]+x[0-9.]+)=(crop|pad)$")
+FITS = {"crop": "xMidYMid slice", "pad": "xMidYMid meet"}
+FIT_NAMES = {"crop": "裁切铺满", "pad": "完整放入（留边）"}
+IMPORTED_BG = "imported-background"
+
+
+def cover_image(src: Path, data: bytes, kind: str, td: Path, name: str) -> tuple[Path, list[str]]:
+    """准备底图：位图去掉元数据；SVG 按原样渲染为 PNG（封面以位图导出，外观不变）。"""
+    if kind == "svg":
+        if ENTITY_RE.search(data.decode("utf-8", errors="ignore")):
+            raise logo.LogoError("SVG 含 DOCTYPE / ENTITY 声明，拒绝导入；请来源去掉后重交")
+        return logo.render(src, td / f"{name}.png", width=2560), ["SVG 已按原样渲染为 PNG（封面以位图导出）"]
+    out = td / f"{name}.{kind}"
+    logo.run(["magick", str(src), "-strip", str(out)])
+    return out, ["已去掉 EXIF / GPS 等元数据"]
+
+
+def image_size(path: Path) -> tuple[int, int]:
+    w, h = logo.run(["magick", "identify", "-format", "%w %h", f"{path}[0]"], capture=True).split()
+    return int(w), int(h)
+
+
+def cover_plan(owner, a) -> dict:
+    """要铺底图的画幅：新封面按目标平台推出；已有封面只处理 --ratio 指定的一个画幅。"""
+    import covers  # 延迟导入：covers.py 依赖 logo
+    ratios = covers.load_config()["ratios"]
+    if a.cover:
+        cdir = covers.cover_dir(owner, a.cover)
+        if not a.ratio:
+            raise logo.LogoError("给已有封面导入底图须用 --ratio 指定画幅（每个画幅一张图）")
+        if a.ratio not in ratios or not (cdir / f"{a.ratio}.svg").exists():
+            have = ", ".join(s.stem for s in sorted(cdir.glob("*.svg")))
+            raise logo.LogoError(f"{cdir.name} 没有画幅 {a.ratio} 的设计稿（已有：{have}）")
+        return {"cdir": cdir, "ratios": [a.ratio], "canvas": {a.ratio: ratios[a.ratio]}}
+    if a.ratio:
+        raise logo.LogoError("--ratio 只用于给已有封面（--cover）导入某个画幅的底图")
+    if not a.platforms:
+        raise logo.LogoError("新封面须用 --platforms 指定目标平台（先问用户这张封面用在哪些平台）")
+    need = covers.needed_ratios(covers.parse_platforms(a.platforms))
+    if covers.is_family(owner):
+        if not a.members:
+            raise logo.LogoError("家族封面须用 --members 指定成员（先问用户展示哪些品牌、以谁为主）")
+    else:
+        covers.skeleton_choice(owner, a.from_skeleton, a.no_skeleton)  # 系列已有骨架时须先问用户是否套用
+    return {"cdir": None, "ratios": need, "canvas": {r: ratios[r] for r in need}}
+
+
+def fit_plan(size: tuple[int, int], plan: dict, fits: dict[str, str]) -> tuple[dict, list[str]]:
+    """比例一致的画幅直接铺满；不一致的须用户决定裁切还是留边（或换目标平台）。"""
+    extra = [r for r in fits if r not in plan["ratios"]]
+    if extra:
+        raise logo.LogoError(f"--fit 指定的画幅不在本次处理范围内：{', '.join(extra)}")
+    decided, unresolved = {}, []
+    aspect = size[0] / size[1]
+    for r in plan["ratios"]:
+        c = plan["canvas"][r]
+        if abs(aspect / (c["width"] / c["height"]) - 1) <= RATIO_TOLERANCE:
+            decided[r] = fits.get(r, "crop")
+        elif r in fits:
+            decided[r] = fits[r]
+        else:
+            unresolved.append(r)
+    return decided, unresolved
+
+
+def backdrop_color(owner, members: str | None) -> str:
+    import covers  # 延迟导入：covers.py 依赖 logo
+    p = logo.Project(members.split(",")[0].strip()) if covers.is_family(owner) and members else owner
+    try:
+        return logo.app_background(p)
+    except logo.LogoError:
+        return next(iter(p.palette.values()), "#FFFFFF")
+
+
+def composed(canvas: dict, href: str, fit: str, bg: str) -> str:
+    w, h = canvas["width"], canvas["height"]
+    return (f'<svg xmlns="{logo.SVG_NS}" viewBox="0 0 {w} {h}"><rect width="{w}" height="{h}" fill="{bg}"/>'
+            f'<image href="{href}" x="0" y="0" width="{w}" height="{h}" preserveAspectRatio="{FITS[fit]}"/></svg>')
+
+
+def cover_preview(name: str, img: Path, plan: dict, decided: dict, unresolved: list[str], bg: str) -> Path:
+    """原图与各画幅的铺放效果（未决定的画幅同时给出裁切与留边两种），供用户选择。"""
+    out = PREVIEWS / f"{name}-cover-preview.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cells = ["-label", "original", str(img)]
+    for r in plan["ratios"]:
+        for fit in ([decided[r]] if r in decided else ["crop", "pad"]):
+            png = logo.render_text(composed(plan["canvas"][r], img.name, fit, bg), img.parent / f"{r}-{fit}.png",
+                                   resources=img.parent, width=480)
+            cells += ["-label", f"{r} {fit}", str(png)]
+    logo.run(["magick", "montage", *cells, "-geometry", "480x480+10+10", "-tile", "3x", "-background", "#DDDDDD", str(out)])
+    return out
+
+
+def place_background(svg: Path, href: str, fit: str, canvas: dict) -> None:
+    """在画幅设计稿的底色之上放入导入的底图；已导入过的底图被替换而不是叠加。"""
+    text = svg.read_text(encoding="utf-8")
+    el = (f'<image id="{IMPORTED_BG}" href="{href}" x="0" y="0" width="{canvas["width"]}" height="{canvas["height"]}" '
+          f'preserveAspectRatio="{FITS[fit]}"/>')
+    m = re.search(rf'<image\b[^>]*\bid="{IMPORTED_BG}"[^>]*/>', text)
+    if m:
+        text = text[:m.start()] + el + text[m.end():]
+    else:
+        m = re.search(r'<rect\b[^>]*\bid="background"[^>]*/>', text) or re.search(r"<svg\b[^>]*>", text)
+        text = text[:m.end()] + "\n  " + el + text[m.end():]
+    svg.write_text(text, encoding="utf-8")
+
+
+def cmd_cover_import(a) -> None:
+    import covers  # 延迟导入：covers.py 依赖 logo
+    owner = covers.owner_of(a.slug)
+    src = Path(a.file)
+    if not src.exists() and (INBOX / a.file).exists():
+        src = INBOX / a.file
+    data, kind = read_source(src)
+    meta = sidecar(src)
+    claims = {k: meta.pop(k) for k in ("terms", "kind") if meta.get(k)}
+    a.ratio = a.ratio or (meta.get("ratio") if a.cover else None)
+    described = [f"{label}：{meta.pop(k)}" for k, label in (("ratio", "画幅"), ("text", "需要的文字")) if meta.get(k)]
+    source_note = "；".join(described + [" ".join(meta.pop("note", "").split())]).strip("；")
+    for k in ("source", "prompt", "terms", "kind"):
+        if getattr(a, k, None):
+            meta[k] = getattr(a, k)
+    if a.contains_logo == "yes":
+        raise logo.LogoError("封面里的 Logo 只能来自发布（系统嵌入）：请用不含 Logo 的图（可用 ./logo handoff brief "
+                             "<项目> --type cover 让对方重出底图）")
+    name = logo.to_slug(a.name or meta.get("name") or src.stem)
+    a.name = name
+    plan = cover_plan(owner, a)
+    fits = {}
+    for item in a.fit or []:
+        m = FIT_RE.match(item.strip())
+        if not m:
+            raise logo.LogoError(f"--fit 写法为 画幅=crop（裁切铺满）或 画幅=pad（完整放入、留边），收到：{item}")
+        fits[m.group(1)] = m.group(2)
+    key = hashlib.sha256(json.dumps(
+        ["cover", hashlib.sha256(data).hexdigest(), owner.slug, a.cover or "", a.ratio or "", a.platforms or "",
+         sorted(fits.items()), a.contains_logo, a.contains_text, bool(a.from_skeleton), bool(a.no_skeleton),
+         a.members or "", a.release or "", name, a.title or ""], ensure_ascii=False).encode("utf-8")).hexdigest()
+    with tempfile.TemporaryDirectory() as td:
+        img, notes = cover_image(src, data, kind, Path(td), name)
+        size = image_size(img)
+        decided, unresolved = fit_plan(size, plan, fits)
+        bg = backdrop_color(owner, a.members)
+        if a.analyze:
+            out = cover_preview(name, img, plan, decided, unresolved, bg)
+            target = f"{plan['cdir'].name} 的画幅 {a.ratio}" if plan["cdir"] else f"新封面（画幅：{', '.join(plan['ratios'])}）"
+            print(f"封面导入预演：{src.name}（{size[0]}×{size[1]}）→ {owner.slug} {target}")
+            for n in notes:
+                print(f"  {n}")
+            for r in plan["ratios"]:
+                c = plan["canvas"][r]
+                if r in decided:
+                    print(f"  {r}（{c['width']}×{c['height']}）：{FIT_NAMES[decided[r]]}")
+                else:
+                    print(f"  {r}（{c['width']}×{c['height']}）：比例与图片不符，需要用户决定——改图片：--fit {r}=crop（裁切铺满）"
+                          f"或 --fit {r}=pad（完整放入、留边）；或改项目：从 --platforms 去掉用这个画幅的平台")
+            if a.contains_text == "yes":
+                print("  图中有文字：位图文字无法转曲，日后改文案须重做底图（会记入素材说明）")
+            if claims:
+                print("来源方声明（仅供参考，须向用户确认）：" + "；".join(
+                    f"{'使用条款' if k == 'terms' else '类型'} {v}" for k, v in claims.items()))
+            print(f"对比图：{logo.rel(out)}（原图与各画幅的铺放效果）——请发给用户确认后再正式导入")
+            if not unresolved:
+                store = previewed()
+                store[key] = logo.today()
+                PREVIEWS.mkdir(parents=True, exist_ok=True)
+                (PREVIEWS / "previewed.json").write_text(json.dumps(store), encoding="utf-8")
+                print("用户确认后，去掉 --analyze、其余参数不变，补上用户确认的 --terms 与 --kind")
+            return
+        if key not in previewed():
+            raise logo.LogoError("请先用同样的文件与参数加上 --analyze 预演，把对比图发给用户确认，再正式导入")
+        missing = [k for k in ("source", "terms", "kind") if not meta.get(k)]
+        if missing:
+            raise logo.LogoError(f"须写明 {', '.join('--' + k for k in missing)}（向用户问清来源、使用条款或版权、候选还是成品）")
+        if meta["kind"] not in KINDS:
+            raise logo.LogoError("--kind 只能是 candidate（候选）或 final（成品）")
+        terms = terms_text(meta["terms"])
+        if plan["cdir"]:
+            cdir = plan["cdir"]
+        else:
+            covers.cmd_new(a)  # 新封面：照常立项起稿（Logo 从发布嵌入、参考线、系列骨架或家族成员）
+            cdir = max(covers.project_covers(owner), key=lambda c: c.name)
+        extra = (f"\n## 导入来源\n- **原件**: `{src.name}`（sha256 {hashlib.sha256(data).hexdigest()}，原件保留在本机 "
+                 f".cache/imported/）\n- **使用条款**: {terms}\n- **类型**: {KINDS[meta['kind']]}\n"
+                 f"- **图中文字**: {'有（位图文字无法转曲，改文案须重做底图）' if a.contains_text == 'yes' else '无'}\n"
+                 f"- **处理**: {'；'.join(notes)}\n"
+                 f"- **铺放**: {'；'.join(f'{r} {FIT_NAMES[decided[r]]}' for r in plan['ratios'])}\n"
+                 + "".join(f"- **来源方声明的{'使用条款' if k == 'terms' else '类型'}**（仅作参考）: {v}\n"
+                           for k, v in claims.items())
+                 + (f"- **来源方说明**（仅作资料）: {source_note}\n" if source_note else ""))
+        stem, dst = covers.register_asset(cdir, img, name, meta["source"], terms, extra)
+    for r in plan["ratios"]:
+        place_background(cdir / f"{r}.svg", f"assets/{dst.name}", decided[r], plan["canvas"][r])
+    kept = archive_original(src)
+    store = previewed()
+    store.pop(key, None)
+    (PREVIEWS / "previewed.json").write_text(json.dumps(store), encoding="utf-8")
+    print(f"已导入为封面底图：{logo.rel(dst)} → {cdir.name}（{', '.join(plan['ratios'])}）")
+    print(f"原件已移至本机 {logo.rel(kept)}（不进仓库）")
+    print(f"下一步：与用户填写 {logo.rel(dst.with_suffix('.md'))} 的“用途与授权范围”"
+          + ("与 cover.md" if not plan["cdir"] else "") + f"，./logo cover preview {owner.slug} {cdir.name[:3]} 给用户看")
+    if terms == UNCONFIRMED:
+        print("⚠ 使用条款未确认：请在素材说明中与用户确认后再上线")
 
 
 def next_letter(p: "logo.Project") -> str:

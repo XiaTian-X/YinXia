@@ -86,6 +86,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 | `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
 | `./logo cover new / asset / status / list` | 封面立项起稿 / 登记素材 / 记录上线 / 查看项目封面 |
 | `./logo cover preview / export <slug> <封面> [平台…]` | 封面校对图 / 按平台导出 PNG（不提交） |
+| `./logo cover import <项目\|series:系列> <图片> --contains-logo no --contains-text … --analyze` | 外部封面图作底图导入（Logo 由系统嵌入；比例不符逐画幅决定裁切或留边） |
 | `./logo cover retarget <slug> <封面> --platforms a,b` | 调整封面的目标平台（新画幅起稿、参考线随之更新） |
 | `./logo cover sync-logo <slug> <封面> [--release rN]` | 把封面中的 Logo 换成新发布（保留位置与显示高度） |
 | `./logo cover platforms [--ratio 3x1]` | 查看封面平台、画幅与裁切比例 |
@@ -159,6 +160,7 @@ brief.md 记录访谈结果（含“需求确认”），未填完时不能开�
 
 **交接**：让对方一开始就按规范交付，导入时几乎不用改。`./logo handoff brief <项目>` 生成说明书（能写文件的 Agent 直接放进收件箱；
 `--plain` 给只能对话的窗口，回复用交接文本：每个文件一段，“=== LOGODESIGN 交接 v1 · 文件 n/N ===”开头、“=== 结束 n/N ===”结尾，缺段或截断时不写入任何文件）；
+封面用 `--type cover --platforms …`：只要底图（各画幅尺寸、安全区、遮挡区，不画 Logo），收到后用 `./logo cover import` 作底图导入；
 `handoff receive` 把交接文本原样拆进收件箱，之后照常预演、确认、导入；`handoff validate` 供对方只读自查；`handoff feedback` 把硬性问题（以及用户决定让对方改的颜色）写成对方能照做的修改意见。
 
 ## Logo 资产与封面

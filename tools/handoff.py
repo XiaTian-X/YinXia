@@ -80,10 +80,45 @@ def format_text(plain: bool, slug: str) -> list[str]:
     ]
 
 
+def cover_sections(p: "logo.Project", platforms: str | None, plain: bool) -> list[str]:
+    """封面底图说明书：每个画幅的画布尺寸、共同安全区、遮挡区、Logo 区与标题区；只要底图，不画 Logo。"""
+    import covers  # 延迟导入：covers.py 依赖 logo
+    if not platforms:
+        raise logo.LogoError("封面说明书须用 --platforms 指定目标平台（先问用户这张封面用在哪些平台）")
+    targets = covers.parse_platforms(platforms)
+    plats, ratios = covers.platforms_by_id(), covers.load_config()["ratios"]
+    n = logo.fmt_num
+    lines = ["", "## 只要底图（主视觉）", "- **不要画任何 Logo、品牌标志或商标**：Logo 由 LOGODesign 按定稿版本嵌入",
+             "- 尽量不放文字（标题由 LOGODesign 用已登记字体加上）；确需文字时在说明里写明",
+             "- 每个画幅一张 PNG，尺寸与画布完全一致；色调与上面的色板协调", "", "## 各画幅要求"]
+    for r in covers.needed_ratios(targets):
+        c = ratios[r]
+        on = [plats[t] for t in targets if plats[t]["ratio"] == r]
+        x, y, w, h = covers.common_safe(on, c) or (0, 0, c["width"], c["height"])
+        lines += [f"### {r}：{c['width']}×{c['height']} 像素（平台：{'、'.join(pl['name'] for pl in on)}）",
+                  f"- 共同安全区：x {n(x)}、y {n(y)}、宽 {n(w)}、高 {n(h)}（主体与留白都要在这里面，外面可能被裁掉）",
+                  f"- Logo 区：安全区顶部靠左（或靠右），约 {n(h * 0.25)} 像素高，保持干净、对比清楚",
+                  "- 标题区：安全区中部偏下，留出干净的区域"]
+        occ = [covers.map_box(b, pl, covers.crop_window(pl, c)) for pl in on for b in pl.get("occlusions", [])]
+        if occ:
+            lines.append("- 遮挡区（头像、按钮会挡住，不要放重要内容）：" + "；".join(
+                f"x {n(ox)}、y {n(oy)}、宽 {n(ow)}、高 {n(oh)}" for ox, oy, ow, oh in occ))
+    lines += ["", "## 交付格式"]
+    if plain:
+        lines += ["每张图直接生成出来；并在回复里为每张图写一段说明（来源、提示词、对应画幅），例如：",
+                  "```", 'source = "你的工具或模型名称"', 'prompt = "提示词"', 'ratio = "16x9"', "```",
+                  "用户会下载原图交给 LOGODesign。不要写使用条款与授权判断，那由用户确认。"]
+    else:
+        lines += [f"每张图存到 LOGODesign 的收件箱 inbox/{p.slug}/<英文短名>-<画幅>.png，旁边写同名加 .import.toml 的说明",
+                  "（TOML，字段：source、prompt、name、ratio、note）。不要自行导入，导入由用户确认后完成。"]
+    return lines
+
+
 def cmd_brief(a) -> None:
     p = logo.Project(a.slug)
-    lines = [f"# 为 LOGODesign 项目「{p.cfg['project'].get('name', p.slug)}」设计 Logo",
-             "", "你生成的 Logo 将导入 LOGODesign 设计管理系统，请严格按以下要求交付。", "", "## 需求要点"]
+    what = "封面底图" if a.type == "cover" else "Logo"
+    lines = [f"# 为 LOGODesign 项目「{p.cfg['project'].get('name', p.slug)}」设计{what}",
+             "", f"你生成的{what}将导入 LOGODesign 设计管理系统，请严格按以下要求交付。", "", "## 需求要点"]
     lines += [f"- {x}" for x in brief_points(p)] or ["- （项目简报尚未填写）"]
     import series  # 延迟导入：series.py 依赖 logo
     if (m := series.membership(p)):
@@ -91,17 +126,22 @@ def cmd_brief(a) -> None:
         lines += ["", f"## 品牌系列：{s.get('name', m['id'])}（{series.ARCHITECTURES.get(s.get('architecture'), '?')}，"
                       f"本项目是{series.ROLES.get(m.get('role'), '?')}）",
                   "须遵守以下系列规则："] + [f"- {r}" for r in series.checklist(m["id"])]
-    lines += ["", "## 色板（只能用这些颜色）"] + [f"- {k}：{v}" for k, v in p.palette.items()]
-    lines += ["", "## SVG 硬性要求"] + [f"{i}. {r}" for i, r in enumerate(SVG_RULES, 1)]
-    lines += ["", "## 交付格式"] + format_text(a.plain, p.slug)
-    lines += ["", f"若后续回复格式走样，用户会提醒：“{REMINDER}”。"]
+    if a.type == "cover":
+        lines += ["", "## 品牌色板（底图色调要与之协调）"] + [f"- {k}：{v}" for k, v in p.palette.items()]
+        lines += cover_sections(p, a.platforms, a.plain)
+    else:
+        lines += ["", "## 色板（只能用这些颜色）"] + [f"- {k}：{v}" for k, v in p.palette.items()]
+        lines += ["", "## SVG 硬性要求"] + [f"{i}. {r}" for i, r in enumerate(SVG_RULES, 1)]
+        lines += ["", "## 交付格式"] + format_text(a.plain, p.slug)
+        lines += ["", f"若后续回复格式走样，用户会提醒：“{REMINDER}”。"]
     text = "\n".join(lines) + "\n"
-    out = logo.CACHE / "handoff" / f"{p.slug}-brief{'-plain' if a.plain else ''}.md"
+    out = logo.CACHE / "handoff" / f"{p.slug}-{a.type}-brief{'-plain' if a.plain else ''}.md"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(text, encoding="utf-8")
     print(text)
     print(f"（已保存到 {logo.rel(out)}；说明书含项目需求与色板，发给外部工具前请确认用户同意）")
-    print(f"复用口令：{REMINDER}")
+    if a.type == "logo":
+        print(f"复用口令：{REMINDER}")
 
 
 SKILL_TEXT = """---
@@ -300,6 +340,8 @@ def register(sub) -> None:
     c = hs.add_parser("brief", help="按项目生成给其他 Agent 的说明书（需求、色板、SVG 要求、交付格式）")
     c.add_argument("slug")
     c.add_argument("--plain", action="store_true", help="对方只能对话（不能写文件）：用交接文本格式回复")
+    c.add_argument("--type", choices=["logo", "cover"], default="logo", help="logo（默认）或 cover（只要底图，不画 Logo）")
+    c.add_argument("--platforms", help="--type cover 时的目标平台，逗号分隔")
     c.set_defaults(fn=cmd_brief)
     c = hs.add_parser("skill", help="生成可安装到其他 Agent 的通用 skill（写到仓库之外的目录）")
     c.add_argument("dir", help="输出目录，如 ~/agent-skills")

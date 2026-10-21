@@ -1296,16 +1296,22 @@ def cmd_asset(a) -> None:
         raise logo.LogoError(f"图片不存在：{src}")
     if src.suffix.lower() not in ASSET_SUFFIXES:
         raise logo.LogoError(f"素材只支持 {', '.join(sorted(ASSET_SUFFIXES))}，收到：{src.suffix}")
+    _, dst = register_asset(cdir, src, a.name, a.source, a.license)
+    print(f"已登记素材：{logo.rel(dst)}；在设计稿中用 <image href=\"assets/{dst.name}\" …/> 引用")
+
+
+def register_asset(cdir: Path, src: Path, name: str, source: str, license: str, extra: str = "") -> tuple[str, Path]:
+    """把图片登记为封面的下一个编号素材（图片与同名 .md）；./logo cover asset 与 cover import 共用。"""
     adir = cdir / "assets"
     adir.mkdir(exist_ok=True)
     nums = [int(f.name[:3]) for f in adir.glob("*.md") if re.match(r"\d{3}-", f.name)]
-    stem = f"{max(nums, default=0) + 1:03d}-{logo.to_slug(a.name)}"
+    stem = f"{max(nums, default=0) + 1:03d}-{logo.to_slug(name)}"
     dst = adir / f"{stem}{src.suffix.lower()}"
     shutil.copyfile(src, dst)
     logo.write_new(adir / f"{stem}.md", logo.render_template(
         "cover-asset.md", id=stem, file=dst.name, sha256=logo.sha256_file(dst), date=logo.today(),
-        source=a.source, license=a.license))
-    print(f"已登记素材：{logo.rel(dst)}；在设计稿中用 <image href=\"assets/{dst.name}\" …/> 引用")
+        source=source, license=license) + extra)
+    return stem, dst
 
 
 def cmd_status(a) -> None:
@@ -1357,6 +1363,29 @@ def register(sub) -> None:
     sk.add_argument("--no-skeleton", action="store_true", help="系列已有骨架但这张封面不套用")
     c.add_argument("--members", help="家族封面的成员，逗号分隔，第一个为主品牌（先问用户），如 brand,food")
     c.set_defaults(fn=cmd_new)
+    c = cs.add_parser("import", help="导入外部生成的封面图作底图（Logo 由系统从发布嵌入）：先 --analyze 预演")
+    c.add_argument("slug", help="项目短名；家族封面写 series:<系列名>")
+    c.add_argument("file", help="图片路径，或收件箱 inbox/ 中的相对路径")
+    c.add_argument("--contains-logo", required=True, choices=["yes", "no"], help="图里是否已画了 Logo（先问用户；yes 会被拒绝）")
+    c.add_argument("--contains-text", required=True, choices=["yes", "no"], help="图里是否有文字（先问用户）")
+    c.add_argument("--analyze", action="store_true", help="只预演：生成各画幅铺放效果图，不写入")
+    c.add_argument("--platforms", help="新封面的目标平台，逗号分隔")
+    c.add_argument("--cover", help="给已有封面的某个画幅导入底图（配合 --ratio）")
+    c.add_argument("--ratio", help="已有封面中要放入底图的画幅，如 3x1")
+    c.add_argument("--fit", action="append", metavar="画幅=crop|pad",
+                   help="比例不符时的处理（逐个问用户）：crop 裁切铺满 / pad 完整放入留边")
+    c.add_argument("--name", help="英文短名（默认取文件名）")
+    c.add_argument("--title", help="新封面的中文标题")
+    c.add_argument("--release", help="新封面所用 Logo 发布（默认 current_release）")
+    c.add_argument("--members", help="家族封面的成员，第一个为主品牌")
+    skf = c.add_mutually_exclusive_group()
+    skf.add_argument("--from-skeleton", action="store_true", help="套用系列封面骨架")
+    skf.add_argument("--no-skeleton", action="store_true", help="系列已有骨架但不套用")
+    c.add_argument("--source", help="来源：哪个工具 / Agent / 模型")
+    c.add_argument("--prompt", help="生成时的提示词")
+    c.add_argument("--terms", help="使用条款或版权（须用户确认；不清楚写“不清楚”）")
+    c.add_argument("--kind", choices=["candidate", "final"], help="candidate 候选 / final 成品")
+    c.set_defaults(fn=lambda a: __import__("importer").cmd_cover_import(a))
     c = cs.add_parser("asset", help="登记照片/插画素材（记录来源、授权与 sha256，登记后不可替换）")
     c.add_argument("slug")
     c.add_argument("cover", help="封面编号，如 001")

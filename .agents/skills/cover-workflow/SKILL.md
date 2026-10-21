@@ -43,6 +43,20 @@ description: LOGODesign 的封面（品牌物料）制作流程：立项、素�
 - 成员出新发布后会提醒；`./logo cover sync-logo series:<系列名> <封面>` 逐个成员换成当前发布（`--member <项目> [--release rN]` 只换一个）。
 - 导出到 `projects/_series/<系列名>/dist/covers/`（不提交）。
 
+## 导入外部生成的封面图（底图）
+别处（其他 Agent、生图工具）生成的封面图作为**底图**导入，Logo 仍由系统从发布嵌入。先问用户：
+- **图里有没有画 Logo？**（有就不能用——请对方重出不含 Logo 的底图：`./logo handoff brief <项目> --type cover --platforms …`）
+- **图里有没有文字？**（可以用，但位图文字无法转曲，日后改文案须重做底图）
+- 新封面用在哪些平台（`--platforms`）；或是给已有封面的某个画幅换底图（`--cover <编号> --ratio <画幅>`，每个画幅一张图）。
+- 来源、使用条款（须用户确认）、候选还是成品。
+
+1. `./logo cover import <项目|series:系列> <图片> --platforms … --contains-logo no --contains-text no|yes --analyze`
+2. **把预演图发给用户**：比例与画幅一致的直接铺满；不一致的画幅同时给出“裁切铺满”与“完整放入（留边）”两种效果，
+   问用户选哪种（`--fit 3x1=crop|pad`），或改项目——从 `--platforms` 去掉用这个画幅的平台。带上决定再预演一次。
+3. 去掉 `--analyze`、补上用户确认的 `--source --terms --kind` 正式导入：新封面照常立项（系列骨架 / 家族成员照常询问），
+   图片登记为素材（去掉元数据；SVG 渲染为 PNG）并放在底色之上；再导入同一画幅是替换。
+4. 与用户填写素材说明的“用途与授权范围”（以及新封面的 cover.md），`cover preview` 给用户看后提交。
+
 ## 2. 收集素材
 - 照片、插画：`./logo cover asset <slug> <封面编号> <图片> --name <短名> --source "<来源>" --license "<授权>"`，
   填完同名 `.md` 中的“用途与授权范围”。**未登记的图不能引用**；登记后不可替换，换图要重新登记。

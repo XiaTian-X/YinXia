@@ -1,6 +1,6 @@
 ---
 name: import-workflow
-description: 把其他地方（其他 Agent、对话窗口、设计工具）生成的 Logo 导入 LOGODesign：收件箱、预演对比、冲突逐项由用户决定（改图片还是改项目规范）、来源与条款追溯。用户提到导入、外部生成、收件箱、别处做的 Logo 时使用。
+description: 把其他地方（其他 Agent、对话窗口、设计工具）生成的 Logo 或封面图导入 LOGODesign：收件箱、预演对比、冲突逐项由用户决定（改图片还是改项目规范）、来源与条款追溯。用户提到导入、外部生成、收件箱、别处做的 Logo 时使用。
 ---
 
 # Import Workflow
@@ -12,6 +12,8 @@ description: 把其他地方（其他 Agent、对话窗口、设计工具）生�
 ## 0. 让对方按格式交付（推荐，先于生成）
 用户打算让其他 Agent / 对话窗口生成 Logo 时，先问：**对方能写文件，还是只能对话？** 以及
 **说明书会包含项目需求与色板，可以发给这个外部工具吗？**（不同意就不生成）。
+- 封面只要底图：`./logo handoff brief <项目> --type cover --platforms …`（每个画幅的画布尺寸、安全区、遮挡区，不画 Logo）；
+  封面图导入见 cover-workflow 的“导入外部生成的封面图”（`./logo cover import`）。
 - 生成说明书：`./logo handoff brief <项目>`（能写文件：直接放进 `inbox/<项目>/` 并附来源说明）或
   `./logo handoff brief <项目> --plain`（只能对话：按交接文本格式回复）。把全文交给用户粘贴给对方；
   对方回复格式走样时，让用户粘贴输出末尾的“复用口令”。
