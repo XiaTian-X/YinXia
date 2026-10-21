@@ -42,6 +42,9 @@ description: LOGODesign 的核心操作流，包括需求访谈、独立/系列�
 系列项目的每个版本都要对照 `series.md` 设计与评审（见第 3.5 节）；`[series]` 由命令写入，不要手改。
 **子品牌立项时**：先 `./logo series compare <系列名>` 把系列现有成员与 `series.md` 给用户看，再问子品牌沿用哪些基因、主题色是什么，写进 brief。
 
+用户带来**别处生成的 Logo**（其他 Agent、对话窗口、设计工具）时，按 `import-workflow` 技能导入：
+新项目可用 `./logo import … --init` 以它初始化（色板等取自图）；已有项目的冲突逐项问用户改图片还是改项目规范。
+
 ## 1. 新建项目（细节）
 1. 按第 0 步的命令新建；`project.toml` 的 `[series]`（所属系列与角色）与 brief 的“项目类型与架构”由命令写入。
 2. 填写 `projects/<slug>/brief.md`（含字体策略，引用 fonts.toml 的 id）。

@@ -838,7 +838,13 @@ def cmd_new(a) -> None:
 
 def cmd_direction(a) -> None:
     p = Project(a.slug)
-    letter = a.letter.upper()
+    d = create_direction(p, a.letter, a.name, a.title)
+    print(f"已创建方向：{rel(d)}")
+
+
+def create_direction(p: Project, letter: str, name: str, title: str | None = None) -> Path:
+    """新建方向（含需求访谈门槛）；./logo direction 与 ./logo import 共用。"""
+    letter = letter.upper()
     if not re.fullmatch(r"[A-Z]", letter):
         raise LogoError("方向编号必须是单个大写字母，例如 A")
     if any(d.name.split("-", 1)[0] == letter for d in p.directions()):
@@ -853,22 +859,18 @@ def cmd_direction(a) -> None:
         sid = series.membership(p)["id"]
         raise LogoError(f"系列规则 {series.rules_path(sid)} 还有 {len(holes)} 处未填写（如“{holes[0]}”）；"
                         "请先与用户确定系列规则，再开始设计系列成员")
-    d = p.dir / "directions" / f"{letter}-{to_slug(a.name)}"
+    d = p.dir / "directions" / f"{letter}-{to_slug(name)}"
     write_new(d / "direction.md", render_template(
-        "direction.md", letter=letter, name=a.name, title=a.title or a.name, date=today()))
+        "direction.md", letter=letter, name=name, title=title or name, date=today()))
     (p.dir / "directions" / ".gitkeep").unlink(missing_ok=True)
     if p.cfg["state"].get("stage") == "briefing":
         p.set_state(stage="exploring")
-    print(f"已创建方向：{rel(d)}")
+    return d
 
 
 def cmd_version(a) -> None:
     p = Project(a.slug)
     ddir = p.direction(a.direction)
-    letter = ddir.name.split("-", 1)[0]
-    existing = p.versions_in(ddir)
-    num = int(existing[-1].name[1:]) + 1 if existing else 1
-    vid = f"{letter}-v{num:03d}"
     if a.from_master and (a.based_on or a.blank):
         raise LogoError("--from-master 不能与 --from / --blank 同时使用")
     if a.from_master:
@@ -878,20 +880,26 @@ def cmd_version(a) -> None:
         base = a.based_on or (None if a.blank else p.latest_version_id(ddir))
         base_svg = p.version_dir(base) / "logo.svg" if base else None  # 先校验，避免留下半成品目录
     inspired = p.concept_ref(a.inspired_by) if a.inspired_by else "无"
-    vdir = ddir / f"v{num:03d}"
+    svg = (base_svg or TEMPLATES / "blank.svg").read_text(encoding="utf-8")
+    vid, vdir = create_version(p, ddir, svg, base or "（无，全新起稿）", inspired)
+    print(f"已创建版本：{vid} → {rel(vdir)}")
+    print("提示：完成 logo.svg 与 notes.md 后再提交；提交后该版本即冻结")
+
+
+def create_version(p: Project, ddir: Path, svg_text: str, based_on: str, inspired: str) -> tuple[str, Path]:
+    """在方向下新建下一个版本（logo.svg 与 notes.md），推进阶段；./logo version 与 ./logo import 共用。"""
+    letter = ddir.name.split("-", 1)[0]
+    existing = p.versions_in(ddir)
+    num = int(existing[-1].name[1:]) + 1 if existing else 1
+    vid, vdir = f"{letter}-v{num:03d}", ddir / f"v{num:03d}"
     vdir.mkdir(parents=True)
-    if base_svg:
-        shutil.copyfile(base_svg, vdir / "logo.svg")
-    else:
-        shutil.copyfile(TEMPLATES / "blank.svg", vdir / "logo.svg")
+    (vdir / "logo.svg").write_text(svg_text, encoding="utf-8")
     write_new(vdir / "notes.md", render_template(
-        "version-notes.md", id=vid, based_on=base or "（无，全新起稿）", inspired_by=inspired,
-        direction=ddir.name, date=today()))
+        "version-notes.md", id=vid, based_on=based_on, inspired_by=inspired, direction=ddir.name, date=today()))
     stage = p.cfg["state"].get("stage")
     if stage in ("briefing", "exploring", "delivered") and p.cfg["state"].get("selected_direction"):
         p.set_state(stage="iterating")
-    print(f"已创建版本：{vid} → {rel(vdir)}")
-    print("提示：完成 logo.svg 与 notes.md 后再提交；提交后该版本即冻结")
+    return vid, vdir
 
 
 def cmd_concept(a) -> None:
@@ -901,17 +909,23 @@ def cmd_concept(a) -> None:
         raise LogoError(f"图片不存在：{src}")
     if src.suffix.lower() not in CONCEPT_SUFFIXES:
         raise LogoError(f"概念图只支持 {', '.join(sorted(CONCEPT_SUFFIXES))}，收到：{src.suffix}")
+    stem, dst = register_concept(p, src, a.name, a.prompt, a.tool)
+    print(f"已登记概念图：{rel(dst)}（提示词记录于 {stem}.md）")
+
+
+def register_concept(p: Project, src: Path, name: str, prompt: str, tool: str, extra: str = "") -> tuple[str, Path]:
+    """把图片登记为下一个编号的概念图（图片与同名 .md）；extra 追加在记录末尾。返回 (编号-短名, 图片路径)。"""
     cdir = p.dir / "concepts"
     nums = [int(m.group(1)) for f in cdir.glob("*.md") if (m := re.match(r"(\d{3})-", f.name))]
     num = max(nums, default=0) + 1
-    stem = f"{num:03d}-{to_slug(a.name)}"
+    stem = f"{num:03d}-{to_slug(name)}"
     dst = cdir / f"{stem}{src.suffix.lower()}"
     shutil.copyfile(src, dst)
     write_new(cdir / f"{stem}.md", render_template(
-        "concept.md", id=stem, image=dst.name, prompt=a.prompt, tool=a.tool, date=today(),
-        sha256=sha256_file(dst)))
+        "concept.md", id=stem, image=dst.name, prompt=prompt, tool=tool, date=today(),
+        sha256=sha256_file(dst)) + extra)
     (cdir / ".gitkeep").unlink(missing_ok=True)
-    print(f"已登记概念图：{rel(dst)}（提示词记录于 {stem}.md）")
+    return stem, dst
 
 
 def cmd_decision(a) -> None:
@@ -1757,6 +1771,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
 
     import covers  # 延迟导入：covers.py 依赖本模块
     covers.check_covers(p, errors, warnings, staged)
+    import importer  # 延迟导入：importer.py 依赖本模块
+    importer.terms_warnings(p, warnings)
 
     if (p.dir / "final").exists():
         warnings.append(f"{rel(p.dir / 'final')}: 交付物已改为按需生成到 dist/（不提交），旧的 final/ 可以删除")
@@ -2191,6 +2207,8 @@ def cmd_check(a) -> None:
             check_secrets("system", a.staged, errors)
         if not a.staged:  # 以下只在手动检查时运行，不拖慢提交
             check_hooks(warnings)
+            import importer  # 延迟导入：importer.py 依赖本模块
+            importer.check_inbox(warnings)
             check_backup(warnings)
             if has_projects and scope != "system":
                 check_history(warnings)
@@ -2378,6 +2396,8 @@ def build_parser() -> argparse.ArgumentParser:
     covers.register(sub)
     import series  # 延迟导入：series.py 依赖本模块
     series.register(sub)
+    import importer  # 延迟导入：importer.py 依赖本模块
+    importer.register(sub)
 
     s = sub.add_parser("index", help="重新生成 PROJECTS.md")
     s.set_defaults(fn=cmd_index)

@@ -1,0 +1,643 @@
+"""导入模块：把其他地方（其他 Agent、设计工具）生成的 Logo 加入本系统。
+
+原则：导入默认原样保留，不主动修改。
+- 外观不变的格式整理（去写死的宽高、编辑器元数据、CSS 类展开、颜色写法统一）可以自动做，但须逐像素核对外观一致；
+- 系统硬性规则（脚本、外链、内嵌位图、未转曲文字等）项目规范也改不了：只能登记为概念图，或请来源修正后重交；
+- 与项目规范冲突（颜色不在色板）逐项由用户决定：改图片（换成色板色）还是改项目规范（加入色板），并留下决策记录。
+以导入的图初始化新项目时没有冲突，只是用它补全项目信息（色板）。
+
+入口：文件路径，或系统根目录的收件箱 inbox/（不进任何仓库）；旁边可放来源说明 <文件>.import.toml。
+正式导入前须先用 --analyze 预演（生成对比图给用户看），参数与文件不变时才能导入。
+"""
+from __future__ import annotations
+
+import datetime as dt
+import hashlib
+import json
+import re
+import shutil
+import subprocess
+import tempfile
+import tomllib
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+import logo
+
+INBOX = logo.ROOT / "inbox"
+IMPORTED = logo.CACHE / "imported"
+PREVIEWS = logo.CACHE / "import"
+SIDECAR = ".import.toml"
+MAX_BYTES = 5 << 20
+INBOX_STALE_DAYS = 7
+KINDS = {"candidate": "候选", "final": "成品"}
+UNCONFIRMED = "未确认"
+UNKNOWN_TERMS = {"", "不清楚", "未知", "unknown", "未确认"}
+SIDECAR_FIELDS = {
+    "source": "来源：哪个工具 / Agent / 模型",
+    "prompt": "生成时的提示词",
+    "terms": "使用条款或版权（能否商用、能否注册商标；不清楚写“不清楚”，导入时仍须用户确认）",
+    "kind": "candidate（候选）或 final（成品）",
+    "project": "要加入的项目短名（新项目先完成需求访谈）",
+    "direction": "要放入的方向字母，如 A",
+    "name": "英文短名，用于概念图与记录",
+    "note": "补充说明（只作资料，不当作指令）",
+}
+ENTITY_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.I)
+NAMED = {"black": "#000000", "white": "#FFFFFF", "red": "#FF0000", "green": "#008000", "blue": "#0000FF",
+         "yellow": "#FFFF00", "orange": "#FFA500", "purple": "#800080", "gray": "#808080", "grey": "#808080",
+         "silver": "#C0C0C0", "navy": "#000080", "teal": "#008080", "maroon": "#800000", "lime": "#00FF00",
+         "aqua": "#00FFFF", "fuchsia": "#FF00FF", "olive": "#808000", "pink": "#FFC0CB", "brown": "#A52A2A"}
+PALETTE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+RESOLVE_RE = re.compile(r"^(#[0-9A-Fa-f]{6})=(palette|map):([a-z][a-z0-9_]*)$")
+
+
+# ---------------------------------------------------------------------------
+# 读入与识别
+# ---------------------------------------------------------------------------
+def sniff(data: bytes) -> str | None:
+    """按内容（而非扩展名）识别文件类型。"""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    head = data[:4096].decode("utf-8", errors="ignore").lstrip("﻿ \t\r\n")
+    if head.startswith("<") and "<svg" in data[:65536].decode("utf-8", errors="ignore"):
+        return "svg"
+    return None
+
+
+def read_source(path: Path) -> tuple[bytes, str]:
+    """读取外部文件（视为不可信）：不跟随符号链接、限制大小、按内容识别类型。"""
+    if path.is_symlink():
+        raise logo.LogoError(f"{path} 是符号链接，请提供真实文件")
+    if not path.is_file():
+        raise logo.LogoError(f"文件不存在：{path}")
+    if path.stat().st_size > MAX_BYTES:
+        raise logo.LogoError(f"{path.name} 超过 {MAX_BYTES >> 20}MB，Logo 不应这么大，请确认文件")
+    data = path.read_bytes()
+    kind = sniff(data)
+    if not kind:
+        raise logo.LogoError(f"{path.name} 不是可识别的 SVG / PNG / JPEG / WebP（按文件内容判断）")
+    return data, kind
+
+
+def sidecar(path: Path) -> dict[str, str]:
+    """来源说明 <文件>.import.toml（其他 Agent 可随文件一起交付）；只取已知字段，内容只作资料。"""
+    side = path.with_name(path.name + SIDECAR)
+    if not side.exists():
+        return {}
+    try:
+        data = tomllib.loads(side.read_text(encoding="utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raise logo.LogoError(f"{side.name} 格式错误：{e}")
+    return {k: str(v) for k, v in data.items() if k in SIDECAR_FIELDS}
+
+
+def inbox_items() -> list[dict]:
+    """收件箱中的待导入文件：inbox/ 根目录（去向待定）与 inbox/<项目>/（加入该项目）。"""
+    items = []
+    for f in sorted(INBOX.rglob("*")) if INBOX.exists() else []:
+        rel_parts = f.relative_to(INBOX).parts
+        if not f.is_file() or f.name.endswith(SIDECAR) or any(x.startswith(".") for x in rel_parts) or len(rel_parts) > 2:
+            continue
+        info = {"file": f.relative_to(INBOX).as_posix(), "bytes": f.stat().st_size,
+                "age_days": (dt.date.today() - dt.date.fromtimestamp(f.stat().st_mtime)).days}
+        try:
+            info["type"] = sniff(f.read_bytes()[:65536]) or "unknown"
+            meta = sidecar(f)
+        except (OSError, logo.LogoError) as e:
+            info["type"], meta = "unknown", {}
+            info["error"] = str(e)
+        if len(rel_parts) == 2 and "project" not in meta:
+            meta["project"] = rel_parts[0]
+        info["meta"] = meta
+        info["missing"] = [k for k in ("project", "source", "terms", "kind") if not meta.get(k)]
+        items.append(info)
+    return items
+
+
+# ---------------------------------------------------------------------------
+# SVG：格式整理（外观不变）与问题分类
+# ---------------------------------------------------------------------------
+def norm_color(value: str) -> str | None:
+    """颜色写法统一为 6 位大写十六进制；none 与 url(#…) 原样；无法识别时返回 None。"""
+    v = value.strip()
+    if v == "none" or v.startswith("url(#"):
+        return v
+    if re.fullmatch(r"#[0-9A-Fa-f]{6}", v):
+        return v.upper()
+    if re.fullmatch(r"#[0-9A-Fa-f]{3}", v):
+        return "#" + "".join(c * 2 for c in v[1:]).upper()
+    m = re.fullmatch(r"rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)", v, re.I)
+    if m and all(int(x) <= 255 for x in m.groups()):
+        return "#" + "".join(f"{int(x):02X}" for x in m.groups())
+    return NAMED.get(v.lower())
+
+
+def norm_style(text: str, changes: list[str]) -> str:
+    """样式文本中的颜色写法统一（无法识别的保持原样，由检查报告）。"""
+    def fix(m: re.Match) -> str:
+        new = norm_color(m.group(2))
+        if new and new != m.group(2):
+            changes.append(f"颜色 {m.group(2)} 写作 {new}")
+            return f"{m.group(1)}:{new}"
+        return m.group(0)
+    return re.sub(r"(fill|stroke|stop-color|flood-color|lighting-color|color)\s*:\s*([^;}\"]+?)(?=\s*[;}]|$)", fix, text)
+
+
+def expand_classes(root: ET.Element, changes: list[str]) -> None:
+    """只含类选择器的 <style> 展开为元素属性并移除；含其他选择器时保留 <style>（颜色写法照样统一）。"""
+    for style in [el for el in root.iter() if el.tag == f"{{{logo.SVG_NS}}}style"]:
+        css = re.sub(r"/\*.*?\*/", "", style.text or "", flags=re.S)
+        rules = re.findall(r"([^{}]+)\{([^{}]*)\}", css)
+        selectors = [s.strip() for sel, _ in rules for s in sel.split(",")]
+        if not rules or not all(re.fullmatch(r"\.[A-Za-z_][\w-]*", s) for s in selectors) or re.sub(r"[^{}]+\{[^{}]*\}", "", css).strip():
+            style.text = norm_style(style.text or "", changes)
+            continue
+        decls: dict[str, list[tuple[str, str]]] = {}
+        for sel, body in rules:
+            pairs = [tuple(x.strip() for x in d.split(":", 1)) for d in body.split(";") if ":" in d]
+            for s in sel.split(","):
+                decls.setdefault(s.strip()[1:], []).extend(pairs)
+        for el in root.iter():
+            for cls in (el.get("class") or "").split():
+                for prop, val in decls.get(cls, []):
+                    el.set(prop, val)  # 类样式优先于同名呈现属性，与浏览器一致
+            el.attrib.pop("class", None)
+        for parent in root.iter():
+            if style in list(parent):
+                parent.remove(style)
+        changes.append(f"CSS 类样式展开为属性（{len(decls)} 个类）")
+
+
+def normalize(text: str) -> tuple[str, list[str]]:
+    """外观不变的格式整理，返回 (整理后的 SVG, 改动清单)。调用方须再逐像素核对。"""
+    changes: list[str] = []
+    root = ET.fromstring(text)
+    if root.tag != f"{{{logo.SVG_NS}}}svg":
+        raise logo.LogoError("根元素不是带 xmlns 的 <svg>")
+    if not root.get("viewBox"):
+        w, h = (re.fullmatch(r"\s*([\d.]+)\s*(px)?\s*", root.get(k) or "") for k in ("width", "height"))
+        if w and h:
+            root.set("viewBox", f"0 0 {w.group(1)} {h.group(1)}")
+            changes.append("按宽高补上 viewBox")
+    for k in ("width", "height"):
+        if root.get(k) is not None:
+            root.attrib.pop(k)
+            changes.append(f"去掉写死的 {k}")
+    removed = 0
+    for parent in list(root.iter()):
+        for child in list(parent):
+            ns = child.tag[1:].split("}")[0] if child.tag.startswith("{") else ""
+            if ns != logo.SVG_NS or child.tag == f"{{{logo.SVG_NS}}}metadata":
+                parent.remove(child)
+                removed += 1
+    for el in root.iter():
+        for attr in list(el.attrib):
+            ns = attr[1:].split("}")[0] if attr.startswith("{") else ""
+            if ns and ns not in (logo.XLINK_NS, "http://www.w3.org/XML/1998/namespace"):
+                el.attrib.pop(attr)
+                removed += 1
+    if removed:
+        changes.append(f"删除编辑器元数据与命名空间内容（{removed} 处）")
+    expand_classes(root, changes)
+    for el in root.iter():
+        for attr, val in list(el.attrib.items()):
+            name = attr.split("}")[-1]
+            if name in logo.COLOR_ATTRS:
+                new = norm_color(val)
+                if new and new != val:
+                    el.set(attr, new)
+                    changes.append(f"颜色 {val} 写作 {new}")
+            elif name == "style":
+                el.set(attr, norm_style(val, changes))
+    if not changes:
+        return text, []  # 无需整理：逐字保留原件
+    return ET.tostring(root, encoding="unicode") + "\n", list(dict.fromkeys(changes))
+
+
+def same_look(a: str, b: str) -> bool:
+    """两份 SVG 渲染后是否逐像素一致（允许极小的抗锯齿差异）。"""
+    with tempfile.TemporaryDirectory() as td:
+        pa = logo.render_text(a, Path(td) / "a.png", width=512)
+        pb = logo.render_text(b, Path(td) / "b.png", width=512)
+        r = subprocess.run(["magick", "compare", "-metric", "AE", "-fuzz", "2%", str(pa), str(pb), "null:"],
+                           capture_output=True, text=True)
+    count = (r.stderr or r.stdout).strip().split(" ")[0]
+    try:
+        return r.returncode in (0, 1) and float(count) == 0
+    except ValueError:
+        return False  # 尺寸不同等无法比较的情况
+
+
+def hard_issues(text: str) -> list[str]:
+    """系统硬性规则（与项目无关）：用 check_svg 检查，色板放行文中全部颜色，只留结构性问题。"""
+    with tempfile.TemporaryDirectory() as td:
+        f = Path(td) / "x.svg"
+        f.write_text(text, encoding="utf-8")
+        errors: list[str] = []
+        logo.check_svg(f, {c.upper() for c in logo.HEX_IN_TEXT_RE.findall(text)}, errors, [])
+    return [e.split(": ", 1)[-1] for e in errors]
+
+
+# ---------------------------------------------------------------------------
+# 分析：格式整理、硬性问题、项目规范冲突，以及用户给出的处理
+# ---------------------------------------------------------------------------
+def parse_resolves(items: list[str] | None) -> dict[str, tuple[str, str]]:
+    out = {}
+    for item in items or []:
+        m = RESOLVE_RE.match(item.strip())
+        if not m:
+            raise logo.LogoError(f"--resolve 写法为 #RRGGBB=palette:色名（加入色板）或 #RRGGBB=map:色名（换成色板色），收到：{item}")
+        out[m.group(1).upper()] = (m.group(2), m.group(3))
+    return out
+
+
+def analyze(p: "logo.Project", data: bytes, kind: str, init: bool, resolves: dict, as_concept: bool) -> dict:
+    """分析导入文件，返回报告：format（格式整理）、hard（硬性问题）、conflicts（色板外颜色）、unresolved、final 等。"""
+    rep: dict = {"type": kind, "format": [], "hard": [], "conflicts": [], "unresolved": [], "palette_add": {},
+                 "mapped": {}, "final": None, "as_concept": as_concept or kind != "svg"}
+    if kind != "svg":
+        return rep
+    text = data.decode("utf-8", errors="replace").lstrip("﻿")
+    if ENTITY_RE.search(text):
+        raise logo.LogoError("SVG 含 DOCTYPE / ENTITY 声明（可被用来做实体膨胀攻击），拒绝导入；请来源去掉后重交")
+    try:
+        normalized, changes = normalize(text)
+    except ET.ParseError as e:
+        raise logo.LogoError(f"SVG 解析失败：{e}")
+    if changes and not same_look(text, normalized):
+        rep["hard"].append("格式整理后外观与原件不一致（可能依赖宽高比例或不支持的样式），未做整理")
+        normalized = text
+    else:
+        rep["format"] = changes
+    rep["hard"] += hard_issues(normalized)
+    if rep["as_concept"]:
+        return rep
+    colors = list(dict.fromkeys(c.upper() for c in logo.HEX_IN_TEXT_RE.findall(normalized)))
+    palette = {} if init else p.palette
+    by_value = {v: k for k, v in palette.items()}
+    rep["conflicts"] = [c for c in colors if c not in by_value]
+    extra = [c for c in resolves if c not in rep["conflicts"]]
+    if extra:
+        raise logo.LogoError(f"这些颜色不存在冲突，无需处理：{', '.join(extra)}")
+    used_names = set(palette)
+    for c in rep["conflicts"]:
+        how = resolves.get(c)
+        if init and not how:  # 初始化：图的颜色就是色板，未命名的自动起名
+            n = 1
+            while f"color_{n}" in used_names:
+                n += 1
+            how = ("palette", f"color_{n}")
+        if not how:
+            rep["unresolved"].append(c)
+            continue
+        action, name = how
+        if action == "map":
+            if init:
+                raise logo.LogoError("初始化项目时色板就取自图中的颜色，不能 map；用 palette:色名 给颜色起名")
+            if name not in palette:
+                raise logo.LogoError(f"map:{name} 不是色板中的色名（可选：{', '.join(palette)}）")
+            rep["mapped"][c] = (name, palette[name])
+        else:
+            if name in used_names:
+                raise logo.LogoError(f"色名 {name} 已存在，请换一个")
+            used_names.add(name)
+            rep["palette_add"][name] = c
+    if not rep["unresolved"] and not rep["hard"]:
+        final = logo.HEX_IN_TEXT_RE.sub(lambda m: rep["mapped"].get(m.group(0).upper(), (None, m.group(0)))[1], normalized)
+        rep["final"] = final
+    rep["normalized"] = normalized
+    return rep
+
+
+def preview_key(data: bytes, a) -> str:
+    """预演与正式导入须完全相同：文件内容与全部决定参数。"""
+    fields = [hashlib.sha256(data).hexdigest(), a.project, bool(a.init), bool(a.as_concept), a.direction or "",
+              a.new_direction or "", sorted(a.resolve or [])]
+    return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def previewed() -> dict:
+    try:
+        return json.loads((PREVIEWS / "previewed.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def write_preview(name: str, original: bytes, kind: str, rep: dict) -> Path:
+    """原件与导入结果的并排对比图，供 Agent 发给用户确认。"""
+    out = PREVIEWS / f"{name}-preview.png"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        src = t / f"original.{kind}"
+        src.write_bytes(original)
+        a = logo.render(src, t / "a.png", 480, 480) if kind == "svg" else src
+        cells = ["-label", "original", str(a)]
+        if kind == "svg" and rep.get("final"):
+            b = logo.render_text(rep["final"], t / "b.png", 480)
+            cells += ["-label", "imported", str(b)]
+        logo.run(["magick", "montage", *cells, "-tile", f"{len(cells) // 3}x1", "-geometry", "480x480+12+12",
+                  "-background", "#DDDDDD", str(out)])
+    return out
+
+
+def report_lines(rep: dict, init: bool) -> list[str]:
+    lines = []
+    if rep["type"] != "svg":
+        lines.append("位图：只能登记为概念图（设计依据），之后由 Agent 重绘为 SVG 版本")
+    if rep["format"]:
+        lines.append("格式整理（外观不变，已逐像素核对）：" + "；".join(rep["format"]))
+    for h in rep["hard"]:
+        lines.append(f"✗ 系统硬性规则：{h}")
+    if rep["hard"] and not rep["as_concept"]:
+        lines.append("  → 这些问题项目规范也改不了：只能 --as-concept 登记为概念图，或请来源修正后重交")
+    if rep["palette_add"]:
+        lines.append(("色板（取自图中颜色）：" if init else "改项目规范——加入色板：")
+                     + "、".join(f"{k} {v}" for k, v in rep["palette_add"].items()))
+    if rep["mapped"]:
+        lines.append("改图片——换成色板色：" + "、".join(f"{c}→{n}（{v}）" for c, (n, v) in rep["mapped"].items()))
+    if rep["unresolved"]:
+        lines.append("需要用户决定（颜色不在色板中）：" + "、".join(rep["unresolved"]))
+        lines.append("  → 逐个问用户：改图片 --resolve \"#RRGGBB=map:色板色名\"，或改项目规范 --resolve \"#RRGGBB=palette:新色名\"")
+    return lines
+
+
+# ---------------------------------------------------------------------------
+# 写入
+# ---------------------------------------------------------------------------
+def terms_text(terms: str) -> str:
+    return UNCONFIRMED if terms.strip().lower() in UNKNOWN_TERMS else terms.strip()
+
+
+def apply_palette(p: "logo.Project", add: dict[str, str], init: bool) -> None:
+    """改项目规范：新颜色加入色板；初始化时色板与配色模式整体取自图中颜色，App 底色取第一个颜色。"""
+    import series  # 延迟导入：series.py 依赖 logo
+    text = p.toml_path.read_text(encoding="utf-8")
+    if init:
+        if "[palette]\n" not in text or "[fonts]\n" not in text:
+            raise logo.LogoError("project.toml 结构与模板不同，无法初始化色板；请手工整理后重试")
+        lines = ["# 色板取自导入的设计原件（./logo import --init），可改色名", "[palette]"]
+        lines += [f"{k} = {series.toml_value(v)}" for k, v in add.items()]
+        lines += ["", "[color_modes]", 'modes = ["color", "mono", "reversed"]', "[color_modes.mono]"]
+        lines += [f'{k} = "#000000"' for k in add] + ["[color_modes.reversed]"] + [f'{k} = "#FFFFFF"' for k in add]
+        start, end = text.index("[palette]\n"), text.index("[fonts]\n")
+        text = text[:start] + "\n".join(lines) + "\n\n" + text[end:]
+        text = re.sub(r"^app_background = .*$", f"app_background = {series.toml_value(next(iter(add)))}", text,
+                      count=1, flags=re.M)
+    else:
+        for k, v in add.items():
+            text = series.toml_set(text, "palette", k, series.toml_value(v))
+    p.toml_path.write_text(text, encoding="utf-8")
+
+
+def fill_line(text: str, placeholder: str, value: str) -> str:
+    """把模板占位行（整行）替换为内容。"""
+    return re.sub(rf"^[ \t]*{re.escape(placeholder.strip())}[ \t]*$", lambda _: value, text, count=1, flags=re.M)
+
+
+def write_decision(p: "logo.Project", name: str, meta: dict, rep: dict, note: str) -> Path:
+    """冲突的处理是关键取舍：自动写好事实（冲突、两个选项、用户的选择与原话）的决策记录。"""
+    ddir = p.dir / "decisions"
+    nums = [int(m.group(1)) for f in ddir.glob("*.md") if (m := re.match(r"(\d{3})-", f.name))]
+    num = f"{max(nums, default=0) + 1:03d}"
+    f = ddir / f"{num}-import-{name}.md"
+    text = logo.render_template("decision.md", num=num, title=f"导入 {name} 的冲突处理", date=logo.today())
+    conflicts = "、".join(list(rep["palette_add"].values()) + list(rep["mapped"]))
+    chosen = "；".join(report_lines({**rep, "unresolved": [], "hard": [], "format": [], "type": "svg"}, False))
+    text = fill_line(text, "（在什么情况下需要做这个决定）",
+                     f"导入外部设计 {name}（来源：{meta['source']}，{KINDS[meta['kind']]}）时，颜色 {conflicts} 不在项目色板中。")
+    text = fill_line(text, "1. **选项 A**:", "1. **选项 A**: 改图片——把这些颜色换成现有色板颜色，保持项目规范不变")
+    text = fill_line(text, "2. **选项 B**:", "2. **选项 B**: 改项目规范——把这些颜色加入色板，保持图片原样")
+    text = fill_line(text, "（选择了哪个，为什么，有哪些取舍）", f"用户选择：{chosen}。用户意见：{note}")
+    logo.write_new(f, text)
+    (ddir / ".gitkeep").unlink(missing_ok=True)
+    return f
+
+
+def archive_original(src: Path) -> Path:
+    """原件留在本机 .cache/imported/<日期>/（不进仓库）；来自收件箱的连同来源说明一起移走。"""
+    dest_dir = IMPORTED / logo.today()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest, n = dest_dir / src.name, 2
+    while dest.exists():
+        dest, n = dest_dir / f"{src.stem}-{n}{src.suffix}", n + 1
+    in_inbox = INBOX in src.resolve().parents
+    (shutil.move if in_inbox else shutil.copy2)(str(src), str(dest))
+    side = src.with_name(src.name + SIDECAR)
+    if in_inbox and side.exists():
+        shutil.move(str(side), str(dest.with_name(dest.name + SIDECAR)))
+    return dest
+
+
+def cmd_import(a) -> None:
+    src = Path(a.file)
+    if not src.exists() and (INBOX / a.file).exists():
+        src = INBOX / a.file
+    data, kind = read_source(src)
+    meta = sidecar(src)
+    if src.resolve().parent.parent == INBOX.resolve() and "project" not in meta:
+        meta["project"] = src.resolve().parent.name  # inbox/<项目>/ 下的文件默认加入该项目
+    source_note = " ".join(meta.pop("note", "").split())  # 来源方写的说明：只作资料记录，不代表用户意见
+    # 使用条款与“候选/成品”是用户的确认与判断：只能来自本次会话；来源方写的只作参考
+    claims = {k: meta.pop(k) for k in ("terms", "kind") if meta.get(k)}
+    for k in ("project", "source", "prompt", "terms", "kind", "direction", "name"):
+        if getattr(a, k, None):
+            meta[k] = getattr(a, k)
+    a.project = meta.get("project")
+    if not a.project:
+        raise logo.LogoError("须指定 --project（加入哪个项目；新项目请先完成需求访谈并 ./logo new）")
+    a.direction = a.direction or meta.get("direction")
+    p = logo.Project(a.project)
+    name = logo.to_slug(meta.get("name") or src.stem)
+    init = bool(a.init)
+    if init and (any(p.versions_in(d) for d in p.directions()) or p.releases()):
+        raise logo.LogoError(f"{p.slug} 已开始设计，不能用 --init 初始化；请按已有项目导入（冲突逐项决定）")
+    resolves = parse_resolves(a.resolve)
+    rep = analyze(p, data, kind, init, resolves, bool(a.as_concept))
+    key = preview_key(data, a)
+    if a.analyze:
+        out = write_preview(name, data, kind, rep)
+        print(f"导入预演：{src.name}（{kind}，{len(data)} 字节）→ {p.slug}" + ("（初始化项目）" if init else ""))
+        for line in report_lines(rep, init) or ["与项目规范没有冲突，可原样导入"]:
+            print(f"  {line}")
+        print(f"对比图：{logo.rel(out)}（左：原件；右：导入结果）——请发给用户确认后再正式导入")
+        if claims:
+            print("来源方声明（仅供参考，须向用户确认）：" + "；".join(
+                f"{'使用条款' if k == 'terms' else '类型'} {v}" for k, v in claims.items()))
+        if not rep["unresolved"] and (rep["final"] or rep["as_concept"]) and not (rep["hard"] and not rep["as_concept"]):
+            store = previewed()
+            store[key] = logo.today()
+            PREVIEWS.mkdir(parents=True, exist_ok=True)
+            (PREVIEWS / "previewed.json").write_text(json.dumps(store), encoding="utf-8")
+            print("用户确认后，去掉 --analyze、其余参数不变，补上用户确认的 --terms 与 --kind"
+                  "（--source / --prompt 来源说明中已有的可省略）")
+        return
+    if key not in previewed():
+        raise logo.LogoError("请先用同样的文件与参数加上 --analyze 预演，把对比图发给用户确认，再正式导入")
+    missing = [k for k in ("source", "terms", "kind") if not meta.get(k)]
+    if missing:
+        raise logo.LogoError(f"须写明 {', '.join('--' + k for k in missing)}（向用户问清：来自哪个工具 / Agent、"
+                             "使用条款或版权、候选还是成品；来源说明里的条款与类型只作参考，须由用户确认）")
+    if meta["kind"] not in KINDS:
+        raise logo.LogoError("--kind 只能是 candidate（候选）或 final（成品）")
+    if rep["hard"] and not rep["as_concept"]:
+        raise logo.LogoError("存在系统硬性规则问题，不能成为版本；用 --as-concept 只登记为概念图，或请来源修正后重交")
+    changes_spec = bool(rep["palette_add"] or rep["mapped"]) and not init
+    note = " ".join((a.note or "").split())  # 用户的原话：只能来自本次会话的 --note
+    if changes_spec and not note:
+        raise logo.LogoError("处理了与项目规范的冲突，须用 --note 写明用户的原话或要点（写进决策记录）")
+    import series  # 延迟导入：series.py 依赖 logo
+    m = series.membership(p)
+    inheriting_sub = bool(m and m.get("role") == "sub"
+                          and series.load_series(m["id"]).get("architecture") in series.INHERITING)
+    if rep["palette_add"] and inheriting_sub and not init and a.series_rule not in ("exception", "update"):
+        raise logo.LogoError("子品牌新增颜色会偏离母品牌的色板：先问用户是作为子品牌的例外（--series-rule exception），"
+                             "还是更新系列规则（--series-rule update）")
+    if not rep["as_concept"] and not (a.new_direction or a.direction):
+        raise logo.LogoError("须指定放入哪个方向：--direction <字母>，或 --new-direction <英文短名>")
+    ddir = p.direction(a.direction) if not rep["as_concept"] and not a.new_direction else None  # 先校验
+    terms = terms_text(meta["terms"])
+    with tempfile.TemporaryDirectory() as td:
+        if kind == "svg":
+            image = logo.render(src, Path(td) / f"{name}.png", 800, 800)  # 原件渲染存档（概念图须为位图）
+        else:
+            image = Path(td) / f"{name}.{kind}"
+            logo.run(["magick", str(src), "-strip", str(image)])  # 去掉 EXIF / GPS 等元数据
+        # 渲染成功后才开始写入：新方向（含访谈门槛）→ 概念图 → 版本 → 色板 → 决策 → 系列记录
+        if not rep["as_concept"] and a.new_direction:
+            ddir = logo.create_direction(p, a.new_direction_letter or next_letter(p), a.new_direction, a.title)
+        extra = (f"\n## 导入来源\n- **原件**: `{src.name}`（sha256 {hashlib.sha256(data).hexdigest()}，原件保留在本机 "
+                 f".cache/imported/）\n- **来源**: {meta['source']}\n- **使用条款**: {terms}\n"
+                 f"- **类型**: {KINDS[meta['kind']]}\n- **导入日期**: {logo.today()}\n"
+                 + "".join(f"- **来源方声明的{'使用条款' if k == 'terms' else '类型'}**（仅作参考）: {v}\n"
+                           for k, v in claims.items())
+                 + (f"- **来源方说明**（仅作资料）: {source_note}\n" if source_note else "")
+                 + (f"- **用户意见**: {note}\n" if note else ""))
+        stem, dst = logo.register_concept(p, image, name, meta.get("prompt") or "（未提供）", meta["source"], extra)
+    md = p.dir / "concepts" / f"{stem}.md"
+    print(f"已登记原件为概念图：{logo.rel(dst)}")
+    if rep["palette_add"]:
+        apply_palette(p, rep["palette_add"], init)
+        print(("已用图中颜色初始化色板：" if init else "已加入色板：") + "、".join(f"{k} {v}" for k, v in rep["palette_add"].items()))
+    if ddir:
+        summary = [f"外部导入：`{src.name}`（来源：{meta['source']}；{KINDS[meta['kind']]}），原件见 concepts/{stem}.md。",
+                   f"- **使用条款**: {terms}"]
+        summary += [f"- {line}" for line in report_lines(rep, init)]
+        vid, vdir = logo.create_version(p, ddir, rep["final"], f"外部导入（concepts/{stem}.md）", f"concepts/{stem}.md")
+        notes = vdir / "notes.md"
+        notes.write_text(fill_line(notes.read_text(encoding="utf-8"), "（这个版本做了什么设计或修改）", "\n".join(summary)),
+                         encoding="utf-8")
+        md.write_text(fill_line(md.read_text(encoding="utf-8"), "（从这张图中我们提取什么元素进入 SVG 矢量化）",
+                                f"外部导入的设计原件，经格式整理后成为 {vid}（见下方“导入来源”）。"), encoding="utf-8")
+        print(f"已创建版本：{vid} → {logo.rel(vdir)}（请与用户一起补写 notes.md 的“理念体现”）")
+    if changes_spec:
+        d = write_decision(p, name, meta, rep, note)
+        print(f"已写入决策记录：{logo.rel(d)}")
+    if rep["palette_add"] and inheriting_sub and not init:
+        label = "子品牌例外" if a.series_rule == "exception" else "系列规则调整"
+        rmd = series.SERIES_DIR / m["id"] / "series.md"
+        if rmd.exists():
+            rmd.write_text(rmd.read_text(encoding="utf-8").rstrip("\n") + (
+                f"\n\n### {logo.today()} {label}：{p.slug} 导入 {name} 新增颜色\n"
+                f"- **颜色**：{'、'.join(f'{k} {v}' for k, v in rep['palette_add'].items())}\n"
+                f"- **用户意见**：{note}\n"), encoding="utf-8")
+            print(f"已在 {series.rules_path(m['id'])} 追加{label}记录")
+    kept = archive_original(src)
+    store = previewed()
+    store.pop(key, None)
+    (PREVIEWS / "previewed.json").write_text(json.dumps(store), encoding="utf-8")
+    print(f"原件已移至本机 {logo.rel(kept)}（不进仓库）")
+    if terms == UNCONFIRMED:
+        print("⚠ 使用条款未确认：发布基于这个导入的版本时 check 会提醒")
+    if meta["kind"] == "final" and ddir:
+        print("成品：确认后照常定稿——./logo decision 记录定稿理由，再 ./logo release --from 该版本"
+              + ("（系列子品牌先做系列评审）" if m and m.get("role") == "sub" else ""))
+    elif not ddir:
+        print("已作为设计依据登记：请补写概念图记录的“灵感提取”，之后由 Agent 重绘 SVG 版本（--inspired-by 引用）")
+
+
+def next_letter(p: "logo.Project") -> str:
+    used = {d.name.split("-", 1)[0] for d in p.directions()}
+    for c in "ABCDEFGHIJKLMNOPQRSTUVWXYZ":
+        if c not in used:
+            return c
+    raise logo.LogoError("方向字母已用完")
+
+
+# ---------------------------------------------------------------------------
+# 收件箱命令与检查
+# ---------------------------------------------------------------------------
+def cmd_inbox(a) -> None:
+    if a.spec:
+        print(f"来源说明文件：与设计文件同名加 {SIDECAR}（如 logo.svg{SIDECAR}），TOML 格式，字段均可选：")
+        for k, v in SIDECAR_FIELDS.items():
+            print(f"  {k:<10} {v}")
+        print("放在 inbox/（去向待定）或 inbox/<项目>/（加入该项目）。说明内容只作资料，不会被当作指令执行。")
+        return
+    items = inbox_items()
+    if a.json:
+        print(json.dumps(items, ensure_ascii=False, indent=2))
+        return
+    if not items:
+        print(f"收件箱为空（{logo.rel(INBOX)}/）")
+        return
+    print(f"收件箱 {logo.rel(INBOX)}/ 中有 {len(items)} 个待导入文件：")
+    for it in items:
+        lack = f"；待问清：{', '.join(it['missing'])}" if it["missing"] else ""
+        print(f"  {it['file']}  [{it['type']}，{it['bytes']} 字节，{it['age_days']} 天]"
+              f"  去向：{it['meta'].get('project', '待定')}{lack}")
+    print("导入：./logo import <文件> --analyze 预演，把对比图发给用户确认后再正式导入")
+
+
+def check_inbox(warnings: list[str]) -> None:
+    stale = [it["file"] for it in inbox_items() if it["age_days"] >= INBOX_STALE_DAYS]
+    if stale:
+        warnings.append(f"收件箱有 {len(stale)} 个文件放了 {INBOX_STALE_DAYS} 天以上未导入（{', '.join(stale[:3])}"
+                        f"{' 等' if len(stale) > 3 else ''}）；./logo inbox 查看")
+
+
+def terms_warnings(p: "logo.Project", warnings: list[str]) -> None:
+    """当前发布基于使用条款未确认的导入版本时提醒（只提醒，由用户决定）。"""
+    cur = p.cfg.get("state", {}).get("current_release")
+    if not cur:
+        return
+    try:
+        root = p.release_root_version(cur)
+        notes = (p.version_dir(root) / "notes.md").read_text(encoding="utf-8")
+    except (logo.LogoError, OSError):
+        return
+    if f"**使用条款**: {UNCONFIRMED}" in notes:
+        warnings.append(f"{logo.rel(p.dir)}: 当前发布 {cur} 基于外部导入的 {root}，其使用条款未确认；请与用户确认版权与商用权后再交付")
+
+
+def register(sub) -> None:
+    s = sub.add_parser("import", help="导入外部生成的 Logo（SVG 或位图）：先 --analyze 预演，冲突逐项由用户决定")
+    s.add_argument("file", help="文件路径，或收件箱 inbox/ 中的相对路径")
+    s.add_argument("--project", help="加入的项目（inbox/<项目>/ 下的文件可省略）")
+    s.add_argument("--analyze", action="store_true", help="只预演：生成对比图与冲突报告，不写入")
+    s.add_argument("--init", action="store_true", help="以这张图初始化项目（项目尚未开始设计）：色板取自图中颜色")
+    s.add_argument("--as-concept", action="store_true", help="只登记为概念图（设计依据），不建版本")
+    s.add_argument("--direction", help="放入已有方向，如 A")
+    s.add_argument("--new-direction", help="新建方向放入，给英文短名")
+    s.add_argument("--new-direction-letter", help="新方向的字母（默认下一个可用字母）")
+    s.add_argument("--title", help="新方向的中文标题")
+    s.add_argument("--resolve", action="append", metavar="#RRGGBB=palette:色名|map:色名",
+                   help="色板外颜色的处理（逐个问用户）：palette 改项目规范（加入色板）；map 改图片（换成色板色）")
+    s.add_argument("--series-rule", choices=["exception", "update"],
+                   help="系列子品牌新增颜色时：作为子品牌例外，或更新系列规则（先问用户）")
+    s.add_argument("--source", help="来源：哪个工具 / Agent / 模型")
+    s.add_argument("--prompt", help="生成时的提示词")
+    s.add_argument("--terms", help="使用条款或版权（不清楚就写“不清楚”，会被标为未确认）")
+    s.add_argument("--kind", choices=list(KINDS), help="candidate 候选 / final 成品")
+    s.add_argument("--name", help="英文短名（默认取文件名）")
+    s.add_argument("--note", help="用户的原话或要点（处理了冲突时必填）")
+    s.set_defaults(fn=cmd_import)
+    s = sub.add_parser("inbox", help="查看收件箱 inbox/ 中待导入的文件")
+    s.add_argument("--json", action="store_true", help="以 JSON 输出（供 Agent 读取）")
+    s.add_argument("--spec", action="store_true", help="打印来源说明文件 <文件>.import.toml 的格式")
+    s.set_defaults(fn=cmd_inbox)
