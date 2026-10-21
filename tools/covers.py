@@ -415,6 +415,26 @@ def check_family_covers(errors: list[str], warnings: list[str], staged: bool = F
             check_cover(fam, cdir, errors, warnings, staged)
 
 
+def skeleton_notes(cdir: Path, c: dict) -> list[str]:
+    """套用骨架的封面：内容仍是骨架原文、骨架之后被修改（不渲染；check 与 status 共用）。"""
+    out = []
+    ratios = load_config()["ratios"]
+    for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):
+        try:
+            root = ET.parse(svg).getroot()
+        except ET.ParseError:
+            continue  # 解析失败由 check 报告
+        body = next((el for el in root.iter() if el.get("id") == "content"), None)
+        if body is not None and body.get(SKELETON_ATTR) and len(body) and content_print(body) == body.get(SKELETON_ATTR):
+            out.append(f"{logo.rel(svg)}: 关键内容仍是骨架原文（来自 {c.get('skeleton')}）；请按 cover.md 替换标题等文案")
+    for name, sha in c.get("skeleton_sha", {}).items():  # 套用后骨架又被修改：提醒对照调整
+        src = skeleton_dir(c.get("skeleton", "")) / name
+        if not src.exists() or skeleton_print(src.read_text(encoding="utf-8")) != sha:
+            out.append(f"{logo.rel(cdir)}: 所套用的骨架 {c.get('skeleton')}/{name} 已{'删除' if not src.exists() else '修改'}，"
+                       "可对照调整本封面")
+    return out
+
+
 def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list[str], staged: bool = False) -> None:
     """检查一个封面：元数据、画幅稿规则、Logo 指纹、素材登记，以及校对提醒（提交检查与导出共用）。"""
     plats, ratios = platforms_by_id(), load_config()["ratios"]
@@ -481,15 +501,7 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
             if not found and g is not None and g.get("data-release") != c.get("release"):
                 errors.append(f"{logo.rel(svg)}: Logo 标注的发布 {g.get('data-release')} 与 cover.toml 记录的 "
                               f"{c.get('release')} 不一致（请用 ./logo cover sync-logo 更新，不要手改）")
-            body = next((el for el in root.iter() if el.get("id") == "content"), None)
-            if body is not None and body.get(SKELETON_ATTR) and len(body) and content_print(body) == body.get(SKELETON_ATTR):
-                warnings.append(f"{logo.rel(svg)}: 关键内容仍是骨架原文（来自 {c.get('skeleton')}）；"
-                                "请按 cover.md 替换标题等文案")
-    for name, sha in c.get("skeleton_sha", {}).items():  # 套用后骨架又被修改：提醒对照调整
-        src = skeleton_dir(c.get("skeleton", "")) / name
-        if not src.exists() or skeleton_print(src.read_text(encoding="utf-8")) != sha:
-            warnings.append(f"{where}: 所套用的骨架 {c.get('skeleton')}/{name} 已{'删除' if not src.exists() else '修改'}，"
-                            "可对照调整本封面")
+    warnings.extend(skeleton_notes(cdir, c))
     if not any(e.startswith(where) for e in errors):  # 已有结构错误时，渲染类提醒不可靠，跳过
         warnings.extend(cover_warnings(p, cdir))
 

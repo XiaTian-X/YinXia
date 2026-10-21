@@ -61,6 +61,7 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 
 | 命令 | 作用 |
 |---|---|
+| `./logo status [项目] [--json]` | 各项目进度与待办（访谈、未提交、设计、系列、交付、封面、收件箱），新会话先看 |
 | `./logo new <slug> --name 名称 [--series 系列 --role master\|sub] [--targets svg,ios]` | 按需求访谈结果新建独立或系列项目 |
 | `./logo inbox [--json\|--spec]` | 查看收件箱 `inbox/`（外部设计的待导入文件，不进任何仓库） |
 | `./logo handoff brief <项目> [--plain]` / `skill <目录>` | 给其他 Agent 的说明书（需求、色板、SVG 要求、交付格式）/ 通用 skill |
