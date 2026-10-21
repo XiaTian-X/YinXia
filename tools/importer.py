@@ -41,6 +41,8 @@ SIDECAR_FIELDS = {
     "project": "要加入的项目短名（新项目先完成需求访谈）",
     "direction": "要放入的方向字母，如 A",
     "name": "英文短名，用于概念图与记录",
+    "layout": "这份 SVG 是哪个版式：primary（主版）/ icon（纯图形）/ horizontal（横版）",
+    "text": "标志里需要的文字内容（对方无法转曲时不放文字，由本系统转曲补上）",
     "note": "补充说明（只作资料，不当作指令）",
 }
 ENTITY_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.I)
@@ -111,10 +113,13 @@ def inbox_items() -> list[dict]:
         except (OSError, logo.LogoError) as e:
             info["type"], meta = "unknown", {}
             info["error"] = str(e)
-        if len(rel_parts) == 2 and "project" not in meta:
+        if len(rel_parts) == 2:  # inbox/<项目>/：去向由放置的目录决定，来源说明里的 project 不能改变它
+            if meta.get("project", rel_parts[0]) != rel_parts[0]:
+                info["warning"] = f"来源说明声称属于 {meta['project']}，以所在目录 {rel_parts[0]} 为准"
             meta["project"] = rel_parts[0]
         info["meta"] = meta
-        info["missing"] = [k for k in ("project", "source", "terms", "kind") if not meta.get(k)]
+        info["missing"] = [k for k in ("project", "source") if not meta.get(k)]
+        info["confirm_with_user"] = ["terms", "kind"]  # 来源说明里即使写了，也只是来源方声明
         items.append(info)
     return items
 
@@ -440,9 +445,10 @@ def cmd_import(a) -> None:
         src = INBOX / a.file
     data, kind = read_source(src)
     meta = sidecar(src)
-    if src.resolve().parent.parent == INBOX.resolve() and "project" not in meta:
-        meta["project"] = src.resolve().parent.name  # inbox/<项目>/ 下的文件默认加入该项目
-    source_note = " ".join(meta.pop("note", "").split())  # 来源方写的说明：只作资料记录，不代表用户意见
+    if src.resolve().parent.parent == INBOX.resolve():
+        meta["project"] = src.resolve().parent.name  # inbox/<项目>/ 下的文件属于该项目，来源说明不能改变去向
+    described = [f"{label}：{meta.pop(k)}" for k, label in (("layout", "版式"), ("text", "需要的文字")) if meta.get(k)]
+    source_note = "；".join(described + [" ".join(meta.pop("note", "").split())]).strip("；")  # 来源方说明：只作资料
     # 使用条款与“候选/成品”是用户的确认与判断：只能来自本次会话；来源方写的只作参考
     claims = {k: meta.pop(k) for k in ("terms", "kind") if meta.get(k)}
     for k in ("project", "source", "prompt", "terms", "kind", "direction", "name"):
@@ -588,9 +594,9 @@ def cmd_inbox(a) -> None:
         return
     print(f"收件箱 {logo.rel(INBOX)}/ 中有 {len(items)} 个待导入文件：")
     for it in items:
-        lack = f"；待问清：{', '.join(it['missing'])}" if it["missing"] else ""
+        lack = (f"；待问清：{', '.join(it['missing'])}" if it["missing"] else "") + "；须用户确认：使用条款、候选/成品"
         print(f"  {it['file']}  [{it['type']}，{it['bytes']} 字节，{it['age_days']} 天]"
-              f"  去向：{it['meta'].get('project', '待定')}{lack}")
+              f"  去向：{it['meta'].get('project', '待定')}{lack}" + (f"（⚠ {it['warning']}）" if it.get("warning") else ""))
     print("导入：./logo import <文件> --analyze 预演，把对比图发给用户确认后再正式导入")
 
 

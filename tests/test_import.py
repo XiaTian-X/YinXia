@@ -189,12 +189,17 @@ class ImportTest(unittest.TestCase):
         f = self.put("a.svg", CLEAN, side="")
         items = json.loads(self.ws.logo("inbox", "--json").stdout)
         self.assertEqual((items[0]["file"], items[0]["type"], items[0]["meta"]["project"]), ("demo/a.svg", "svg", "demo"))
-        self.assertEqual(items[0]["missing"], ["source", "terms", "kind"])
+        self.assertEqual(items[0]["missing"], ["source"])
+        self.assertEqual(items[0]["confirm_with_user"], ["terms", "kind"])  # 条款与类型始终须用户确认
         self.assertNotIn("收件箱有", self.ws.logo("check").stdout)
         old = f.stat().st_mtime - 8 * 86400
         os.utime(f, (old, old))
         self.assertIn("收件箱有 1 个文件放了 7 天以上未导入", self.ws.logo("check").stdout)
         self.assertIn("kind", self.ws.logo("inbox", "--spec").stdout)
+        (self.inbox / "a.svg.import.toml").write_text('project = "elsewhere"\n', encoding="utf-8")
+        item = json.loads(self.ws.logo("inbox", "--json").stdout)[0]
+        self.assertEqual(item["meta"]["project"], "demo")  # 去向以所在目录为准
+        self.assertIn("以所在目录 demo 为准", item["warning"])
 
     def test_unsafe_inputs(self):
         ws = self.ws

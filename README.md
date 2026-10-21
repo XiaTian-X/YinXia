@@ -63,6 +63,8 @@ dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于
 |---|---|
 | `./logo new <slug> --name 名称 [--series 系列 --role master\|sub] [--targets svg,ios]` | 按需求访谈结果新建独立或系列项目 |
 | `./logo inbox [--json\|--spec]` | 查看收件箱 `inbox/`（外部设计的待导入文件，不进任何仓库） |
+| `./logo handoff brief <项目> [--plain]` / `skill <目录>` | 给其他 Agent 的说明书（需求、色板、SVG 要求、交付格式）/ 通用 skill |
+| `./logo handoff receive <文本> --project <项目>` / `validate` / `feedback` | 交接文本拆进收件箱（检测截断）/ 只读自查 / 生成给对方的修改意见 |
 | `./logo import <文件> --project <项目> … --analyze` | 导入外部生成的 Logo：先预演（对比图与冲突报告），冲突逐项决定后再正式导入 |
 | `./logo series [new\|add]` | 查看系列与成员 / 新建系列（统一型、背书型、独立型）/ 已有项目加入系列 |
 | `./logo series compare <系列> [--with 项目=版本]` | 系列对比图（彩色 / 单色 / 32px）与评审清单 |
@@ -154,6 +156,10 @@ brief.md 记录访谈结果（含“需求确认”），未填完时不能开�
 - **初始化**：`--init` 以导入的图初始化尚未开始设计的项目（色板取自图中颜色）。
 - **追溯**：原件渲染存档为概念图（记下 sha256、来源、使用条款，原件留在本机 `.cache/imported/`）；位图去掉 EXIF / GPS 等元数据，只作设计依据。
   使用条款“不清楚”的导入版本被发布时 `check` 会提醒；收件箱里放了 7 天以上的文件也会提醒。
+
+**交接**：让对方一开始就按规范交付，导入时几乎不用改。`./logo handoff brief <项目>` 生成说明书（能写文件的 Agent 直接放进收件箱；
+`--plain` 给只能对话的窗口，回复用交接文本：每个文件一段，“=== LOGODESIGN 交接 v1 · 文件 n/N ===”开头、“=== 结束 n/N ===”结尾，缺段或截断时不写入任何文件）；
+`handoff receive` 把交接文本原样拆进收件箱，之后照常预演、确认、导入；`handoff validate` 供对方只读自查；`handoff feedback` 把硬性问题（以及用户决定让对方改的颜色）写成对方能照做的修改意见。
 
 ## Logo 资产与封面
 

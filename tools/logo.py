@@ -2398,6 +2398,8 @@ def build_parser() -> argparse.ArgumentParser:
     series.register(sub)
     import importer  # 延迟导入：importer.py 依赖本模块
     importer.register(sub)
+    import handoff  # 延迟导入：handoff.py 依赖本模块
+    handoff.register(sub)
 
     s = sub.add_parser("index", help="重新生成 PROJECTS.md")
     s.set_defaults(fn=cmd_index)
