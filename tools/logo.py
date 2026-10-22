@@ -13,6 +13,7 @@ import datetime as dt
 import functools
 import hashlib
 import json
+import os
 import re
 import shutil
 import struct
@@ -692,6 +693,14 @@ def android_safe_warning(png: Path, ap: dict) -> str | None:
     return None
 
 
+def write_atomic(path: Path, text: str) -> None:
+    """先写临时文件再整体替换：并发读写（如并行测试）时不会读到写了一半的文件。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)
+
+
 def cached(key_text: str, compute):
     """按内容哈希缓存可 JSON 序列化的计算结果（渲染类检查用，内容不变时不重复渲染）。"""
     key = hashlib.sha256(key_text.encode("utf-8")).hexdigest()
@@ -701,8 +710,7 @@ def cached(key_text: str, compute):
         cache = {}
     if key not in cache:
         cache[key] = compute()
-        STRUCTURE_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        STRUCTURE_CACHE.write_text(json.dumps(cache), encoding="utf-8")
+        write_atomic(STRUCTURE_CACHE, json.dumps(cache))
     return cache[key]
 
 
@@ -1946,8 +1954,7 @@ def check_history(warnings: list[str]) -> None:
                 if not new.startswith(old.rstrip(b"\n")):
                     found.append(f"{commit[:7]} 改写了只追加文件 {path}")
         cache = {"key": key, "found": found}
-        HISTORY_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        HISTORY_CACHE.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+        write_atomic(HISTORY_CACHE, json.dumps(cache, ensure_ascii=False))
     found = cache["found"]
     if found:
         more = f" 等 {len(found)} 处" if len(found) > 5 else ""
@@ -2232,10 +2239,15 @@ def cmd_check(a) -> None:
 # 命令：selftest
 # ---------------------------------------------------------------------------
 def cmd_selftest(a) -> None:
-    """运行 tests/ 下的自动化测试（每个测试在临时目录中搭建隔离工作区，不触碰真实仓库）。"""
-    cmd = [sys.executable, "-m", "unittest", *(a.tests or ["discover", "-s", str(ROOT / "tests")])]
-    if a.verbose:
-        cmd.append("-v")
+    """运行 tests/ 下的自动化测试（每个测试在临时目录中搭建隔离工作区，不触碰真实仓库）。
+    默认多进程并行（tests/parallel.py）；-j 1 按原样串行，便于排查。"""
+    jobs = a.jobs if a.jobs is not None else min(os.cpu_count() or 1, 8)
+    if jobs <= 1:
+        cmd = [sys.executable, "-m", "unittest", *(a.tests or ["discover", "-s", str(ROOT / "tests")])]
+        if a.verbose:
+            cmd.append("-v")
+    else:
+        cmd = [sys.executable, str(ROOT / "tests" / "parallel.py"), "-j", str(jobs), *(["-v"] if a.verbose else []), *a.tests]
     sys.exit(subprocess.run(cmd, cwd=ROOT / "tests").returncode)
 
 
@@ -2390,6 +2402,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("selftest", help="运行系统自动化测试（修改系统后、提交前运行）")
     s.add_argument("tests", nargs="*", help="只运行指定测试，如 test_unit 或 test_guards.DocsTest")
     s.add_argument("-v", "--verbose", action="store_true")
+    s.add_argument("-j", "--jobs", type=int, help="并行进程数（默认 CPU 核心数，最多 8）；-j 1 串行运行，便于排查")
     s.set_defaults(fn=cmd_selftest)
 
     import covers  # 延迟导入：covers.py 依赖本模块

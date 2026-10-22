@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import atexit
 import os
 import re
 import shutil
@@ -48,12 +49,30 @@ def fill_doc(path: Path) -> None:
     path.write_text("\n".join(out) + "\n", encoding="utf-8")
 
 
+# 工作区模板：每个测试进程第一次完整搭建（复制系统文件、setup、两个仓库首次提交）后保存一份，
+# 之后的工作区直接复制模板（含两个仓库的 .git，Git 配置中只有相对路径），省去每次数秒的搭建
+_TEMPLATES: dict[bool, Path] = {}
+_TEMPLATE_DIR: Path | None = None
+
+
+def _template_dir() -> Path:
+    global _TEMPLATE_DIR
+    if _TEMPLATE_DIR is None:
+        _TEMPLATE_DIR = Path(tempfile.mkdtemp(prefix="logo-tpl-"))
+        atexit.register(shutil.rmtree, _TEMPLATE_DIR, True)
+    return _TEMPLATE_DIR
+
+
 class Workspace:
     """一个隔离的工作区。用法：ws = Workspace(); ...; ws.cleanup()"""
 
     def __init__(self, with_fonts: bool = False, setup: bool = True):
         self.tmp = Path(tempfile.mkdtemp(prefix="logo-test-"))
         self.root = self.tmp / "ws"
+        self.env = {**os.environ, **GIT_ENV}
+        if setup and with_fonts in _TEMPLATES:
+            shutil.copytree(_TEMPLATES[with_fonts], self.root, symlinks=True)  # .venv 仍是指向真实仓库的链接
+            return
         self.root.mkdir()
         # 已跟踪 + 未忽略的新文件：测试反映“即将提交”的工作区，而不只是上一次提交
         files = subprocess.run(["git", "-C", str(REPO), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
@@ -69,13 +88,15 @@ class Workspace:
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(f, dst)
         (self.root / ".venv").symlink_to(REPO / ".venv")
-        self.env = {**os.environ, **GIT_ENV}
         self.git("system", "init", "-q", "-b", "main")
         if setup:
             self.logo("setup")
             self.git("projects", "checkout", "-q", "-b", "main")
             assert self.commit("system", "init").returncode == 0, "系统仓库初始提交失败"
             assert self.commit("projects", "init").returncode == 0, "项目仓库初始提交失败"
+            template = _template_dir() / ("fonts" if with_fonts else "plain")
+            shutil.copytree(self.root, template, symlinks=True)
+            _TEMPLATES[with_fonts] = template
 
     @property
     def projects(self) -> Path:
