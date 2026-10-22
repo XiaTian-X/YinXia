@@ -852,6 +852,18 @@ def cmd_direction(a) -> None:
 
 def create_direction(p: Project, letter: str, name: str, title: str | None = None) -> Path:
     """新建方向（含需求访谈门槛）；./logo direction 与 ./logo import 共用。"""
+    letter = check_new_direction(p, letter)
+    d = p.dir / "directions" / f"{letter}-{to_slug(name)}"
+    write_new(d / "direction.md", render_template(
+        "direction.md", letter=letter, name=name, title=title or name, date=today()))
+    (p.dir / "directions" / ".gitkeep").unlink(missing_ok=True)
+    if p.cfg["state"].get("stage") == "briefing":
+        p.set_state(stage="exploring")
+    return d
+
+
+def check_new_direction(p: Project, letter: str) -> str:
+    """新建方向前的全部检查（不写入）：字母合法且未占用、需求访谈与系列规则已完成。返回大写字母。"""
     letter = letter.upper()
     if not re.fullmatch(r"[A-Z]", letter):
         raise LogoError("方向编号必须是单个大写字母，例如 A")
@@ -867,13 +879,7 @@ def create_direction(p: Project, letter: str, name: str, title: str | None = Non
         sid = series.membership(p)["id"]
         raise LogoError(f"系列规则 {series.rules_path(sid)} 还有 {len(holes)} 处未填写（如“{holes[0]}”）；"
                         "请先与用户确定系列规则，再开始设计系列成员")
-    d = p.dir / "directions" / f"{letter}-{to_slug(name)}"
-    write_new(d / "direction.md", render_template(
-        "direction.md", letter=letter, name=name, title=title or name, date=today()))
-    (p.dir / "directions" / ".gitkeep").unlink(missing_ok=True)
-    if p.cfg["state"].get("stage") == "briefing":
-        p.set_state(stage="exploring")
-    return d
+    return letter
 
 
 def cmd_version(a) -> None:
@@ -921,6 +927,27 @@ def cmd_concept(a) -> None:
     print(f"已登记概念图：{rel(dst)}（提示词记录于 {stem}.md）")
 
 
+def md_fence(text: str, lang: str = "text") -> str:
+    """多行内容放进 Markdown 代码块：围栏比内容里最长的反引号串更长，内容无法提前闭合代码块。"""
+    run = max((len(m) for m in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, run + 1)
+    return f"{fence}{lang}\n{text}\n{fence}"
+
+
+def md_inline(text: str, limit: int = 300) -> str:
+    """单行展示外部来源的文字：合并为一行、限制长度、用行内代码包起来（定界符比内容中的反引号串更长），
+    不会被当成标题、列表或其他 Markdown 结构。"""
+    s = " ".join(str(text).split())
+    if len(s) > limit:
+        s = s[:limit] + "…"
+    if not s:
+        return "（空）"
+    run = max((len(m) for m in re.findall(r"`+", s)), default=0)
+    fence = "`" * (run + 1)
+    pad = " " if run else ""
+    return f"{fence}{pad}{s}{pad}{fence}"
+
+
 def register_concept(p: Project, src: Path, name: str, prompt: str, tool: str, extra: str = "") -> tuple[str, Path]:
     """把图片登记为下一个编号的概念图（图片与同名 .md）；extra 追加在记录末尾。返回 (编号-短名, 图片路径)。"""
     cdir = p.dir / "concepts"
@@ -930,7 +957,7 @@ def register_concept(p: Project, src: Path, name: str, prompt: str, tool: str, e
     dst = cdir / f"{stem}{src.suffix.lower()}"
     shutil.copyfile(src, dst)
     write_new(cdir / f"{stem}.md", render_template(
-        "concept.md", id=stem, image=dst.name, prompt=prompt, tool=tool, date=today(),
+        "concept.md", id=stem, image=dst.name, prompt_block=md_fence(prompt), tool=tool, date=today(),
         sha256=sha256_file(dst)) + extra)
     (cdir / ".gitkeep").unlink(missing_ok=True)
     return stem, dst

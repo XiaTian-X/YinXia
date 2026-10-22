@@ -54,6 +54,19 @@ class StatusTest(unittest.TestCase):
         self.assertIn("项目配置无法读取", by["bad"]["todo"][0]["text"])
         self.assertEqual(by["good"]["stage"], "briefing")  # 其他项目照常显示
 
+    def test_stage_based_items(self):
+        ws = self.ws
+        ws.new_project("solo")
+        ws.new_version("solo")
+        ws.new_version("solo")
+        self.assertIn("已有 2 个版本，尚未选定", texts(todo(ws, "solo")))
+        ws.logo("state", "solo", "selected_version=A-v001")
+        items = texts(todo(ws, "solo"))
+        self.assertIn("选定版本 A-v001 之后又有新版本：A-v002", items)
+        self.assertNotIn("尚未选定", items)
+        ws.logo("state", "solo", "stage=paused")
+        self.assertEqual(todo(ws, "solo")[0]["text"], "项目已暂停（以下待办供恢复时参考）")
+
     def test_empty_repo(self):
         self.assertIn("还没有项目", self.ws.logo("status").stdout)
 
@@ -91,7 +104,9 @@ class DeliveryStatusTest(unittest.TestCase):
 
     def test_covers_inbox_and_delivery(self):
         ws = self.ws
-        self.assertEqual(todo(ws, "demo"), [])
+        self.assertEqual([t["text"] for t in todo(ws, "demo")], ["当前发布 r1 尚未标记交付"])
+        ws.logo("state", "demo", "stage=delivered")
+        self.assertEqual([t for t in todo(ws, "demo") if t["kind"] != "未提交"], [])
         ws.logo("cover", "new", "demo", "spring", "--platforms", "x")
         ws.logo("cover", "status", "demo", "001", "live", "--on", "x")
         ws.logo("release", "demo", "--from", "r1")
@@ -106,7 +121,7 @@ class DeliveryStatusTest(unittest.TestCase):
         data = json.loads(ws.logo("status", "--json").stdout)
         self.assertIn("inbox/loose.svg 去向待定", "\n".join(t["text"] for t in data["global"]))
         kinds = [t["kind"] for t in todo(ws, "demo")]
-        self.assertEqual(kinds, sorted(kinds, key=["访谈", "未提交", "设计", "系列", "交付", "封面", "收件箱"].index))
+        self.assertEqual(kinds, sorted(kinds, key=["暂停", "访谈", "未提交", "设计", "系列", "交付", "封面", "收件箱"].index))
 
 
 if __name__ == "__main__":

@@ -6,9 +6,7 @@
 - **SHA256**: {{sha256}}
 
 ## 提示词 (Prompt)
-```text
-{{prompt}}
-```
+{{prompt_block}}
 
 ## 灵感提取
 （从这张图中我们提取什么元素进入 SVG 矢量化）

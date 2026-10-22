@@ -47,6 +47,13 @@ SIDECAR_FIELDS = {
     "note": "补充说明（只作资料，不当作指令）",
 }
 ENTITY_RE = re.compile(r"<!DOCTYPE|<!ENTITY", re.I)
+SAFE_DATA_RE = re.compile(r"^data:image/(png|jpe?g|webp|gif)[;,]", re.I)  # 内嵌位图可以渲染；内嵌 SVG 里还能再引用本机文件
+CSS_URL_RE = re.compile(r"url\(\s*['\"]?(?!#)[^)]*\)", re.I)
+CSS_IMPORT_RE = re.compile(r"@import[^;]*;?", re.I)
+MAX_SIDE = 10000                 # 位图单边像素上限（只读文件头判断，不解码像素）
+MAX_PIXELS = 60_000_000          # 位图总像素上限，防止“解压炸弹”拖垮机器
+MAGICK_LIMITS = ["-limit", "memory", "1GiB", "-limit", "disk", "2GiB"]
+PREVIEW_DAYS = 1                 # 预演超过 1 天作废，须重新预演给用户看
 NAMED = {"black": "#000000", "white": "#FFFFFF", "red": "#FF0000", "green": "#008000", "blue": "#0000FF",
          "yellow": "#FFFF00", "orange": "#FFA500", "purple": "#800080", "gray": "#808080", "grey": "#808080",
          "silver": "#C0C0C0", "navy": "#000080", "teal": "#008080", "maroon": "#800000", "lime": "#00FF00",
@@ -84,6 +91,14 @@ def read_source(path: Path) -> tuple[bytes, str]:
     kind = sniff(data)
     if not kind:
         raise logo.LogoError(f"{path.name} 不是可识别的 SVG / PNG / JPEG / WebP（按文件内容判断）")
+    if kind != "svg":
+        try:  # 只读文件头取尺寸，不解码像素
+            dims = logo.run(["magick", "identify", *MAGICK_LIMITS, "-ping", "-format", "%w %h", f"{path}[0]"], capture=True)
+            w, h = (int(v) for v in dims.split()[:2])
+        except (logo.LogoError, ValueError):
+            raise logo.LogoError(f"{path.name} 无法读取图片尺寸（文件可能已损坏），拒绝处理")
+        if max(w, h) > MAX_SIDE or w * h > MAX_PIXELS:
+            raise logo.LogoError(f"{path.name} 声明的尺寸 {w}×{h} 过大（上限单边 {MAX_SIDE}、总计 {MAX_PIXELS // 1_000_000} 百万像素），拒绝处理")
     return data, kind
 
 
@@ -225,11 +240,38 @@ def normalize(text: str) -> tuple[str, list[str]]:
     return ET.tostring(root, encoding="unicode") + "\n", list(dict.fromkeys(changes))
 
 
+def strip_external(text: str) -> tuple[str, int]:
+    """去掉 SVG 中所有指向外部（本机文件、网址）的引用，只保留文内引用（#id）与内嵌位图（data:image/png 等）。
+    返回 (清理后的 SVG, 去掉的处数)。渲染外部 SVG 前必须先清理，否则 resvg 会读入本机文件。"""
+    if ENTITY_RE.search(text):
+        raise logo.LogoError("SVG 含 DOCTYPE / ENTITY 声明（可被用来做实体膨胀攻击），拒绝处理；请来源去掉后重交")
+    root = ET.fromstring(text)
+    removed = 0
+    for el in root.iter():
+        for attr in list(el.attrib):
+            name, val = attr.split("}")[-1], el.attrib[attr]
+            if name == "href" and not (val.startswith("#") or SAFE_DATA_RE.match(val)):
+                del el.attrib[attr]  # 外部 href 全部去掉后，xml:base 也就无从生效
+                removed += 1
+            elif CSS_URL_RE.search(val) or CSS_IMPORT_RE.search(val):
+                el.set(attr, CSS_IMPORT_RE.sub("", CSS_URL_RE.sub("none", val)))
+                removed += 1
+        if el.tag == f"{{{logo.SVG_NS}}}style" and el.text and (CSS_URL_RE.search(el.text) or CSS_IMPORT_RE.search(el.text)):
+            el.text = CSS_IMPORT_RE.sub("", CSS_URL_RE.sub("none", el.text))
+            removed += 1
+    return (ET.tostring(root, encoding="unicode") if removed else text), removed
+
+
+def safe_render(text: str, out: Path, **kw) -> Path:
+    """渲染不可信的外部 SVG：先去掉外部引用，再在空的临时目录里渲染（不会读到本机任何其他文件）。"""
+    return logo.render_text(strip_external(text)[0], out, **kw)
+
+
 def same_look(a: str, b: str) -> bool:
     """两份 SVG 渲染后是否逐像素一致（允许极小的抗锯齿差异）。"""
     with tempfile.TemporaryDirectory() as td:
-        pa = logo.render_text(a, Path(td) / "a.png", width=512)
-        pb = logo.render_text(b, Path(td) / "b.png", width=512)
+        pa = safe_render(a, Path(td) / "a.png", width=512)
+        pb = safe_render(b, Path(td) / "b.png", width=512)
         r = subprocess.run(["magick", "compare", "-metric", "AE", "-fuzz", "2%", str(pa), str(pb), "null:"],
                            capture_output=True, text=True)
     count = (r.stderr or r.stdout).strip().split(" ")[0]
@@ -262,15 +304,21 @@ def parse_resolves(items: list[str] | None) -> dict[str, tuple[str, str]]:
     return out
 
 
+def svg_text(data: bytes) -> str:
+    return data.decode("utf-8", errors="replace").lstrip("\ufeff")
+
+
 def analyze(p: "logo.Project", data: bytes, kind: str, init: bool, resolves: dict, as_concept: bool) -> dict:
     """分析导入文件，返回报告：format（格式整理）、hard（硬性问题）、conflicts（色板外颜色）、unresolved、final 等。"""
     rep: dict = {"type": kind, "format": [], "hard": [], "conflicts": [], "unresolved": [], "palette_add": {},
-                 "mapped": {}, "final": None, "as_concept": as_concept or kind != "svg"}
+                 "mapped": {}, "final": None, "as_concept": as_concept or kind != "svg", "external": 0}
     if kind != "svg":
         return rep
-    text = data.decode("utf-8", errors="replace").lstrip("﻿")
-    if ENTITY_RE.search(text):
-        raise logo.LogoError("SVG 含 DOCTYPE / ENTITY 声明（可被用来做实体膨胀攻击），拒绝导入；请来源去掉后重交")
+    text = svg_text(data)
+    try:
+        rep["external"] = strip_external(text)[1]  # 同时拒绝 DOCTYPE / ENTITY
+    except ET.ParseError as e:
+        raise logo.LogoError(f"SVG 解析失败：{e}")
     try:
         normalized, changes = normalize(text)
     except ET.ParseError as e:
@@ -320,11 +368,21 @@ def analyze(p: "logo.Project", data: bytes, kind: str, init: bool, resolves: dic
     return rep
 
 
-def preview_key(data: bytes, a) -> str:
-    """预演与正式导入须完全相同：文件内容与全部决定参数。"""
+def preview_key(data: bytes, a, name: str) -> str:
+    """预演与正式导入须完全相同：文件内容与所有影响写入内容的参数。"""
     fields = [hashlib.sha256(data).hexdigest(), a.project, bool(a.init), bool(a.as_concept), a.direction or "",
-              a.new_direction or "", sorted(a.resolve or [])]
+              a.new_direction or "", a.new_direction_letter or "", a.title or "", a.series_rule or "", name,
+              sorted(a.resolve or [])]
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def preview_ok(key: str) -> bool:
+    """有这次参数的预演记录，且未过期（超过 PREVIEW_DAYS 天须重新预演、重新给用户看）。"""
+    try:
+        when = dt.date.fromisoformat(previewed().get(key, ""))
+    except ValueError:
+        return False
+    return (dt.date.today() - when).days <= PREVIEW_DAYS
 
 
 def previewed() -> dict:
@@ -342,10 +400,10 @@ def write_preview(name: str, original: bytes, kind: str, rep: dict) -> Path:
         t = Path(td)
         src = t / f"original.{kind}"
         src.write_bytes(original)
-        a = logo.render(src, t / "a.png", 480, 480) if kind == "svg" else src
+        a = safe_render(svg_text(original), t / "a.png", size=480) if kind == "svg" else src
         cells = ["-label", "original", str(a)]
         if kind == "svg" and rep.get("final"):
-            b = logo.render_text(rep["final"], t / "b.png", 480)
+            b = safe_render(rep["final"], t / "b.png", size=480)
             cells += ["-label", "imported", str(b)]
         logo.run(["magick", "montage", *cells, "-tile", f"{len(cells) // 3}x1", "-geometry", "480x480+12+12",
                   "-background", "#DDDDDD", str(out)])
@@ -362,6 +420,8 @@ def report_lines(rep: dict, init: bool) -> list[str]:
         lines.append(f"✗ 系统硬性规则：{h}")
     if rep["hard"] and not rep["as_concept"]:
         lines.append("  → 这些问题项目规范也改不了：只能 --as-concept 登记为概念图，或请来源修正后重交")
+    if rep.get("external"):
+        lines.append(f"外部引用 {rep['external']} 处（指向本机文件或网址）：渲染与存档时一律剔除，存档图不含这些被引用的内容")
     if rep["palette_add"]:
         lines.append(("色板（取自图中颜色）：" if init else "改项目规范——加入色板：")
                      + "、".join(f"{k} {v}" for k, v in rep["palette_add"].items()))
@@ -377,7 +437,32 @@ def report_lines(rep: dict, init: bool) -> list[str]:
 # 写入
 # ---------------------------------------------------------------------------
 def terms_text(terms: str) -> str:
-    return UNCONFIRMED if terms.strip().lower() in UNKNOWN_TERMS else terms.strip()
+    terms = " ".join(terms.split())  # 用户在会话中给出的条款：合并为一行，保持记录格式
+    return UNCONFIRMED if terms.lower() in UNKNOWN_TERMS else terms
+
+
+def default_palette() -> dict[str, str]:
+    """新项目模板里的默认色板（访谈前的占位颜色）。"""
+    text = logo.render_template("project.toml", name="x", slug="x", date="2000-01-01")
+    return {k: v.upper() for k, v in tomllib.loads(text).get("palette", {}).items()}
+
+
+def check_init(p: "logo.Project") -> None:
+    """--init 只用于尚未开始设计、色板仍是模板默认值的项目；继承型子品牌的色板来自母品牌，不能覆盖。"""
+    import series  # 延迟导入：series.py 依赖 logo
+    if any(p.versions_in(d) for d in p.directions()) or p.releases():
+        raise logo.LogoError(f"{p.slug} 已开始设计，不能用 --init 初始化；请按已有项目导入（冲突逐项决定）")
+    m = series.membership(p)
+    if m and m.get("role") == "sub" and m.get("id") in series.all_series() \
+            and series.load_series(m["id"]).get("architecture") in series.INHERITING:
+        raise logo.LogoError(f"{p.slug} 是继承型系列的子品牌，色板继承自母品牌，不能用 --init 覆盖；"
+                             "请去掉 --init 按已有项目导入，色板外的颜色逐项决定（并选择子品牌例外或更新系列规则）")
+    if p.palette != default_palette():
+        raise logo.LogoError(f"{p.slug} 的色板已经设定（不再是模板默认值），--init 会把它整个覆盖；"
+                             "请去掉 --init 按已有项目导入，色板外的颜色逐项决定")
+    text = p.toml_path.read_text(encoding="utf-8")
+    if "[palette]\n" not in text or "[fonts]\n" not in text:
+        raise logo.LogoError("project.toml 结构与模板不同，无法初始化色板；请手工整理后重试")
 
 
 def apply_palette(p: "logo.Project", add: dict[str, str], init: bool) -> None:
@@ -416,7 +501,8 @@ def write_decision(p: "logo.Project", name: str, meta: dict, rep: dict, note: st
     conflicts = "、".join(list(rep["palette_add"].values()) + list(rep["mapped"]))
     chosen = "；".join(report_lines({**rep, "unresolved": [], "hard": [], "format": [], "type": "svg"}, False))
     text = fill_line(text, "（在什么情况下需要做这个决定）",
-                     f"导入外部设计 {name}（来源：{meta['source']}，{KINDS[meta['kind']]}）时，颜色 {conflicts} 不在项目色板中。")
+                     f"导入外部设计 {name}（来源：{logo.md_inline(meta['source'])}，{KINDS[meta['kind']]}）时，"
+                     f"颜色 {conflicts} 不在项目色板中。")
     text = fill_line(text, "1. **选项 A**:", "1. **选项 A**: 改图片——把这些颜色换成现有色板颜色，保持项目规范不变")
     text = fill_line(text, "2. **选项 B**:", "2. **选项 B**: 改项目规范——把这些颜色加入色板，保持图片原样")
     text = fill_line(text, "（选择了哪个，为什么，有哪些取舍）", f"用户选择：{chosen}。用户意见：{note}")
@@ -470,11 +556,11 @@ def cmd_import(a) -> None:
     p = logo.Project(a.project)
     name = logo.to_slug(meta.get("name") or src.stem)
     init = bool(a.init)
-    if init and (any(p.versions_in(d) for d in p.directions()) or p.releases()):
-        raise logo.LogoError(f"{p.slug} 已开始设计，不能用 --init 初始化；请按已有项目导入（冲突逐项决定）")
+    if init:
+        check_init(p)
     resolves = parse_resolves(a.resolve)
     rep = analyze(p, data, kind, init, resolves, bool(a.as_concept))
-    key = preview_key(data, a)
+    key = preview_key(data, a, name)
     if a.analyze:
         out = write_preview(name, data, kind, rep)
         print(f"导入预演：{src.name}（{kind}，{len(data)} 字节）→ {p.slug}" + ("（初始化项目）" if init else ""))
@@ -492,8 +578,8 @@ def cmd_import(a) -> None:
             print("用户确认后，去掉 --analyze、其余参数不变，补上用户确认的 --terms 与 --kind"
                   "（--source / --prompt 来源说明中已有的可省略）")
         return
-    if key not in previewed():
-        raise logo.LogoError("请先用同样的文件与参数加上 --analyze 预演，把对比图发给用户确认，再正式导入")
+    if not preview_ok(key):
+        raise logo.LogoError("请先用同样的文件与参数加上 --analyze 预演，把对比图发给用户确认，再正式导入（预演 1 天内有效）")
     missing = [k for k in ("source", "terms", "kind") if not meta.get(k)]
     if missing:
         raise logo.LogoError(f"须写明 {', '.join('--' + k for k in missing)}（向用户问清：来自哪个工具 / Agent、"
@@ -516,31 +602,37 @@ def cmd_import(a) -> None:
     if not rep["as_concept"] and not (a.new_direction or a.direction):
         raise logo.LogoError("须指定放入哪个方向：--direction <字母>，或 --new-direction <英文短名>")
     ddir = p.direction(a.direction) if not rep["as_concept"] and not a.new_direction else None  # 先校验
+    letter = None
+    if not rep["as_concept"] and a.new_direction:  # 新方向的全部检查（含访谈门槛）在任何写入之前
+        letter = logo.check_new_direction(p, a.new_direction_letter or next_letter(p))
     terms = terms_text(meta["terms"])
     with tempfile.TemporaryDirectory() as td:
-        if kind == "svg":
-            image = logo.render(src, Path(td) / f"{name}.png", 800, 800)  # 原件渲染存档（概念图须为位图）
+        if kind == "svg":  # 原件渲染存档（概念图须为位图）；先剔除外部引用，不读入本机任何其他文件
+            image = safe_render(svg_text(data), Path(td) / f"{name}.png", size=800)
         else:
             image = Path(td) / f"{name}.{kind}"
-            logo.run(["magick", str(src), "-strip", str(image)])  # 去掉 EXIF / GPS 等元数据
+            logo.run(["magick", *MAGICK_LIMITS, str(src), "-strip", str(image)])  # 去掉 EXIF / GPS 等元数据
         # 渲染成功后才开始写入：新方向（含访谈门槛）→ 概念图 → 版本 → 色板 → 决策 → 系列记录
-        if not rep["as_concept"] and a.new_direction:
-            ddir = logo.create_direction(p, a.new_direction_letter or next_letter(p), a.new_direction, a.title)
-        extra = (f"\n## 导入来源\n- **原件**: `{src.name}`（sha256 {hashlib.sha256(data).hexdigest()}，原件保留在本机 "
-                 f".cache/imported/）\n- **来源**: {meta['source']}\n- **使用条款**: {terms}\n"
+        if letter:
+            ddir = logo.create_direction(p, letter, a.new_direction, a.title)
+        # 来源说明与文件名来自外部：一律经 md_inline 处理后才写进文档（不能伪造标题、段落或“用户意见”）
+        extra = (f"\n## 导入来源\n- **原件**: {logo.md_inline(src.name)}（sha256 {hashlib.sha256(data).hexdigest()}，"
+                 f"原件保留在本机 .cache/imported/）\n- **来源**: {logo.md_inline(meta['source'])}\n- **使用条款**: {terms}\n"
                  f"- **类型**: {KINDS[meta['kind']]}\n- **导入日期**: {logo.today()}\n"
-                 + "".join(f"- **来源方声明的{'使用条款' if k == 'terms' else '类型'}**（仅作参考）: {v}\n"
+                 + "".join(f"- **来源方声明的{'使用条款' if k == 'terms' else '类型'}**（仅作参考）: {logo.md_inline(v)}\n"
                            for k, v in claims.items())
-                 + (f"- **来源方说明**（仅作资料）: {source_note}\n" if source_note else "")
+                 + (f"- **来源方说明**（仅作资料）: {logo.md_inline(source_note)}\n" if source_note else "")
                  + (f"- **用户意见**: {note}\n" if note else ""))
-        stem, dst = logo.register_concept(p, image, name, meta.get("prompt") or "（未提供）", meta["source"], extra)
+        stem, dst = logo.register_concept(p, image, name, meta.get("prompt") or "（未提供）",
+                                          logo.md_inline(meta["source"]), extra)
     md = p.dir / "concepts" / f"{stem}.md"
     print(f"已登记原件为概念图：{logo.rel(dst)}")
     if rep["palette_add"]:
         apply_palette(p, rep["palette_add"], init)
         print(("已用图中颜色初始化色板：" if init else "已加入色板：") + "、".join(f"{k} {v}" for k, v in rep["palette_add"].items()))
     if ddir:
-        summary = [f"外部导入：`{src.name}`（来源：{meta['source']}；{KINDS[meta['kind']]}），原件见 concepts/{stem}.md。",
+        summary = [f"外部导入：{logo.md_inline(src.name)}（来源：{logo.md_inline(meta['source'])}；{KINDS[meta['kind']]}），"
+                   f"原件见 concepts/{stem}.md。",
                    f"- **使用条款**: {terms}"]
         summary += [f"- {line}" for line in report_lines(rep, init)]
         vid, vdir = logo.create_version(p, ddir, rep["final"], f"外部导入（concepts/{stem}.md）", f"concepts/{stem}.md")
@@ -590,16 +682,22 @@ IMPORTED_BG = "imported-background"
 def cover_image(src: Path, data: bytes, kind: str, td: Path, name: str) -> tuple[Path, list[str]]:
     """准备底图：位图去掉元数据；SVG 按原样渲染为 PNG（封面以位图导出，外观不变）。"""
     if kind == "svg":
-        if ENTITY_RE.search(data.decode("utf-8", errors="ignore")):
-            raise logo.LogoError("SVG 含 DOCTYPE / ENTITY 声明，拒绝导入；请来源去掉后重交")
-        return logo.render(src, td / f"{name}.png", width=2560), ["SVG 已按原样渲染为 PNG（封面以位图导出）"]
+        text = svg_text(data)
+        try:
+            removed = strip_external(text)[1]  # 同时拒绝 DOCTYPE / ENTITY
+        except ET.ParseError as e:
+            raise logo.LogoError(f"SVG 解析失败：{e}")
+        if removed:
+            raise logo.LogoError(f"SVG 含 {removed} 处外部引用（指向本机文件或网址），封面底图不能这样导入；"
+                                 "请来源把图片内嵌或改为位图后重交")
+        return logo.render_text(text, td / f"{name}.png", width=2560), ["SVG 已按原样渲染为 PNG（封面以位图导出）"]
     out = td / f"{name}.{kind}"
-    logo.run(["magick", str(src), "-strip", str(out)])
+    logo.run(["magick", *MAGICK_LIMITS, str(src), "-strip", str(out)])
     return out, ["已去掉 EXIF / GPS 等元数据"]
 
 
 def image_size(path: Path) -> tuple[int, int]:
-    w, h = logo.run(["magick", "identify", "-format", "%w %h", f"{path}[0]"], capture=True).split()
+    w, h = logo.run(["magick", "identify", *MAGICK_LIMITS, "-format", "%w %h", f"{path}[0]"], capture=True).split()
     return int(w), int(h)
 
 
@@ -620,11 +718,15 @@ def cover_plan(owner, a) -> dict:
     if not a.platforms:
         raise logo.LogoError("新封面须用 --platforms 指定目标平台（先问用户这张封面用在哪些平台）")
     need = covers.needed_ratios(covers.parse_platforms(a.platforms))
+    # 新封面的全部检查在任何写入之前（避免建好封面后才发现无法放入底图）
     if covers.is_family(owner):
-        if not a.members:
-            raise logo.LogoError("家族封面须用 --members 指定成员（先问用户展示哪些品牌、以谁为主）")
+        covers.family_members(owner, a)  # 成员须由用户指定、属于该系列且已发布
     else:
         covers.skeleton_choice(owner, a.from_skeleton, a.no_skeleton)  # 系列已有骨架时须先问用户是否套用
+        rid = a.release or owner.cfg["state"].get("current_release")
+        if not rid:
+            raise logo.LogoError("项目还没有 Logo 发布；先 ./logo release，或用 --release 指定")
+        covers.release_layouts(owner, rid)
     return {"cdir": None, "ratios": need, "canvas": {r: ratios[r] for r in need}}
 
 
@@ -751,8 +853,8 @@ def cmd_cover_import(a) -> None:
                 (PREVIEWS / "previewed.json").write_text(json.dumps(store), encoding="utf-8")
                 print("用户确认后，去掉 --analyze、其余参数不变，补上用户确认的 --terms 与 --kind")
             return
-        if key not in previewed():
-            raise logo.LogoError("请先用同样的文件与参数加上 --analyze 预演，把对比图发给用户确认，再正式导入")
+        if not preview_ok(key):
+            raise logo.LogoError("请先用同样的文件与参数加上 --analyze 预演，把对比图发给用户确认，再正式导入（预演 1 天内有效）")
         missing = [k for k in ("source", "terms", "kind") if not meta.get(k)]
         if missing:
             raise logo.LogoError(f"须写明 {', '.join('--' + k for k in missing)}（向用户问清来源、使用条款或版权、候选还是成品）")
@@ -764,15 +866,15 @@ def cmd_cover_import(a) -> None:
         else:
             covers.cmd_new(a)  # 新封面：照常立项起稿（Logo 从发布嵌入、参考线、系列骨架或家族成员）
             cdir = max(covers.project_covers(owner), key=lambda c: c.name)
-        extra = (f"\n## 导入来源\n- **原件**: `{src.name}`（sha256 {hashlib.sha256(data).hexdigest()}，原件保留在本机 "
-                 f".cache/imported/）\n- **使用条款**: {terms}\n- **类型**: {KINDS[meta['kind']]}\n"
+        extra = (f"\n## 导入来源\n- **原件**: {logo.md_inline(src.name)}（sha256 {hashlib.sha256(data).hexdigest()}，"
+                 f"原件保留在本机 .cache/imported/）\n- **使用条款**: {terms}\n- **类型**: {KINDS[meta['kind']]}\n"
                  f"- **图中文字**: {'有（位图文字无法转曲，改文案须重做底图）' if a.contains_text == 'yes' else '无'}\n"
                  f"- **处理**: {'；'.join(notes)}\n"
                  f"- **铺放**: {'；'.join(f'{r} {FIT_NAMES[decided[r]]}' for r in plan['ratios'])}\n"
-                 + "".join(f"- **来源方声明的{'使用条款' if k == 'terms' else '类型'}**（仅作参考）: {v}\n"
+                 + "".join(f"- **来源方声明的{'使用条款' if k == 'terms' else '类型'}**（仅作参考）: {logo.md_inline(v)}\n"
                            for k, v in claims.items())
-                 + (f"- **来源方说明**（仅作资料）: {source_note}\n" if source_note else ""))
-        stem, dst = covers.register_asset(cdir, img, name, meta["source"], terms, extra)
+                 + (f"- **来源方说明**（仅作资料）: {logo.md_inline(source_note)}\n" if source_note else ""))
+        stem, dst = covers.register_asset(cdir, img, name, logo.md_inline(meta["source"]), terms, extra)
     for r in plan["ratios"]:
         place_background(cdir / f"{r}.svg", f"assets/{dst.name}", decided[r], plan["canvas"][r])
     in_inbox = INBOX in src.resolve().parents

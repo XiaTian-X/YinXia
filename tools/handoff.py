@@ -184,6 +184,9 @@ def parse_text(text: str) -> tuple[list[dict], list[str]]:
     problems, blocks = [], {}
     for m in BLOCK_RE.finditer(text):
         n, total, body = int(m.group(1)), int(m.group(2)), m.group(3)
+        if n in blocks:
+            problems.append(f"第 {n}/{total} 段重复出现（两段的段号相同），请让对方按 1…N 依次编号后重发")
+            continue
         fm = FILE_RE.search(body)
         if not fm:
             problems.append(f"第 {n}/{total} 段缺少“[文件 <英文短名>.svg]”行（文件名只能用小写英文、数字、短横线）")
@@ -307,6 +310,9 @@ ADVICE = [  # 硬性问题 → 对方能照做的修改要求
 def cmd_feedback(a) -> None:
     """把检查出的硬性问题（以及用户决定“请对方改”的颜色）写成一段可直接粘贴给对方的修改意见。"""
     res = inspect(a.path, a.project)
+    bad = [c for c in (a.colors or []) if not re.fullmatch(r"#[0-9A-Fa-f]{6}=[a-z][a-z0-9_]*", c.strip())]
+    if bad:
+        raise logo.LogoError(f"--color 写法为 #RRGGBB=色板色名（如 #FF6600=primary），收到：{', '.join(bad)}")
     fixes = importer.parse_resolves([f"{c.split('=')[0]}=map:{c.split('=')[1]}" for c in (a.colors or [])])
     pal = logo.Project(a.project).palette if a.project else {}
     seen = {c for f in res["files"] for c in f["conflicts"]}

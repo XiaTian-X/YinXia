@@ -98,6 +98,11 @@ class HandoffTest(unittest.TestCase):
         self.assertIn(f"badge.svg：把颜色 #FF6600 改为 {PRIMARY}", out)
         self.assertIn("输出格式：按 LOGODesign 交接格式 v1 输出", out)
         self.assertIn("没有需要对方修改的硬性问题", ws.logo("handoff", "feedback", str(good), "--project", "demo").stdout)
+        r = ws.logo("handoff", "feedback", path, "--project", "demo", "--color", "#FF6600", ok=False)
+        self.assertIn("--color 写法为", r.stderr)  # 可读的报错，而不是报错堆栈
+        self.assertNotIn("Traceback", r.stderr)
+        dup = self.say(block(1, 2, "a.svg", GOOD) + block(1, 2, "b.svg", GOOD))
+        self.assertIn("第 1/2 段重复出现", ws.logo("handoff", "validate", dup, ok=False).stdout)
         two = self.say(block(1, 2, "badge.svg", BAD) + block(2, 2, "icon.svg", GOOD))
         out = ws.logo("handoff", "feedback", two, "--project", "demo", "--color", "#FF6600=primary").stdout
         self.assertNotIn("icon.svg：", out)  # 只对用到这个颜色的文件提出

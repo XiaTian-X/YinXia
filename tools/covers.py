@@ -1096,6 +1096,12 @@ def family_logos(fam: Family, releases: dict[str, str]) -> list[tuple["logo.Proj
 
 def new_family(fam: Family, a) -> None:
     """家族封面立项：--members 由用户决定（展示哪些品牌、第一个为主），成员须属于该系列且已发布。"""
+    members, releases = family_members(fam, a)
+    create_family_cover(fam, a, members, releases, parse_platforms(a.platforms))
+
+
+def family_members(fam: Family, a) -> tuple[list[str], dict[str, str]]:
+    """家族封面成员的全部检查（不写入）：须用户指定、至少两个、都属于该系列且已发布。返回 (成员, 各自发布)。"""
     import series  # 延迟导入：series.py 依赖 logo
     if a.release or a.from_skeleton or a.no_skeleton:
         raise logo.LogoError("家族封面的 Logo 取各成员的当前发布，不使用 --release 与封面骨架")
@@ -1114,7 +1120,10 @@ def new_family(fam: Family, a) -> None:
         if not rid:
             raise logo.LogoError(f"成员 {slug} 还没有发布，家族封面里的 Logo 只能来自发布")
         releases[slug] = rid
-    targets = parse_platforms(a.platforms)
+    return members, releases
+
+
+def create_family_cover(fam: Family, a, members: list[str], releases: dict[str, str], targets: list[str]) -> None:
     plats, ratios = platforms_by_id(), load_config()["ratios"]
     logos = family_logos(fam, releases)
     nums = [int(c.name[:3]) for c in project_covers(fam)]

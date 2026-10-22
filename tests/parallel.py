@@ -20,6 +20,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 TIMES = HERE.parent / ".cache" / "selftest-times.json"
 DEFAULT_SECONDS = 3.0
+DEFAULT_TIMEOUT = 1800  # 总超时（秒）：某个测试卡住时不至于一直挂着
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +143,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(prog="parallel")
     ap.add_argument("-j", "--jobs", type=int, default=min(os.cpu_count() or 1, 8))
     ap.add_argument("-v", "--verbose", action="store_true")
+    ap.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT, help="总超时秒数")
     ap.add_argument("--worker", nargs=2, metavar=("IDS", "OUT"))
     ap.add_argument("tests", nargs="*")
     a = ap.parse_args()
@@ -173,11 +175,22 @@ def main() -> int:
             Path(ids_file).write_text(json.dumps(ids), encoding="utf-8")
             handle = open(log, "w")
             procs.append((subprocess.Popen([sys.executable, str(Path(__file__)), "--worker", ids_file, out_file],
-                                           cwd=HERE, stdout=handle, stderr=subprocess.STDOUT),
+                                           cwd=HERE, stdout=handle, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL),
                           ids, out_file, log, handle))
         try:
             pending = list(procs)
+            deadline = started + a.timeout
             while pending:
+                if time.time() > deadline:  # 超时：结束仍在运行的进程，其测试记为错误
+                    for proc, ids, _, log, handle in pending:
+                        proc.kill()
+                        proc.wait()
+                        handle.close()
+                        records += [{"id": i, "status": "ERROR", "detail": f"超过总超时 {a.timeout}s，工作进程已终止",
+                                     "seconds": 0.0, "fixture": False, "class": ""} for i in ids]
+                        print(f"  ✗ 超时（{a.timeout}s），{len(ids)} 个测试记为错误", flush=True)
+                    pending = []
+                    break
                 for item in list(pending):
                     proc, ids, out_file, log, handle = item
                     if proc.poll() is None:

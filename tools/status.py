@@ -5,11 +5,12 @@
 from __future__ import annotations
 
 import json
+import re
 
 import logo
 
 # 待办类别，按处理顺序排列
-KINDS = ("访谈", "未提交", "设计", "系列", "交付", "封面", "收件箱")
+KINDS = ("暂停", "访谈", "未提交", "设计", "系列", "交付", "封面", "收件箱")
 
 
 def uncommitted(p: "logo.Project") -> list[str]:
@@ -52,8 +53,21 @@ def project_todo(p: "logo.Project") -> list[dict]:
     m = series.membership(p)
     inheriting_sub = bool(m and m.get("role") == "sub" and m.get("id") in series.all_series()
                           and series.load_series(m["id"]).get("architecture") in series.INHERITING)
+    stage = st.get("stage", "")
+    if stage == "paused":
+        add("暂停", "项目已暂停（以下待办供恢复时参考）", f"恢复时 ./logo state {p.slug} stage=iterating")
+    versions = [f"{d.name.split('-', 1)[0]}-{v.name}" for d in p.directions() for v in p.versions_in(d)]
     if not holes and not p.directions():
         add("设计", "还没有设计方向", f"./logo direction {p.slug} A <英文短名>")
+    elif versions and not sel:
+        add("设计", f"已有 {len(versions)} 个版本，尚未选定", f"./logo compare {p.slug} 给用户看，选定后 ./logo decision 并 "
+            f"./logo state {p.slug} selected_version=<版本>")
+    if sel and "-v" in sel:  # 选定版本之后同方向又有新版本：系统判断不了用户是否看过，只提示给用户看
+        letter, num = sel.split("-v")
+        newer = [v for v in versions if v.startswith(f"{letter}-v") and v.split("-v")[1] > num]
+        if newer:
+            add("设计", f"选定版本 {sel} 之后又有新版本：{'、'.join(newer)}",
+                f"./logo compare {p.slug} {sel} {' '.join(newer)} 给用户看后决定是否选定")
     if sel and sel != root:
         if inheriting_sub and not series.review_passed(m["id"], p.slug, sel):
             add("设计", f"选定版本 {sel} 尚未通过系列评审", f"./logo series compare {m['id']} --with {p.slug}={sel}，给用户看后 series review")
@@ -64,6 +78,8 @@ def project_todo(p: "logo.Project") -> list[dict]:
         add("系列", f"母品牌 {master.slug} 已发布 {latest}（本项目依据 {based}），{series.diff_text(*series.palette_diff(p, master))}",
             f"逐项问用户后 ./logo series sync {p.slug} --palette … --note \"…\"")
     # -- 交付 --
+    if cur and stage == "releasing" and sel == root:
+        add("交付", f"当前发布 {cur} 尚未标记交付", f"./logo export {p.slug} 交付后 ./logo state {p.slug} stage=delivered")
     if cur:
         guide = p.dir / "releases" / cur / "guide.md"
         if guide.exists() and logo.unfilled_placeholders(f"{p.slug}/releases/{cur}/guide.md", guide.read_text(encoding="utf-8")):
@@ -79,8 +95,9 @@ def project_todo(p: "logo.Project") -> list[dict]:
             notes = [covers.outdated_warning(p, cdir, cfg)] + covers.skeleton_notes(cdir, cfg["cover"])
         except (logo.LogoError, KeyError):
             notes = [f"{logo.rel(cdir)}: cover.toml 无效，运行 ./logo check 查看"]
-        for n in filter(None, notes):
-            add("封面", n.split("：", 1)[-1] if n.startswith(logo.rel(cdir) + "：") else n, f"./logo cover … {p.slug} {cdir.name[:3]}")
+        for n in filter(None, notes):  # 去掉封面目录前缀，只保留画幅文件名与说明
+            text = re.sub(rf"^{re.escape(logo.rel(cdir))}(/|[：:]\s*)", "", n)
+            add("封面", f"{cdir.name}：{text}", f"./logo cover … {p.slug} {cdir.name[:3]}")
     # -- 收件箱 --
     for it in importer.inbox_items():
         if it["meta"].get("project") == p.slug:
