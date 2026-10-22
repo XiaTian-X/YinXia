@@ -95,6 +95,21 @@ class ImportTest(unittest.TestCase):
         self.commit_ok("[demo] import badge")  # 导入结果完整通过提交检查
         self.assertEqual(self.ws.git("system", "status", "--porcelain").stdout.strip(), "")  # 收件箱与缓存不进仓库
 
+    def test_archive_wording(self):
+        outside = self.ws.root / ".cache" / "elsewhere.svg"  # 不在收件箱：只复制，原文件保留
+        outside.parent.mkdir(exist_ok=True)
+        outside.write_text(CLEAN, encoding="utf-8")
+        args = (str(outside), "--project", "demo", "--direction", "A")
+        self.ws.logo("import", *args, "--analyze")
+        out = self.ws.logo("import", *args, "--source", "x", "--terms", "可商用", "--kind", "candidate").stdout
+        self.assertIn("原件已复制一份到本机", out)
+        self.assertTrue(outside.exists())
+        self.put("in.svg", CLEAN.replace("M10 10", "M20 20"))  # 收件箱：移走
+        self.imp("in.svg", "--direction", "A", "--analyze")
+        out = self.imp("in.svg", "--direction", "A", "--terms", "可商用", "--kind", "candidate").stdout
+        self.assertIn("原件已从收件箱移至本机", out)
+        self.assertFalse((self.inbox / "in.svg").exists())
+
     def test_clean_file_kept_byte_for_byte(self):
         self.put("clean.svg", CLEAN)
         out = self.imp("clean.svg", "--direction", "A", "--analyze").stdout

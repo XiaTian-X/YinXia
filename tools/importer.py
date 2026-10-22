@@ -440,6 +440,13 @@ def archive_original(src: Path) -> Path:
     return dest
 
 
+def archived_text(src_in_inbox: bool, kept: Path) -> str:
+    """原件去向的说明：收件箱里的文件被移走；其他位置的文件只复制一份，原文件保留在原处。"""
+    if src_in_inbox:
+        return f"原件已从收件箱移至本机 {logo.rel(kept)}（不进仓库）"
+    return f"原件已复制一份到本机 {logo.rel(kept)}（不进仓库；原文件保留在原处）"
+
+
 def cmd_import(a) -> None:
     src = Path(a.file)
     if not src.exists() and (INBOX / a.file).exists():
@@ -555,11 +562,12 @@ def cmd_import(a) -> None:
                 f"- **颜色**：{'、'.join(f'{k} {v}' for k, v in rep['palette_add'].items())}\n"
                 f"- **用户意见**：{note}\n"), encoding="utf-8")
             print(f"已在 {series.rules_path(m['id'])} 追加{label}记录")
+    in_inbox = INBOX in src.resolve().parents
     kept = archive_original(src)
     store = previewed()
     store.pop(key, None)
     (PREVIEWS / "previewed.json").write_text(json.dumps(store), encoding="utf-8")
-    print(f"原件已移至本机 {logo.rel(kept)}（不进仓库）")
+    print(archived_text(in_inbox, kept))
     if terms == UNCONFIRMED:
         print("⚠ 使用条款未确认：发布基于这个导入的版本时 check 会提醒")
     if meta["kind"] == "final" and ddir:
@@ -767,12 +775,13 @@ def cmd_cover_import(a) -> None:
         stem, dst = covers.register_asset(cdir, img, name, meta["source"], terms, extra)
     for r in plan["ratios"]:
         place_background(cdir / f"{r}.svg", f"assets/{dst.name}", decided[r], plan["canvas"][r])
+    in_inbox = INBOX in src.resolve().parents
     kept = archive_original(src)
     store = previewed()
     store.pop(key, None)
     (PREVIEWS / "previewed.json").write_text(json.dumps(store), encoding="utf-8")
     print(f"已导入为封面底图：{logo.rel(dst)} → {cdir.name}（{', '.join(plan['ratios'])}）")
-    print(f"原件已移至本机 {logo.rel(kept)}（不进仓库）")
+    print(archived_text(in_inbox, kept))
     print(f"下一步：与用户填写 {logo.rel(dst.with_suffix('.md'))} 的“用途与授权范围”"
           + ("与 cover.md" if not plan["cdir"] else "") + f"，./logo cover preview {owner.slug} {cdir.name[:3]} 给用户看")
     if terms == UNCONFIRMED:
