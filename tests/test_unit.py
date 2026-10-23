@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -49,6 +50,54 @@ class PlaceholderTest(unittest.TestCase):
                 self.assertTrue(logo.unfilled_placeholders(path, f.read_text(encoding="utf-8")))
                 fill_doc(f)
                 self.assertEqual(logo.unfilled_placeholders(path, f.read_text(encoding="utf-8")), [])
+
+
+class BriefCompletenessTest(unittest.TestCase):
+    def setUp(self):
+        with tempfile.TemporaryDirectory() as td:
+            brief = Path(td) / "brief.md"
+            brief.write_text(logo.render_template("brief.md", name="测试", project_type="独立 Logo",
+                                                  series_rules="无", targets="svg、favicon"), encoding="utf-8")
+            fill_doc(brief)
+            self.text = brief.read_text(encoding="utf-8")
+
+    def issues(self, text: str) -> list[str]:
+        return logo.document_issues("demo/brief.md", text)
+
+    def test_complete_brief_and_colon_spacing(self):
+        self.assertEqual(self.issues(self.text), [])
+        self.assertEqual(self.issues(self.text.replace("**：", "** :  ")), [])
+
+    def test_missing_sections_including_empty_legacy_brief(self):
+        self.assertIn("缺少章节“需求确认”", self.issues("# 旧简报\n"))
+        for section in ("项目类型与架构", "使用场景", "需求确认"):
+            with self.subTest(section=section):
+                changed = re.sub(rf"(?ms)^## {section}\n.*?(?=^## |\Z)", "", self.text)
+                self.assertNotEqual(changed, self.text)
+                self.assertIn(f"缺少章节“{section}”", self.issues(changed))
+
+    def test_removed_or_empty_fields_are_not_completion(self):
+        for field in ("确认日期", "用户确认的要点", "Logo 中的文字", "参考图", "项目类型", "生成目标"):
+            pattern = rf"(?m)^- \*\*{re.escape(field)}\*\*：.*$"
+            for replacement in ("", f"- **{field}** :   ", f"- **{field}**：{{{{unresolved}}}}"):
+                with self.subTest(field=field, replacement=replacement):
+                    changed = re.sub(pattern, lambda _: replacement, self.text)
+                    self.assertNotEqual(changed, self.text)
+                    self.assertTrue(any(field in issue for issue in self.issues(changed)), self.issues(changed))
+
+    def test_examples_and_comments_do_not_supply_confirmation(self):
+        before, confirmation = self.text.split("## 需求确认", 1)
+        confirmation = "## 需求确认" + confirmation
+        examples = [f"```markdown\n{confirmation}\n```", f"~~~\n{confirmation}\n~~~",
+                    f"<!--\n{confirmation}\n-->", "\n".join("> " + line for line in confirmation.splitlines())]
+        for example in examples:
+            with self.subTest(example=example):
+                self.assertIn("缺少章节“需求确认”", self.issues(before + example))
+
+    def test_field_in_wrong_section_does_not_count(self):
+        date = re.search(r"(?m)^- \*\*确认日期\*\*[:：].*$", self.text).group(0)
+        changed = self.text.replace(date, "").replace("## 字体策略", "## 字体策略\n" + date)
+        self.assertIn("需求确认：缺少字段“确认日期”", self.issues(changed))
 
 
 class LayoutNamesTest(unittest.TestCase):

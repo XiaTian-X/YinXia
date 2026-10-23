@@ -103,7 +103,7 @@ class DocsTest(GuardBase):
     def test_brief_only_warns(self):
         brief = self.p / "brief.md"
         brief.write_text(brief.read_text(encoding="utf-8") + "\n- **行业/领域**：\n", encoding="utf-8")  # 模板原样的空字段
-        self.assertIn("brief.md: 还有 1 处模板占位", self.ws.logo("check").stdout)
+        self.assertIn("brief.md: 还有 1 处缺失或未填写", self.ws.logo("check").stdout)
         self.assertCommitted(self.ws.commit("projects", "[demo] brief"))  # brief 可随时修改，只提醒不拦截
 
 

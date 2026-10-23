@@ -29,7 +29,7 @@ class StatusTest(unittest.TestCase):
         self.assertEqual(items[0]["kind"], "访谈")  # 访谈排在最前
         self.assertIn("brief.md 还有", items[0]["text"])
         self.assertIn("未提交", texts(items))
-        self.assertIn("新文档还有模板占位：solo/brief.md", texts(items))
+        self.assertIn("文档缺失内容或仍有模板占位：solo/brief.md", texts(items))
         self.assertNotIn("还没有设计方向", texts(items))  # 访谈没做完不提示开始设计
         fill_doc(ws.projects / "solo" / "brief.md")
         ws.logo("index")
@@ -53,6 +53,26 @@ class StatusTest(unittest.TestCase):
         by = {p["slug"]: p for p in data["projects"]}
         self.assertIn("项目配置无法读取", by["bad"]["todo"][0]["text"])
         self.assertEqual(by["good"]["stage"], "briefing")  # 其他项目照常显示
+
+    def test_legacy_brief_is_reported_and_blocks_new_direction(self):
+        ws = self.ws
+        project = ws.new_project("legacy")
+        brief = project / "brief.md"
+        complete = brief.read_text(encoding="utf-8")
+        brief.write_text(complete.split("## 需求确认", 1)[0], encoding="utf-8")
+        # 已提交旧简报也持续提醒，草稿可以保存；开始设计必须补齐。
+        result = ws.commit("projects", "[legacy] historical brief")
+        self.assertEqual(result.returncode, 0, ws.blocked(result))
+        self.assertIn("缺少章节“需求确认”", ws.logo("check").stdout)
+        self.assertIn("缺少章节“需求确认”", texts(todo(ws, "legacy")))
+        self.assertNotIn("还没有设计方向", texts(todo(ws, "legacy")))
+        result = ws.logo("direction", "legacy", "A", "mountain", ok=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("缺少章节“需求确认”", result.stderr)
+        self.assertFalse((project / "directions" / "A-mountain").exists())
+        brief.write_text(complete, encoding="utf-8")
+        self.assertNotIn("访谈", texts(todo(ws, "legacy")))
+        ws.logo("direction", "legacy", "A", "mountain")
 
     def test_stage_based_items(self):
         ws = self.ws

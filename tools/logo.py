@@ -870,9 +870,9 @@ def check_new_direction(p: Project, letter: str) -> str:
     if any(d.name.split("-", 1)[0] == letter for d in p.directions()):
         raise LogoError(f"方向 {letter} 已存在")
     brief = p.dir / "brief.md"
-    holes = unfilled_placeholders(f"{p.slug}/brief.md", brief.read_text(encoding="utf-8")) if brief.exists() else ["（缺少 brief.md）"]
+    holes = document_issues(f"{p.slug}/brief.md", brief.read_text(encoding="utf-8")) if brief.exists() else ["缺少 brief.md"]
     if holes:  # 先问清楚再设计：需求访谈的结果写进 brief.md 并经用户确认后才能开始
-        raise LogoError(f"{rel(brief)} 还有 {len(holes)} 处未填写（如“{holes[0]}”）；"
+        raise LogoError(f"{rel(brief)} 还有 {len(holes)} 处缺失或未填写（如“{holes[0]}”）；"
                         "请先完成需求访谈（logo-workflow 技能第 0 步）并经用户确认，再开始设计")
     import series  # 延迟导入：series.py 依赖本模块
     if (holes := series.rules_holes(p)):  # 系列成员：系列层面的访谈（系列规则）也须先完成
@@ -2032,6 +2032,49 @@ def unfilled_placeholders(path: str, text: str) -> list[str]:
     return [ph for ph in dict.fromkeys(holes) if ph in lines]
 
 
+def brief_fields(text: str) -> dict[str, dict[str, list[str]]]:
+    """读取简报的二级章节与字段；代码示例、注释中的字段不算实际填写。"""
+    sections: dict[str, dict[str, list[str]]] = {}
+    section, fence = None, ""
+    for line in re.sub(r"<!--[\s\S]*?-->", "", text).splitlines():
+        s = line.strip()
+        if fence:
+            if re.fullmatch(re.escape(fence[0]) + "{" + str(len(fence)) + ",}", s):
+                fence = ""
+            continue
+        if (m := re.match(r"^(`{3,}|~{3,})", s)):
+            fence = m.group(1)
+            continue
+        if s.startswith("## "):
+            section = s[3:].strip()
+            sections.setdefault(section, {})
+        elif section and (m := re.fullmatch(r"-\s+\*\*([^*]+)\*\*\s*[:：]\s*(.*)", s)):
+            sections[section].setdefault(m.group(1), []).append(m.group(2).strip())
+    return sections
+
+
+def document_issues(path: str, text: str) -> list[str]:
+    """文档占位检查；需求简报额外按当前模板检查必需章节、字段及字段值。"""
+    issues = unfilled_placeholders(path, text)
+    if not re.fullmatch(r"[^/]+/brief\.md", path):
+        return issues
+    required = brief_fields((TEMPLATES / "brief.md").read_text(encoding="utf-8"))
+    actual = brief_fields(text)
+    for section, fields in required.items():
+        if section not in actual:
+            issues.append(f"缺少章节“{section}”")
+            continue
+        for field, hints in fields.items():
+            values = actual[section].get(field)
+            if values is None:
+                issues.append(f"{section}：缺少字段“{field}”")
+            elif not any(v and v not in hints and not re.search(r"\{\{.*?\}\}", v) for v in values):
+                # 原样保留的占位已在 issues 中，避免同一空字段重复计数。
+                if not any(f"**{field}**" in issue for issue in issues):
+                    issues.append(f"{section}：字段“{field}”未填写")
+    return issues
+
+
 def check_new_docs(staged: bool, errors: list[str], warnings: list[str]) -> None:
     """新增的项目文档必须填完模板占位并引用有效记录；已提交的只追加文档无法再改，只检查新增的。
 
@@ -2053,9 +2096,10 @@ def check_new_docs(staged: bool, errors: list[str], warnings: list[str]) -> None
         else:
             continue
         sink = errors if (staged and path not in briefs) else warnings
-        holes = unfilled_placeholders(path, text)
+        holes = document_issues(path, text)
         if holes:
-            sink.append(f"projects/{path}: 还有 {len(holes)} 处模板占位未填写（如“{holes[0]}”）")
+            what = "缺失或未填写" if path in briefs else "模板占位未填写"
+            sink.append(f"projects/{path}: 还有 {len(holes)} 处{what}（如“{holes[0]}”）")
         if path in briefs or path not in added:
             continue
         slug = path.split("/", 1)[0]

@@ -32,17 +32,17 @@ def project_todo(p: "logo.Project") -> list[dict]:
     st = p.cfg.get("state", {})
     # -- 访谈 --
     brief = p.dir / "brief.md"
-    holes = logo.unfilled_placeholders(f"{p.slug}/brief.md", brief.read_text(encoding="utf-8")) if brief.exists() else ["缺少 brief.md"]
+    holes = logo.document_issues(f"{p.slug}/brief.md", brief.read_text(encoding="utf-8")) if brief.exists() else ["缺少 brief.md"]
     if holes:
-        add("访谈", f"brief.md 还有 {len(holes)} 处未填写，需求访谈未完成", "与用户完成 logo-workflow 第 0 步访谈")
+        add("访谈", f"brief.md 还有 {len(holes)} 处缺失或未填写（如“{holes[0]}”），需求访谈未完成", "与用户完成 logo-workflow 第 0 步访谈")
     if (rh := series.rules_holes(p)):
         sid = series.membership(p)["id"]
         add("访谈", f"系列规则 {series.rules_path(sid)} 还有 {len(rh)} 处未填写", "与用户确定系列规则")
     # -- 未提交 --
     if (changed := uncommitted(p)):
         docs = [c for c in changed if (logo.PROJECTS / c).is_file()
-                and logo.unfilled_placeholders(c, (logo.PROJECTS / c).read_text(encoding="utf-8", errors="ignore"))]
-        text = f"有 {len(changed)} 个文件改动未提交" + (f"，其中 {len(docs)} 份新文档还有模板占位：{', '.join(docs[:3])}" if docs else "")
+                and logo.document_issues(c, (logo.PROJECTS / c).read_text(encoding="utf-8", errors="ignore"))]
+        text = f"有 {len(changed)} 个文件改动未提交" + (f"，其中 {len(docs)} 份文档缺失内容或仍有模板占位：{', '.join(docs[:3])}" if docs else "")
         add("未提交", text, f"填完后 ./logo index && ./logo check && git -C projects add -A && git -C projects commit -m \"[{p.slug}] …\"")
     # -- 设计 --
     sel, cur = st.get("selected_version"), st.get("current_release")

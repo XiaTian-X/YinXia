@@ -145,6 +145,40 @@ class LifecycleTest(unittest.TestCase):
         self.assertIn("guide.md", r.stderr)
         self.assertFalse((self.p / "dist").exists())
 
+    @unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
+    def test_guide_erratum_is_append_only_and_reaches_delivery(self):
+        ws = self.ws
+        ws.new_version()
+        self.assertEqual(ws.commit("projects", "[demo] A-v001").returncode, 0)
+        prepare_release(ws)
+        ws.logo("export", "demo")
+        rdir = self.p / "releases" / "r1"
+        guide = rdir / "guide.md"
+        original = guide.read_bytes()
+        frozen = (rdir / "layouts" / "primary.svg").read_bytes()
+        dist = self.p / "dist" / "r1"
+        before = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
+        correction = "\n## 2026-10-23 勘误\n适用于 r1：主版画布为 1:1，以实际 SVG 为准。\n"
+        with guide.open("a", encoding="utf-8") as f:
+            f.write(correction)
+        result = ws.commit("projects", "[demo] append guide erratum")
+        self.assertEqual(result.returncode, 0, ws.blocked(result))
+        self.assertTrue(guide.read_bytes().startswith(original))
+        self.assertEqual((rdir / "layouts" / "primary.svg").read_bytes(), frozen)
+        ws.logo("export", "demo", "svg")
+        self.assertIn(correction, (dist / "guide.md").read_text(encoding="utf-8"))
+        after = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
+        self.assertNotEqual(before["files"]["guide.md"], after["files"]["guide.md"])
+        for name, digest in before["files"].items():
+            if name != "guide.md":
+                self.assertEqual(after["files"][name], digest)
+        self.assertEqual(after["files"]["guide.md"], hashlib.sha256((dist / "guide.md").read_bytes()).hexdigest())
+        # 改写已提交指南仍然被同一个钩子拦截。
+        guide.write_text("# 改写原文\n" + guide.read_text(encoding="utf-8"), encoding="utf-8")
+        result = ws.commit("projects", "[demo] invalid rewrite")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("只允许在末尾追加", "\n".join(ws.blocked(result)))
+
     def test_targets_declaration_and_legacy_profiles(self):
         ws = self.ws
         listing = ws.logo("export", "demo", "--list").stdout

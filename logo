@@ -1,2 +1,17 @@
 #!/bin/bash
-exec "$(dirname "$0")/.venv/bin/python" "$(dirname "$0")/tools/logo.py" "$@"
+set -euo pipefail
+
+logo_root="$(cd "$(dirname "$0")" && pwd)"
+logo_python="$logo_root/.venv/bin/python"
+if [[ ! -x "$logo_python" ]]; then
+    if [[ "${1:-}" != "setup" ]]; then
+        echo "✗ Python 环境尚未就绪，请先运行 ./logo setup" >&2
+        exit 1
+    fi
+    if ! command -v python3 >/dev/null 2>&1 || ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))'; then
+        echo "✗ 首次 setup 需要 Python 3.11 或更新版本，请先安装并确保 python3 在 PATH 中" >&2
+        exit 1
+    fi
+    logo_python="$(command -v python3)"
+fi
+exec "$logo_python" "$logo_root/tools/logo.py" "$@"

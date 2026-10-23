@@ -11,7 +11,7 @@
 ./logo setup
 ```
 
-需要本机已安装 `resvg` 与 `magick`（Homebrew）。`setup` 会创建 `.venv`、安装 fonttools 与 uharfbuzz（HarfBuzz 排版）、初始化项目仓库 `projects/`，并为两个仓库启用 pre-commit 钩子。
+首次运行需要 PATH 中的 `python3` 为 Python 3.11 或更新版本，以及 `resvg` 与 `magick`（Homebrew）。没有 `.venv` 时，启动器只为 `setup` 使用系统 Python，引导创建 `.venv`、安装 fonttools 与 uharfbuzz（HarfBuzz 排版）、初始化项目仓库 `projects/`，并为两个仓库启用 pre-commit 钩子；之后各命令使用项目虚拟环境。
 
 字体文件不进 Git。需要文字转曲时运行：
 
@@ -136,7 +136,9 @@ AI Agent 生成 Logo 之前，先按 [logo-workflow 技能](.agents/skills/logo-
 | 独立型子品牌 | 同上 | 只登记归属，不继承 |
 
 三种架构：**统一型**（子品牌 = 母品牌标志 + 名称，如 Google 地图）、**背书型**（子品牌有自己的标志并注明母品牌出品，如 Courtyard by Marriott）、**独立型**（各自独立，只归组管理，如宝洁旗下各品牌）。
-brief.md 记录访谈结果（含“需求确认”），未填完时不能开始设计；看板按系列分组显示，子品牌落后于母品牌当前发布时标出。
+brief.md 记录访谈结果（含“需求确认”）。检查同时识别残留占位、缺少的必需章节/字段与空值，删除字段或沿用缺少新版章节的旧简报也会被发现；`direction` 拒绝开始新方向，`status` 与 `check` 提示补齐，简报草稿仍可提交保存。历史简报补齐时依据已有配置、决策与用户本次授权记录，不补造历史访谈确认。看板按系列分组显示，子品牌落后于母品牌当前发布时标出。
+
+已填写完成的发布指南若有事实错误，应在原 `guide.md` 末尾追加注明日期和适用范围的勘误，明确更正内容；再次 `export` 会把勘误带入交付指南。已有内容及冻结 SVG 保留。原指南仍有模板占位的情况继续按“当前发布能否交付”的规则新建发布。
 
 **系列评审**：统一型 / 背书型子品牌定稿前，Agent 用 `series compare` 生成对比图并按 series.md 逐条向用户提问，用 `series review --note` 记录用户结论；没有该版本通过的评审时 `./logo release` 拒绝（以同一版本最近一次评审为准）。
 
