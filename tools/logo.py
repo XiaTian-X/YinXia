@@ -114,21 +114,26 @@ SERIES_FILE_RE = re.compile(r"_series/([a-z0-9]+(?:-[a-z0-9]+)*)/(.+)")  # 系�
 
 # 密钥与凭据：文件名特征，以及内容特征（私钥、各平台访问令牌）
 SECRET_NAME_RE = re.compile(
-    r"^(\.env(\..+)?|.*\.(pem|key|p12|pfx|jks|keystore|gpg)|id_(rsa|dsa|ecdsa|ed25519)(\.pub)?"
+    r"^(\.env(\..+)?|.*\.(pem|key|p12|pfx|jks|keystore|gpg|crt|cer|der|csr|p7b|p7c)"
+    r"|id_(rsa|dsa|ecdsa|ed25519).*|\.git-credentials|auth\.json|service[-_]account.*\.json"
     r"|\.netrc|\.npmrc|\.pypirc)$", re.I)
 # 仅用于系统仓库：项目仓库的文件名来自用户输入（如 001-secret-garden.md），按关键词判断会误伤
 SECRET_KEYWORD_RE = re.compile(r"credential|secret", re.I)
 PROJECTS_GITIGNORE_TEMPLATE = TEMPLATES / "projects.gitignore"
-BINARY_SUFFIX_RE = re.compile(r"\.(png|jpe?g|webp|gif|ico|otf|ttf|ttc|woff2?|zip)$", re.I)
+TRANSIENT_DIRS = {".cache", ".venv", "node_modules", "__pycache__", ".pytest_cache", ".mypy_cache",
+                  ".ruff_cache", ".tox", ".idea", ".vscode", ".ssh", ".aws", ".gnupg"}
+TRANSIENT_NAME_RE = re.compile(r"(?:~$|\.(?:swp|swo|tmp|temp|bak|orig|log|part)(?:\.|$))", re.I)
 SECRET_CONTENT_RE = re.compile("|".join((
-    r"-----BEGIN (?:[A-Z]+ )*PRIVATE KEY-----",  # 各类私钥
-    r"\bAKIA[0-9A-Z]{16}\b",                     # AWS Access Key
+    r"-----BEGIN (?:(?:[A-Z]+ )*PRIVATE KEY|PGP PRIVATE KEY BLOCK|CERTIFICATE)-----",
+    r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b",           # AWS Access Key（含临时凭据）
     r"\bgh[pousr]_[A-Za-z0-9]{36,}",              # GitHub token
     r"\bgithub_pat_[A-Za-z0-9_]{60,}",            # GitHub fine-grained token
     r"\bsk-ant-[A-Za-z0-9_-]{20,}",               # Anthropic API key
     r"\bsk-(?:proj-)?[A-Za-z0-9_-]{32,}",          # OpenAI 风格 API key
     r"\bxox[abprs]-[A-Za-z0-9-]{10,}",            # Slack token
     r"\bAIza[0-9A-Za-z_-]{35}",                   # Google API key
+    # 非固定前缀的长凭据：敏感字段中的明文字符串（环境变量表达式不匹配）。
+    r'''(?i:\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|(?:aws[_-]?)?secret[_-]?access[_-]?key)\b["']?\s*[:=]\s*["'][A-Za-z0-9_./+=-]{16,}["'])''',
 )))
 PROJECT_FILE_PATTERNS = [re.compile(p) for p in (
     r"project\.toml",
@@ -2137,9 +2142,11 @@ def check_hooks(warnings: list[str]) -> None:
 
 def path_allowed(path: str, scope: str) -> bool:
     """path 是否属于 scope（system/projects）仓库规定的目录结构。"""
+    parts = path.split("/")
+    if any(p.lower() in TRANSIENT_DIRS for p in parts[:-1]) or TRANSIENT_NAME_RE.search(parts[-1]):
+        return False  # 即使 git add -f，也不能把缓存、依赖或备份伪装成白名单内的源码/文档
     if scope == "system":
         return any(pt.fullmatch(path) for pt in SYSTEM_FILE_PATTERNS)
-    parts = path.split("/")
     if len(parts) == 1:
         return path in PROJECTS_ROOT_FILES
     if SLUG_RE.match(parts[0]):
@@ -2153,7 +2160,7 @@ def path_allowed(path: str, scope: str) -> bool:
 
 
 def check_secrets(scope: str, staged: bool, errors: list[str]) -> None:
-    """拦截疑似密钥/凭据：文件名特征 + 文本内容特征。
+    """拦截疑似密钥/凭据：文件/目录名特征 + 内容特征（含图片元数据等二进制中的明文）。
 
     staged=True 时只扫描本次提交新增或修改的文件（读暂存区内容）；否则扫描所有已跟踪与未忽略的文件。
     """
@@ -2170,22 +2177,19 @@ def check_secrets(scope: str, staged: bool, errors: list[str]) -> None:
     else:
         paths = ls("ls-files", "-z", "--cached", "--others", "--exclude-standard")
     for path in sorted(set(paths)):
-        name = path.rsplit("/", 1)[-1]
-        if SECRET_NAME_RE.match(name) or (scope == "system" and SECRET_KEYWORD_RE.search(name)):
-            errors.append(f"{prefix}{path}: 文件名疑似密钥/凭据，禁止提交")
+        parts = path.split("/")
+        if any(SECRET_NAME_RE.match(part) or (scope == "system" and SECRET_KEYWORD_RE.search(part)) for part in parts):
+            errors.append(f"{prefix}{path}: 文件或目录名疑似密钥/凭据，禁止提交")
             continue
-        if BINARY_SUFFIX_RE.search(path):
-            continue  # 图片、字体等二进制文件不做文本扫描
         if staged:
             data = git("show", f":{path}", check=False, repo=scope).stdout
         else:
             f = root / path
-            if not f.is_file() or f.stat().st_size > 5 << 20:
+            if not f.is_file():
                 continue
             data = f.read_bytes()
-        if b"\0" in data[:8192]:
-            continue  # 二进制文件（图片等）不做文本扫描
-        text = data.decode("utf-8", errors="ignore")
+        # 不按扩展名、NUL 或大小跳过；坏字节用替代字符隔开，避免拼接成假令牌。
+        text = data.decode("utf-8", errors="replace")
         m = SECRET_CONTENT_RE.search(text)
         if m:  # 不回显匹配内容，避免把密钥片段打印到终端或日志
             errors.append(f"{prefix}{path}: 第 {text.count(chr(10), 0, m.start()) + 1} 行疑似包含密钥，禁止提交")

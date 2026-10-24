@@ -43,13 +43,33 @@
 !/assets/fonts/fonts.toml
 !/assets/fonts/*/
 /assets/fonts/*/*
-!/assets/fonts/*/LICENSE*
-!/assets/fonts/*/OFL*
+!/assets/fonts/*/LICENSE*.txt
+!/assets/fonts/*/LICENSE*.md
+!/assets/fonts/*/OFL*.txt
+!/assets/fonts/*/OFL*.md
+/.agents/*
+!/.agents/skills/
+/.agents/skills/**
+!/.agents/skills/**/
+!/.agents/skills/*/**/*.md
+!/.agents/skills/*/**/*.py
+!/.agents/skills/*/**/*.sh
+!/.agents/skills/*/**/*.toml
+!/.agents/skills/*/**/*.json
 /.claude/*
 !/.claude/settings.json
 !/.claude/commands/
 !/.claude/agents/
 !/.claude/skills/
+/.claude/commands/**
+!/.claude/commands/**/
+!/.claude/commands/**/*.md
+/.claude/agents/**
+!/.claude/agents/**/
+!/.claude/agents/**/*.md
+/.claude/skills/**
+!/.claude/skills/**/
+!/.claude/skills/**/*.md
 
 # ── 第三层：任何位置都排除（放在最后，优先于上面的放行）──
 
@@ -61,6 +81,16 @@ Thumbs.db
 *.swo
 .idea/
 .vscode/
+.cache/
+.venv/
+node_modules/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.ssh/
+.aws/
+.gnupg/
 
 # Python 缓存
 __pycache__/
@@ -73,10 +103,16 @@ __pycache__/
 *.orig
 *.log
 *.part
+*.tmp.*
+*.temp.*
+*.bak.*
+*.orig.*
+*.log.*
+*.part.*
 
 # 密钥与凭据
-.env
-.env.*
+.[eE][nN][vV]
+.[eE][nN][vV].*
 *.pem
 *.key
 *.p12
@@ -84,12 +120,22 @@ __pycache__/
 *.jks
 *.keystore
 *.gpg
+*.crt
+*.cer
+*.der
+*.csr
+*.p7b
+*.p7c
 id_rsa*
 id_dsa*
 id_ecdsa*
 id_ed25519*
-*credential*
-*secret*
+*[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL]*
+*[sS][eE][cC][rR][eE][tT]*
+.git-credentials
+auth.json
+service-account*.json
+service_account*.json
 .netrc
 .npmrc
 .pypirc

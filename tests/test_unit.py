@@ -116,7 +116,9 @@ class PathRulesTest(unittest.TestCase):
               "assets/fonts/inter/LICENSE.txt", ".githooks/projects/pre-commit", ".claude/settings.json",
               ".agents/skills/logo-workflow/SKILL.md", "AGENTS.md", "logo"]
         bad = ["notes.txt", ".env", "trace.py", "tools/run.sh", "tools/debug.log", "config/x.json",
-               "assets/fonts/inter/Inter-Regular.ttf", ".claude/settings.local.json", "projects/PROJECTS.md"]
+               "assets/fonts/inter/Inter-Regular.ttf", ".claude/settings.local.json", "projects/PROJECTS.md",
+               ".agents/skills/demo/node_modules/pkg/package.json", ".agents/skills/demo/.cache/trace.py",
+               ".agents/skills/demo/.aws/config.json", ".agents/skills/demo/notes.tmp.md"]
         for p in ok:
             self.assertTrue(logo.path_allowed(p, "system"), p)
         for p in bad:
@@ -143,6 +145,8 @@ class PathRulesTest(unittest.TestCase):
 class SecretRulesTest(unittest.TestCase):
     FAKES = {
         "private key": "-----BEGIN " + "OPENSSH PRIVATE KEY-----",  # 运行时拼接，源码本身不触发扫描
+        "certificate": "-----BEGIN " + "CERTIFICATE-----",
+        "pgp private key": "-----BEGIN " + "PGP PRIVATE KEY BLOCK-----",
         "aws": "AKIA" + "ABCDEFGHIJKLMNOP",
         "github": "ghp_" + "a" * 36,
         "anthropic": "sk-ant-" + "a" * 24,
@@ -160,11 +164,20 @@ class SecretRulesTest(unittest.TestCase):
         self.assertIsNone(logo.SECRET_CONTENT_RE.search((REPO / "tools" / "logo.py").read_text(encoding="utf-8")))
 
     def test_file_names(self):
-        for n in (".env", ".env.local", "server.pem", "a.key", "id_rsa", "id_ed25519.pub", ".npmrc"):
+        for n in (".env", ".env.local", "server.pem", "a.key", "id_rsa", "id_ed25519.pub", ".npmrc",
+                  ".EnV.local", "client.crt", "CLIENT.CER", "private.der", ".git-credentials", "auth.json",
+                  "service-account-prod.json", "service_account.json", "id_rsa.backup.md"):
             self.assertTrue(logo.SECRET_NAME_RE.match(n), n)
         for n in ("logo.py", "001-secret-garden.md", "env.md", "keys.svg"):
             self.assertFalse(logo.SECRET_NAME_RE.match(n), n)
         self.assertTrue(logo.SECRET_KEYWORD_RE.search("aws-credentials.toml"))
+
+    def test_sensitive_assignments_without_provider_prefix(self):
+        for field in ("api_key", "apiKey", "access_token", "refresh-token", "client_secret", "aws_secret_access_key"):
+            with self.subTest(field=field):
+                self.assertTrue(logo.SECRET_CONTENT_RE.search(f'"{field}": "' + "Q" * 32 + '"'))
+        for text in ('api_key = os.environ["API_KEY"]', 'client_secret = "example"', 'api_key = "${API_KEY}"'):
+            self.assertIsNone(logo.SECRET_CONTENT_RE.search(text), text)
 
 
 class SvgRulesTest(unittest.TestCase):

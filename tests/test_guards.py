@@ -250,7 +250,13 @@ class StructureAndSecretsTest(GuardBase):
                     "demo/decisions/draft.txt", "demo/concepts/ref.gif", "demo/final/x.tmp", "demo/id_rsa"]
     SYSTEM_JUNK = ["notes.txt", ".env", "trace.py", "tools/debug.log", "tools/run.sh", "config/.env.local",
                    "config/aws-credentials.toml", "tools/id_ed25519", ".claude/settings.local.json",
-                   "assets/fonts/x/Foo.otf"]
+                   "assets/fonts/x/Foo.otf", "assets/fonts/x/LICENSE-cache.py", ".agents/debug.txt",
+                   ".agents/skills/demo/node_modules/pkg/package.json", ".agents/skills/demo/.cache/trace.py",
+                   ".agents/skills/demo/.aws/config.json", ".agents/skills/demo/notes.tmp.md",
+                   ".agents/skills/demo/data/client.crt", ".agents/skills/demo/data/service-account.json",
+                   ".agents/skills/demo/data/.EnV.json", ".claude/commands/debug.txt", "tools/cache.tmp.py",
+                   "config/Secrets.toml", ".agents/skills/demo/.env/config.json",
+                   ".agents/skills/demo/Credentials/config.json"]
 
     def test_projects_gitignore_hides_junk(self):
         for rel in self.PROJECT_JUNK:
@@ -277,12 +283,21 @@ class StructureAndSecretsTest(GuardBase):
 
     def test_system_forced_junk_blocked(self):
         for rel, why in (("notes.txt", "不在规定的目录结构中"), ("tools/run.sh", "不在规定的目录结构中"),
-                         ("config/aws-credentials.toml", "疑似密钥"), ("assets/fonts/x/Foo.otf", "字体文件不应提交")):
+                         ("config/aws-credentials.toml", "疑似密钥"), ("assets/fonts/x/Foo.otf", "字体文件不应提交"),
+                         (".agents/skills/demo/node_modules/pkg/package.json", "不在规定的目录结构中"),
+                         (".agents/skills/demo/.cache/trace.py", "不在规定的目录结构中"),
+                         (".agents/skills/demo/notes.tmp.md", "不在规定的目录结构中"),
+                         (".agents/skills/demo/data/client.crt", "疑似密钥"),
+                         (".agents/skills/demo/data/service-account.json", "疑似密钥"),
+                         (".agents/skills/demo/.env/config.json", "疑似密钥"),
+                         (".agents/skills/demo/Credentials/config.json", "疑似密钥"),
+                         (".agents/skills/demo/id_rsa.backup.md", "疑似密钥")):
             with self.subTest(rel=rel):
                 self.ws.write(rel, "x")
                 self.ws.git("system", "add", "-f", rel)
                 self.assertBlocked(self.ws.commit("system", "x", add=False), why)
                 self.ws.git("system", "rm", "-q", "--cached", rel)
+                (self.ws.root / rel).unlink()  # 避免本用例下一次 add -A 又加回已验证的文件
 
     def test_secret_content_blocked_without_echo(self):
         token = "ghp_" + "Q" * 36
@@ -291,9 +306,56 @@ class StructureAndSecretsTest(GuardBase):
         self.assertBlocked(r, "第 1 行疑似包含密钥")
         self.assertNotIn(token[:8], r.stdout + r.stderr)
 
+    def test_staged_secret_is_not_hidden_by_clean_worktree(self):
+        token = "ghp_" + "Q" * 36
+        path = self.ws.write("tools/helper.py", f"TOKEN = '{token}'\n")
+        self.ws.git("system", "add", "tools/helper.py")
+        path.write_text("# clean working copy\n", encoding="utf-8")
+        result = self.ws.commit("system", "x", add=False)
+        self.assertBlocked(result, "疑似包含密钥")
+        self.assertNotIn(token[:8], result.stdout + result.stderr)
+
+    def test_secret_scan_includes_binary_and_image_extensions(self):
+        token = "ghp_" + "Q" * 36
+        for repo, rel in (("system", ".agents/skills/demo/data/sample.json"),
+                          ("projects", "demo/concepts/001-photo.png")):
+            with self.subTest(repo=repo):
+                root = self.ws.root if repo == "system" else self.ws.projects
+                path = root / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"\x89PNG\x00\xff\n" + token.encode())
+                manual = self.ws.logo("check", ok=False)
+                self.assertNotEqual(manual.returncode, 0)
+                self.assertIn("疑似包含密钥", manual.stdout)
+                self.assertNotIn(token[:8], manual.stdout + manual.stderr)
+                result = self.ws.commit(repo, "x")
+                self.assertBlocked(result, "疑似包含密钥")
+                self.assertNotIn(token[:8], result.stdout + result.stderr)
+                self.ws.git(repo, "rm", "-q", "--cached", rel)
+                path.unlink()
+
+    def test_large_worktree_file_is_scanned(self):
+        token = "ghp_" + "Q" * 36
+        self.ws.write("tools/large.py", "#" + "x" * (5 << 20) + f"\nTOKEN = '{token}'\n")
+        result = self.ws.logo("check", ok=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("第 2 行疑似包含密钥", result.stdout)
+        self.assertNotIn(token[:8], result.stdout + result.stderr)
+
+    def test_sensitive_assignment_is_blocked(self):
+        value = "Q" * 32
+        self.ws.write(".agents/skills/demo/data/config.json", '{"client_secret": "' + value + '"}\n')
+        result = self.ws.commit("system", "x")
+        self.assertBlocked(result, "疑似包含密钥")
+        self.assertNotIn(value, result.stdout + result.stderr)
+
     def test_legit_files_pass(self):
         self.ws.write("tools/helper.py", "def f():\n    return 1\n")
         self.ws.write(".claude/settings.json", "{}\n")
+        for rel in (".agents/skills/demo/SKILL.md", ".agents/skills/demo/scripts/helper.py",
+                    ".agents/skills/demo/scripts/run.sh", ".agents/skills/demo/references/rules.toml",
+                    ".agents/skills/demo/data/options.json", ".claude/commands/nested/review.md"):
+            self.ws.write(rel, "# example\n")
         self.assertCommitted(self.ws.commit("system", "add helper"))
         self.ws.logo("decision", "demo", "secret-garden", "--title", "秘密花园")  # 项目里的关键词不误伤
         fill_doc(self.p / "decisions" / "001-secret-garden.md")
