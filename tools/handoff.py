@@ -172,6 +172,9 @@ description: 为印夏（YinXia）设计管理系统生成 Logo 时，按它要�
 
 def cmd_skill(a) -> None:
     dest = Path(a.dir).expanduser().resolve()
+    import repositories
+    if any(dest.is_relative_to(root) for root in set(repositories.paths().values()) | {logo.PROJECTS}):
+        raise logo.LogoError("外部 Agent skill 不能写入设计仓库，请选择独立安装目录")
     if logo.ROOT in (dest, *dest.parents) and logo.CACHE not in (dest, *dest.parents):
         raise logo.LogoError("请把 skill 写到印夏（YinXia）仓库之外（它是给其他 Agent 安装的），例如 ~/agent-skills")
     fields = "、".join(k for k in importer.SIDECAR_FIELDS if k not in ("project", "terms", "kind", "direction"))
@@ -235,6 +238,8 @@ def read_input(path: str) -> str:
 def cmd_receive(a) -> None:
     """把交接文本拆成文件放进收件箱 inbox/<项目>/（原样保存 SVG 与来源说明），之后照常预演、确认、导入。"""
     p = logo.Project(a.project)
+    import repositories
+    repositories.validate_tree(importer.INBOX)
     blocks, problems = parse_text(read_input(a.text))
     if problems:
         raise logo.LogoError("交接文本不完整，未写入任何文件：\n  " + "\n  ".join(problems))
@@ -250,7 +255,7 @@ def cmd_receive(a) -> None:
         side = "".join(f"{k} = {series.toml_value(v)}\n" for k, v in meta.items())
         (dest / f"{b['file']}{importer.SIDECAR}").write_text(side, encoding="utf-8")
     print(f"已收进收件箱 {logo.rel(dest)}/：{', '.join(b['file'] for b in blocks)}")
-    print("下一步：./logo import <文件> --analyze 预演，把对比图发给用户确认后再正式导入")
+    print(f"下一步：{logo.cli_prefix()} import <文件> --analyze 预演，把对比图发给用户确认后再正式导入")
 
 
 # ---------------------------------------------------------------------------

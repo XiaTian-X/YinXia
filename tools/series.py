@@ -1,6 +1,6 @@
 """系列模块：多个 Logo 项目组成的品牌系列（母品牌与子品牌）。
 
-系列记录在项目仓库的 projects/_series/<系列名>/：series.toml（名称、架构，由命令维护）与 series.md（系列规则）。
+系列记录在所选设计仓库的 _series/<系列名>/：series.toml（名称、架构，由命令维护）与 series.md（系列规则）。
 成员关系以各项目 project.toml 的 [series] 为准（由 ./logo new --series / ./logo series add 写入），不在系列记录里重复登记。
 """
 from __future__ import annotations
@@ -323,11 +323,10 @@ def cmd_review(a) -> None:
     md = SERIES_DIR / a.id / "series.md"
     if not md.exists():
         raise logo.LogoError(f"缺少系列规则 {rules_path(a.id)}，无法记录评审")
-    body = md.read_text(encoding="utf-8").rstrip("\n")
     record = (f"\n\n### {logo.today()} 系列评审：{REVIEW_RESULTS[a.result]}\n"
               f"- **对比**：{'、'.join(f'{p.slug} {ref}' for p, _, ref in items)}\n"
               f"- **用户意见**：{note}\n")
-    md.write_text(body + record, encoding="utf-8")
+    logo.append_text(md, record)
     print(f"已记录系列评审（{REVIEW_RESULTS[a.result]}）→ {rules_path(a.id)}")
     if a.result == "revise":
         print("结论为需修改：按用户意见出新版本后重新对比与评审")
@@ -449,10 +448,10 @@ def cmd_sync(a) -> None:
     skipped = [k for k in offered if k not in keys]
     md = SERIES_DIR / m["id"] / "series.md"
     if md.exists():
-        md.write_text(md.read_text(encoding="utf-8").rstrip("\n") + (
+        logo.append_text(md, (
             f"\n\n### {logo.today()} 改版跟进：{p.slug} {based} → {master.slug} {latest}\n"
             f"- **色板**：{'、'.join(report) or '不改'}" + (f"；未跟随：{'、'.join(skipped)}" if skipped else "") + "\n"
-            f"- **用户意见**：{note}\n"), encoding="utf-8")
+            f"- **用户意见**：{note}\n"))
     print(f"{p.slug} 已跟进母品牌 {master.slug} {latest}：" + ("；".join(report) or "色板不改"))
     if skipped:
         print(f"未跟随：{'、'.join(skipped)}")
@@ -469,7 +468,7 @@ def check_series(errors: list[str], warnings: list[str]) -> None:
         if not d.is_dir():
             continue
         where = logo.rel(d)
-        if not logo.SLUG_RE.match(d.name):
+        if not logo.SLUG_RE.fullmatch(d.name):
             errors.append(f"{where}: 系列名只能使用小写英文、数字和短横线")
             continue
         try:
@@ -579,8 +578,8 @@ def cmd_new(a) -> None:
     if repositories.kind(logo.PROJECTS) == "single":
         raise logo.LogoError("single 仓库只管理独立品牌；系列请放在 workspace 仓库")
     if not logo.projects_repo_ready():
-        raise logo.LogoError("项目仓库 projects/ 尚未初始化，请先运行 ./logo setup")
-    if not logo.SLUG_RE.match(a.id):
+        raise logo.LogoError(f"项目仓库 {logo.rel(logo.PROJECTS)}/ 尚未初始化，请先运行 {logo.cli_prefix()} setup")
+    if not logo.SLUG_RE.fullmatch(a.id):
         raise logo.LogoError("系列名只能使用小写英文、数字和短横线，例如 pets")
     if a.architecture not in ARCHITECTURES:
         raise logo.LogoError(f"--architecture 须为 {' / '.join(ARCHITECTURES)}")
@@ -619,8 +618,8 @@ def cmd_skeleton(a) -> None:
     ratios = "、".join(s.stem for s in sorted(cdir.glob("*.svg")))
     md = SERIES_DIR / a.id / "series.md"
     if md.exists():
-        md.write_text(md.read_text(encoding="utf-8").rstrip("\n") + (
-            f"\n\n### {logo.today()} 封面骨架：{ref}\n- **画幅**：{ratios}\n- **用户意见**：{note}\n"), encoding="utf-8")
+        logo.append_text(md, (
+            f"\n\n### {logo.today()} 封面骨架：{ref}\n- **画幅**：{ratios}\n- **用户意见**：{note}\n"))
     print(f"已登记系列 {a.id} 的封面骨架：{ref}（画幅：{ratios}）")
     print(f"成员立项封面时须先问用户是否套用：{logo.cli_prefix()} cover new <项目> <名称> --platforms … --from-skeleton | --no-skeleton")
 

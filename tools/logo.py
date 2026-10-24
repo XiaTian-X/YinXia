@@ -260,12 +260,19 @@ def sha256_file(p: Path) -> str:
 
 def run(cmd: list[str], capture: bool = False) -> str:
     try:
-        r = subprocess.run(cmd, check=True, capture_output=True, text=True)
+        env = git_env(Path(cmd[cmd.index("-C") + 1])) if cmd[0] == "git" and "-C" in cmd else None
+        r = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
     except FileNotFoundError:
         raise LogoError(f"找不到命令：{cmd[0]}，请先安装")
     except subprocess.CalledProcessError as e:
         raise LogoError(f"命令失败：{' '.join(cmd)}\n{e.stderr.strip()}")
     return r.stdout if capture else ""
+
+
+def append_text(path: Path, text: str) -> None:
+    """原字节不动，包括 CRLF 和末尾空行；只追加新的 UTF-8 记录。"""
+    with path.open("ab") as stream:
+        stream.write(text.encode("utf-8"))
 
 
 def load_toml(p: Path) -> dict:
@@ -304,6 +311,8 @@ def to_slug(text: str) -> str:
 # ---------------------------------------------------------------------------
 class Project:
     def __init__(self, slug: str):
+        if not SLUG_RE.fullmatch(slug) or slug == "inbox":
+            raise LogoError("项目短名必须是小写英文、数字和短横线，不能使用路径或收件箱保留名")
         self.slug = slug
         self.dir = PROJECTS / slug
         if not (self.dir / "project.toml").exists():
@@ -851,7 +860,7 @@ def cmd_new(a) -> None:
             raise LogoError("single 仓库最多容纳一个品牌项目；请新建另一个仓库或使用 workspace 模式")
         if a.series or a.role:
             raise LogoError("single 仓库只管理独立品牌；系列请放在 workspace 仓库")
-    if not SLUG_RE.match(slug):
+    if not SLUG_RE.fullmatch(slug):
         raise LogoError("项目短名只能使用小写英文、数字和短横线，例如 acme 或 green-tea")
     if slug == "inbox":
         raise LogoError("inbox 是收件箱保留目录，不能作为品牌项目短名")
@@ -1165,6 +1174,8 @@ def fmt_num(v: float) -> str:
 
 
 def cmd_outline(a) -> None:
+    if a.svg:
+        validate_svg_output(Path(a.svg), a.project)
     try:
         from fontTools.pens.boundsPen import BoundsPen
         from fontTools.pens.svgPathPen import SVGPathPen
@@ -1231,6 +1242,28 @@ def cmd_outline(a) -> None:
         print(path_el)
     if a.project and Project(a.project).add_font(a.font):
         print(f"已将字体 {a.font} 写入 {a.project} 的 [fonts] used", file=sys.stderr)
+
+
+def validate_svg_output(path: Path, project: str | None) -> None:
+    """显式输出路径也不能跨设计仓库写入或覆盖已提交的冻结资料。"""
+    import repositories
+    dest = path.resolve()
+    roots = set(repositories.paths().values()) | {PROJECTS}
+    for root in roots:
+        root = root.resolve()
+        if not dest.is_relative_to(root):
+            continue
+        if root != PROJECTS.resolve():
+            raise LogoError("SVG 输出不能写入另一个设计仓库；请显式选择对应仓库")
+        relative = dest.relative_to(root).as_posix()
+        if project and not dest.is_relative_to(root / Project(project).slug):
+            raise LogoError("SVG 输出路径与 --project 指定的项目不一致")
+        if any(pt.match(relative) for pt in FROZEN_PATTERNS + APPEND_ONLY_PATTERNS):
+            if git("cat-file", "-e", f"HEAD:{relative}", repo="projects", check=False).returncode == 0:
+                raise LogoError("SVG 输出不能覆盖已冻结或只追加的文件，请创建新版本")
+        return
+    if dest.is_relative_to(ROOT) and not dest.is_relative_to(CACHE):
+        raise LogoError("SVG 临时输出请放在当前仓库的 .cache 缓存目录或系统目录之外")
 
 
 def font_status(entry: dict) -> str:
@@ -1944,17 +1977,47 @@ def profile_warnings() -> list[str]:
     return [w for key in ("ios", "android", "avatar") for w in spec_warnings(key, t[key])]
 
 
+@functools.lru_cache(maxsize=1)
+def incoming_git_index() -> tuple[Path | None, str | None]:
+    """记住启动目录的暂存区；git commit --only 的临时 index 必须留给原仓库。"""
+    index = os.environ.get("GIT_INDEX_FILE")
+    if not index:
+        return None, None
+    r = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    if r.returncode:
+        return None, None
+    return Path(r.stdout.strip()).resolve(), str(Path(index).resolve())
+
+
+def git_env(path: Path) -> dict[str, str]:
+    """-C 不覆盖 GIT_DIR 等变量；跨仓库调用须移除定位信息，按归属保留临时 index。"""
+    env = os.environ.copy()
+    for key in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE", "GIT_PREFIX",
+                "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE",
+                "GIT_GRAFT_FILE", "GIT_IMPLICIT_WORK_TREE", "GIT_CONFIG", "GIT_CONFIG_PARAMETERS",
+                "GIT_CONFIG_COUNT", "GIT_NO_REPLACE_OBJECTS", "GIT_REPLACE_REF_BASE"):
+        env.pop(key, None)
+    for key in list(env):
+        if key.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            env.pop(key)
+    origin, index = incoming_git_index()
+    if origin == path.resolve() and index:
+        env["GIT_INDEX_FILE"] = index
+    return env
+
+
 def git(*args: str, check: bool = True, repo: str = "system") -> subprocess.CompletedProcess:
-    """在系统仓库（ROOT）或项目仓库（projects/）中执行 git。"""
+    """在系统仓库或当前所选设计仓库中执行 git。"""
     if repo == "projects" and not projects_repo_ready():
         raise LogoError(f"项目仓库 {rel(PROJECTS)}/ 尚未初始化，请先运行 {cli_prefix()} setup")
     path = PROJECTS if repo == "projects" else ROOT
-    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, check=check)
+    return subprocess.run(["git", "-C", str(path), *args], capture_output=True, check=check, env=git_env(path))
 
 
 def projects_repo_ready() -> bool:
-    # 必须检查 projects/.git 本身：否则 git -C projects 会向上找到系统仓库
-    return (PROJECTS / ".git").exists()
+    # 选择仓库和 setup 时已验证真实 Git 根；每次 Git 调用只检测标记，避免重复启动 Git。
+    marker = PROJECTS / ".git"
+    return marker.exists() and not marker.is_symlink()
 
 
 def check_immutability(staged: bool, errors: list[str]) -> None:
@@ -1977,7 +2040,7 @@ def check_immutability(staged: bool, errors: list[str]) -> None:
                 continue
             old = git("show", f"HEAD:{path}", repo="projects").stdout
             new = git("show", f":{path}", repo="projects").stdout if staged else (PROJECTS / path).read_bytes()
-            if not new.startswith(old.rstrip(b"\n")):
+            if not new.startswith(old):
                 errors.append(f"{rel(PROJECTS)}/{path}: 只允许在末尾追加内容，已有内容不能修改")
 
 
@@ -1999,7 +2062,7 @@ def check_history(warnings: list[str]) -> None:
     if r.returncode != 0:
         return
     rules = "|".join(pt.pattern for pt in FROZEN_PATTERNS + APPEND_ONLY_PATTERNS)
-    key = hashlib.sha256(f"v1|{r.stdout.decode().strip()}|{rules}".encode()).hexdigest()
+    key = hashlib.sha256(f"v2-exact-bytes|{r.stdout.decode().strip()}|{rules}".encode()).hexdigest()
     try:
         cache = json.loads(HISTORY_CACHE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
@@ -2024,7 +2087,7 @@ def check_history(warnings: list[str]) -> None:
                     continue
                 old = git("show", f"{commit}^:{path}", check=False, repo="projects").stdout
                 new = git("show", f"{commit}:{path}", check=False, repo="projects").stdout
-                if not new.startswith(old.rstrip(b"\n")):
+                if not new.startswith(old):
                     found.append(f"{commit[:7]} 改写了只追加文件 {path}")
         cache = {"key": key, "found": found}
         write_atomic(HISTORY_CACHE, json.dumps(cache, ensure_ascii=False))
@@ -2189,7 +2252,7 @@ def path_allowed(path: str, scope: str) -> bool:
         return False  # 收件箱中的外部资料未经正式导入，不能强制提交
     if len(parts) == 1:
         return path in PROJECTS_ROOT_FILES
-    if SLUG_RE.match(parts[0]):
+    if SLUG_RE.fullmatch(parts[0]):
         return any(pt.fullmatch("/".join(parts[1:])) for pt in PROJECT_FILE_PATTERNS)
     m = SERIES_FILE_RE.fullmatch(path)
     if not m:
@@ -2246,6 +2309,12 @@ def check_stray_files(scope: str, errors: list[str], warnings: list[str]) -> Non
 
     tracked = ls("--cached")
     untracked = ls("--others", "--exclude-standard")
+    if scope == "projects":
+        for entry in git("ls-files", "--stage", "-z", repo=scope).stdout.decode("utf-8").split("\0"):
+            mode, _, tail = entry.partition(" ")
+            if mode in ("120000", "160000"):
+                path = tail.partition("\t")[2]
+                errors.append(f"{prefix}{path}: 设计资料不能提交符号链接或嵌套 Git 仓库")
     for path in sorted(tracked):
         if scope == "system" and FONT_BINARY_RE.search(path):
             errors.append(f"{path}: 字体文件不应提交到 Git（由 ./logo fonts fetch 下载）")
@@ -2298,10 +2367,21 @@ def cmd_check(a) -> None:
         raise LogoError("--staged 需要配合 --scope system 或 --scope projects（由各仓库的钩子传入）")
     has_projects = projects_repo_ready()
     projects: list[Project] | None = None
-    if not has_projects:
+    tree_problem = getattr(a, "project_selection_error", "")
+    if has_projects and not tree_problem:
+        import repositories
+        try:
+            repositories.validate_tree(PROJECTS)
+        except LogoError as e:
+            if scope != "system":
+                raise
+            tree_problem = str(e)
+    if tree_problem:
+        warnings.append(f"[项目仓库] {tree_problem}，已跳过项目内容检查")
+    elif not has_projects:
         if scope == "projects" or a.slug:
-            raise LogoError("项目仓库 projects/ 尚未初始化，请先运行 ./logo setup")
-        warnings.append("未找到项目仓库 projects/（运行 ./logo setup 初始化），已跳过项目检查")
+            raise LogoError(f"项目仓库 {rel(PROJECTS)}/ 尚未初始化，请先运行 {cli_prefix()} setup")
+        warnings.append(f"未找到项目仓库 {rel(PROJECTS)}/（运行 {cli_prefix()} setup 初始化），已跳过项目检查")
     else:
         staged = a.staged and scope == "projects"
         perr: list[str] = []
@@ -2546,12 +2626,29 @@ def main(argv: list[str] | None = None) -> None:
         group.add_argument("--repo-path")
         selected, rest = selection.parse_known_args(sys.argv[1:] if argv is None else argv)
         management = bool(rest and rest[0] in ("repo", "selftest", "--help", "-h")) or "--all-repos" in rest
-        repositories.configure(selected.repo or ("default" if management else None), selected.repo_path)
+        system_check = rest[:1] == ["check"] and ("--scope=system" in rest or any(
+            rest[i:i + 2] == ["--scope", "system"] for i in range(len(rest))))
+        selection_error = ""
+        if management and not (selected.repo or selected.repo_path):
+            repositories.bind("default", (ROOT / "projects").resolve())
+        else:
+            try:
+                repositories.configure(selected.repo, selected.repo_path)
+            except LogoError as e:
+                if not system_check:
+                    raise
+                selection_error = str(e)
+                repositories.bind("default", (ROOT / "projects").resolve())
         args = build_parser().parse_args(rest)
+        args.project_selection_error = selection_error
         if getattr(args, "all_repos", False):
             if selected.repo or selected.repo_path:
                 raise LogoError("--all-repos 与单个仓库选择不能同时使用")
             return repositories.all_repositories(args)
+        if args.cmd not in ("repo", "selftest", "check"):
+            repositories.validate_tree(PROJECTS)
+        if args.cmd not in ("repo", "selftest"):
+            repositories.validate_cache()
         args.fn(args)
     except LogoError as e:
         print(f"✗ {scope_hint(str(e))}", file=sys.stderr)

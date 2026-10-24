@@ -27,7 +27,7 @@ def project_todo(p: "logo.Project") -> list[dict]:
     out: list[dict] = []
 
     def add(kind: str, text: str, command: str = "") -> None:
-        command = logo.scope_hint(command).replace("git -C projects", logo.projects_git_prefix())
+        command = logo.scope_hint(command)
         out.append({"kind": kind, "text": text, "command": command})
 
     st = p.cfg.get("state", {})
@@ -44,7 +44,8 @@ def project_todo(p: "logo.Project") -> list[dict]:
         docs = [c for c in changed if (logo.PROJECTS / c).is_file()
                 and logo.document_issues(c, (logo.PROJECTS / c).read_text(encoding="utf-8", errors="ignore"))]
         text = f"有 {len(changed)} 个文件改动未提交" + (f"，其中 {len(docs)} 份文档缺失内容或仍有模板占位：{', '.join(docs[:3])}" if docs else "")
-        add("未提交", text, f"填完后 ./logo index && ./logo check && git -C projects add -A && git -C projects commit -m \"[{p.slug}] …\"")
+        git = logo.projects_git_prefix()
+        add("未提交", text, f"填完后 ./logo index && ./logo check && {git} add -A && {git} commit -m \"[{p.slug}] …\"")
     # -- 设计 --
     sel, cur = st.get("selected_version"), st.get("current_release")
     try:

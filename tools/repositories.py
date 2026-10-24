@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import hashlib
+import fcntl
+import functools
 import os
 import re
 import subprocess
@@ -15,6 +17,17 @@ import logo
 REGISTRY = logo.ROOT / ".yinxia" / "repositories.toml"
 REPOSITORIES = logo.ROOT / "repositories"
 KINDS = ("workspace", "single")
+
+
+def registry_locked(fn):
+    """登记、切换和移除共用锁，避免并发读改写丢失另一个会话的登记。"""
+    @functools.wraps(fn)
+    def locked(a):
+        REGISTRY.parent.mkdir(parents=True, exist_ok=True)
+        with REGISTRY.with_suffix(".lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            return fn(a)
+    return locked
 
 
 def registry() -> dict:
@@ -30,7 +43,7 @@ def registry() -> dict:
 
 def paths(data: dict | None = None) -> dict[str, Path]:
     data = data if data is not None else registry()
-    return {"default": logo.ROOT / "projects", **{
+    return {"default": (logo.ROOT / "projects").resolve(), **{
         name: (logo.ROOT / value).expanduser().resolve() if not value.startswith("~") else Path(value).expanduser().resolve()
         for name, value in data["repositories"].items()}}
 
@@ -63,9 +76,10 @@ def kind(path: Path, staged: bool = False) -> str:
 
 
 def git_root(path: Path) -> bool:
-    if not (path / ".git").exists():
+    if not (path / ".git").exists() or (path / ".git").is_symlink():
         return False
-    r = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", str(path), "rev-parse", "--show-toplevel"], capture_output=True, text=True,
+                       env=logo.git_env(path))
     return r.returncode == 0 and Path(r.stdout.strip()).resolve() == path.resolve()
 
 
@@ -84,7 +98,7 @@ def validate_location(path: Path, existing: dict[str, Path], *, exclude: str | N
     if git_root(path):
         def common(p: Path) -> Path:
             r = subprocess.run(["git", "-C", str(p), "rev-parse", "--git-common-dir"],
-                               capture_output=True, text=True, check=True)
+                               capture_output=True, text=True, check=True, env=logo.git_env(p))
             return (p / r.stdout.strip()).resolve()
         shared = common(path)
         if common(logo.ROOT) == shared:
@@ -98,16 +112,27 @@ def select(selector: str | None = None, hook_path: str | None = None) -> tuple[s
     # 提交钩子从 Git 的实际工作目录选择，不受另一个会话切换 active 的影响。
     if hook_path is not None:
         path = Path(hook_path).expanduser().resolve()
-        validate_location(path, {}, exclude=None)
+        try:
+            entries = paths()
+        except logo.LogoError:
+            entries = {}  # 登记文件损坏时，钩子仍独立保护正在提交的仓库
+        own = next((name for name, value in entries.items() if value.resolve() == path), None)
+        validate_location(path, entries, exclude=own)
         if not git_root(path):
             raise logo.LogoError("提交钩子的工作目录不是独立设计仓库")
         # 默认仓库保持旧缓存位置，其他仓库即使登记丢失仍按路径隔离检查。
-        if path == logo.ROOT / "projects":
+        if path == (logo.ROOT / "projects").resolve():
             return "default", path
         return "hook-" + hashlib.sha256(str(path).encode()).hexdigest()[:16], path
     if selector == "default":
-        path = logo.ROOT / "projects"
-        validate_location(path, {})
+        path = (logo.ROOT / "projects").resolve()
+        try:
+            entries = paths()
+        except logo.LogoError:
+            entries = {}
+        validate_location(path, entries, exclude="default")
+        if ((path / ".git").exists() or (path / ".git").is_symlink()) and not git_root(path):
+            raise logo.LogoError("default 路径不是独立设计仓库")
         return "default", path
     data = registry()
     name = selector or data["active"]
@@ -116,13 +141,52 @@ def select(selector: str | None = None, hook_path: str | None = None) -> tuple[s
         raise logo.LogoError(f"仓库未登记：{name}（./logo repo list 查看；./logo repo use default 恢复默认）")
     path = entries[name].resolve()
     validate_location(path, entries, exclude=name)
-    if name != "default" and not git_root(path):
+    if (name != "default" or (path / ".git").exists() or (path / ".git").is_symlink()) and not git_root(path):
         raise logo.LogoError(f"仓库 {name} 不存在或不是独立 Git 仓库：{path}")
     return name, path
 
 
+def validate_tree(path: Path) -> None:
+    """设计资料不能通过符号链接或嵌套仓库把读写转到另一个仓库。"""
+    if path.is_symlink():
+        raise logo.LogoError(f"{path}: 不允许符号链接")
+    for directory, dirs, files in os.walk(path, followlinks=False):
+        parent = Path(directory)
+        for name in dirs + files:
+            child = parent / name
+            if parent == path and name == ".git":
+                continue
+            if child.is_symlink():
+                raise logo.LogoError(f"{logo.rel(child)}: 设计仓库内不允许符号链接")
+            if name == ".git":
+                raise logo.LogoError(f"{logo.rel(parent)}: 设计仓库内不允许嵌套 Git 仓库")
+        if parent == path and ".git" in dirs:
+            dirs.remove(".git")
+
+
+def validate_cache() -> None:
+    for path in (logo.CACHE, *logo.CACHE.parents):
+        if path == logo.ROOT:
+            break
+        if path.is_symlink():
+            raise logo.LogoError(f"{path}: 缓存目录不允许符号链接，避免跨仓库写入")
+    for directory, dirs, files in os.walk(logo.CACHE, followlinks=False):
+        parent = Path(directory)
+        # default 的旧缓存根与命名仓库缓存共用 .cache，不检查其他仓库的缓存。
+        dirs[:] = [name for name in dirs if name != ".git" and not (
+            parent == logo.CACHE and logo.REPOSITORY_ID == "default" and name == "repositories")]
+        for name in dirs + files:
+            if (parent / name).is_symlink():
+                raise logo.LogoError(f"{parent / name}: 缓存目录不允许符号链接，避免跨仓库写入")
+
+
 def configure(selector: str | None = None, hook_path: str | None = None) -> None:
     name, path = select(selector, hook_path)
+    bind(name, path)
+
+
+def bind(name: str, path: Path) -> None:
+    """绑定命令上下文；管理命令无需先打开默认设计仓库。"""
     logo.REPOSITORY_ID, logo.PROJECTS = name, path
     logo.PROJECTS_MD = path / "PROJECTS.md"
     location = hashlib.sha256(str(path).encode()).hexdigest()[:16]
@@ -135,7 +199,7 @@ def configure(selector: str | None = None, hook_path: str | None = None) -> None
 def setup_data_repository(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
     if not (path / ".git").exists():
-        logo.run(["git", "init", "-q", str(path)])
+        logo.run(["git", "-C", str(path), "init", "-q"])
     if not git_root(path):
         raise logo.LogoError(f"不是独立 Git 仓库：{path}")
     wanted = logo.PROJECTS_GITIGNORE_TEMPLATE.read_text(encoding="utf-8")
@@ -203,6 +267,7 @@ def cmd_list(a) -> None:
                   + (f" · {item['error']}" if item['error'] else ""))
 
 
+@registry_locked
 def cmd_new(a) -> None:
     data = registry()
     if a.id == "default" or not logo.SLUG_RE.fullmatch(a.id) or a.id in paths(data):
@@ -221,6 +286,7 @@ def cmd_new(a) -> None:
     print(f"初始 repository.toml、.gitignore 与 PROJECTS.md 尚未提交，请在该仓库配置提交身份后保存")
 
 
+@registry_locked
 def cmd_add(a) -> None:
     data = registry()
     if a.id == "default" or not logo.SLUG_RE.fullmatch(a.id) or a.id in paths(data):
@@ -229,7 +295,9 @@ def cmd_add(a) -> None:
     validate_location(path, paths(data))
     if not git_root(path):
         raise logo.LogoError("只能登记已有的独立 Git 仓库，不能把其子目录当作仓库")
-    tracked = subprocess.run(["git", "-C", str(path), "ls-files", "-z"], capture_output=True, text=True, check=True).stdout.split("\0")
+    validate_tree(path)
+    tracked = subprocess.run(["git", "-C", str(path), "ls-files", "-z"], capture_output=True, text=True,
+                             check=True, env=logo.git_env(path)).stdout.split("\0")
     bad = [p for p in tracked if p and not logo.path_allowed(p, "projects")]
     if bad or (path / "project.toml").exists():
         raise logo.LogoError("已有仓库不符合设计仓库结构（品牌资料应在 <slug>/ 内），拒绝修改")
@@ -242,6 +310,7 @@ def cmd_add(a) -> None:
     print(f"已登记 {a.id} → {path}；Git 历史与设计文件保留。请用 --repo {a.id} index/check 检查。")
 
 
+@registry_locked
 def cmd_use(a) -> None:
     select(a.id)
     data = registry()
@@ -250,6 +319,7 @@ def cmd_use(a) -> None:
     print(f"默认设计仓库已切换为 {a.id}（只影响本机未指定 --repo 的操作）")
 
 
+@registry_locked
 def cmd_forget(a) -> None:
     data = registry()
     if a.id not in data["repositories"]:

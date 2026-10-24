@@ -1,6 +1,6 @@
 """封面模块：封面是含 Logo 的品牌物料（构图、文案、图像），与 Logo 资产分开管理。
 
-平台与画幅登记在 config/cover-platforms.toml；封面项目在 projects/<slug>/covers/NNN-名称/。
+平台与画幅登记在 config/cover-platforms.toml；封面项目在 <设计仓库>/<slug>/covers/NNN-名称/。
 公共函数（TOML 读取、版式换色、规格依据检查等）复用 logo.py。
 """
 from __future__ import annotations
@@ -103,7 +103,7 @@ def cmd_platforms(a) -> None:
 
 
 # ---------------------------------------------------------------------------
-# 封面项目：projects/<slug>/covers/NNN-名称/{cover.toml, cover.md, <画幅>.svg, assets/}
+# 封面项目：<设计仓库>/<slug>/covers/NNN-名称/{cover.toml, cover.md, <画幅>.svg, assets/}
 # ---------------------------------------------------------------------------
 COVER_DIR_RE = re.compile(r"^\d{3}-[a-z0-9-]+$")
 COVER_STATUSES = ("draft", "live", "archived")
@@ -123,7 +123,7 @@ def needed_ratios(platform_ids: list[str]) -> list[str]:
 
 
 class Family:
-    """家族封面的归属方：系列（封面在 projects/_series/<系列>/covers/，同时展示多个成员的 Logo）。
+    """家族封面的归属方：系列（封面在 <设计仓库>/_series/<系列>/covers/，同时展示多个成员的 Logo）。
     与 logo.Project 一样提供 slug（写作 series:<系列名>）与 dir，封面命令据此对两者一视同仁。"""
 
     def __init__(self, sid: str):
@@ -403,7 +403,7 @@ def family_members_ok(fam: Family, c: dict, where: str, errors: list[str]) -> bo
 
 
 def check_family_covers(errors: list[str], warnings: list[str], staged: bool = False) -> None:
-    """检查各系列的家族封面（projects/_series/<系列>/covers/）。"""
+    """检查各系列的家族封面（<设计仓库>/_series/<系列>/covers/）。"""
     import series  # 延迟导入：series.py 依赖 logo
     try:
         load_config()
@@ -1295,9 +1295,7 @@ def cmd_retarget(a) -> None:
     cfg["state"]["updated"] = logo.today()
     write_cover_cfg(cdir, cfg)
     md = cdir / "cover.md"  # 只追加文件：在末尾记录调整
-    body = md.read_text(encoding="utf-8")
-    md.write_text(body.rstrip("\n") + f"\n- {logo.today()} 目标平台调整：{', '.join(old)} → {', '.join(new)}\n",
-                  encoding="utf-8")
+    logo.append_text(md, f"\n- {logo.today()} 目标平台调整：{', '.join(old)} → {', '.join(new)}\n")
     unused = [s.name for s in sorted(cdir.glob("*.svg")) if s.stem not in needed_ratios(new)]
     print(f"已调整 {cdir.name} 的目标平台：{', '.join(old)} → {', '.join(new)}")
     for line in report:

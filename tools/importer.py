@@ -649,10 +649,10 @@ def cmd_import(a) -> None:
         label = "子品牌例外" if a.series_rule == "exception" else "系列规则调整"
         rmd = series.SERIES_DIR / m["id"] / "series.md"
         if rmd.exists():
-            rmd.write_text(rmd.read_text(encoding="utf-8").rstrip("\n") + (
+            logo.append_text(rmd, (
                 f"\n\n### {logo.today()} {label}：{p.slug} 导入 {name} 新增颜色\n"
                 f"- **颜色**：{'、'.join(f'{k} {v}' for k, v in rep['palette_add'].items())}\n"
-                f"- **用户意见**：{note}\n"), encoding="utf-8")
+                f"- **用户意见**：{note}\n"))
             print(f"已在 {series.rules_path(m['id'])} 追加{label}记录")
     in_inbox = INBOX in src.resolve().parents
     kept = archive_original(src)
