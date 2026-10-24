@@ -1,5 +1,6 @@
-# LOGODesign 全局规则
+# 印夏（YinXia） 全局规则
 
+- **系统名称**：中文名“印夏”，英文名“YinXia”（原名 LOGODesign）。对外说明使用新名称；`./logo` 命令、v1 交接标记 `LOGODESIGN` 与通用 skill 标识 `logodesign-handoff` 保持兼容。各实际品牌项目使用自己的名称。
 - **两个 Git 仓库**：仓库根目录是**系统仓库**（`tools/`、`templates/`、`config/`、`assets/`、规则文档）；`projects/` 是独立的**项目仓库**（各项目、系列记录 `_series/` 与 `PROJECTS.md`）。设计工作只提交到项目仓库：`git -C projects add -A && git -C projects commit -m "[<slug>] …"`；只有修改系统本身时才在根目录提交，且系统改动与项目改动绝不混在同一次提交里。
 - **会话开始先看待办**：开始处理 Logo 工作时先运行 `./logo status`，把各项目的待办（访谈、未提交、设计、系列、交付、封面、收件箱）讲给用户，问从哪一项开始，不要自己挑一项就开干。
 - **先访谈再设计**：用户要做 Logo 时，先按 `logo-workflow` 技能第 0 步向用户提问，明确是独立 Logo 还是品牌系列、系列架构（统一型 / 背书型 / 独立型）与角色、品牌、视觉与使用场景，并经用户确认；据此用 `./logo new`（系列项目先 `./logo series new`）建立对应结构的项目。brief.md 未填完不得开始设计（`./logo direction` 会拒绝）；系列成员还须系列规则 series.md 已填完。系列规则在 `projects/_series/<系列名>/series.md`，只追加，系列内每个项目都按它设计与评审。统一型 / 背书型子品牌定稿前，必须用 `./logo series compare` 把对比图给用户看、按清单逐条征求意见，并用 `./logo series review --note` 记录用户结论（`./logo release` 会检查）。母品牌出新发布后，要逐个子品牌向用户确认是否跟进，用 `./logo series sync --note` 记录并执行（`check` 会持续提醒未跟进的子品牌）。系列已登记封面骨架时，成员做封面前要先问用户是否套用（`./logo cover new --from-skeleton | --no-skeleton`，不选会被拒绝）；做家族封面前要问用户展示哪些品牌、以谁为主（`./logo cover new series:<系列名> --members 主品牌,…`）。

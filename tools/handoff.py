@@ -5,7 +5,7 @@
 - receive：把对方回复的交接文本拆成文件放进收件箱（不直接导入，之后照常 ./logo import 预演、确认）；
 - validate：只读自查（对方 Agent 可直接运行）；feedback：把问题写成对方能照做的修改意见。
 
-交接文本格式 v1（每个文件一段，可分多条消息输出）：
+交接文本格式 v1（LOGODESIGN 为兼容已有内容保留的协议标记，每个文件一段，可分多条消息输出）：
     === LOGODESIGN 交接 v1 · 文件 1/2 ===
     [说明]
     source = "…"            # TOML，字段见 ./logo inbox --spec
@@ -23,8 +23,8 @@ from pathlib import Path
 import importer
 import logo
 
-VERSION = "v1"
-REMINDER = f"按 LOGODesign 交接格式 {VERSION} 输出（每个文件一段，以“=== 结束 n/N ===”收尾）"
+VERSION = "v1"  # 系统更名为印夏（YinXia），v1 的 LOGODESIGN 标记保持兼容
+REMINDER = f"按 印夏（YinXia） 交接格式 {VERSION} 输出（每个文件一段，以“=== 结束 n/N ===”收尾）"
 BLOCK_RE = re.compile(r"^=== LOGODESIGN 交接 v1 · 文件 (\d+)/(\d+) ===[ \t]*$(.*?)^=== 结束 \1/\2 ===[ \t]*$", re.M | re.S)
 HEAD_RE = re.compile(r"^=== LOGODESIGN 交接 v1 · 文件 (\d+)/(\d+) ===", re.M)
 FILE_RE = re.compile(r"^\[文件 ([a-z0-9][a-z0-9-]*\.svg)\][ \t]*$", re.M)
@@ -73,10 +73,10 @@ def format_text(plain: bool, slug: str) -> list[str]:
             "说明部分是 TOML 格式；文件名只用小写英文、数字和短横线。不要写使用条款与授权判断，那由用户确认。",
         ]
     return [
-        f"请把每个 SVG 保存到 LOGODesign 的收件箱 inbox/{slug}/<英文短名>.svg，",
+        f"请把每个 SVG 保存到 印夏（YinXia） 的收件箱 inbox/{slug}/<英文短名>.svg，",
         f"并在旁边写一份同名加 .import.toml 的说明（TOML，字段：{fields}）。",
         "写好后可以运行 `./logo handoff validate inbox/" + slug + "/<文件> --project " + slug + "` 自查并修正。",
-        "不要自行导入或改动项目目录，导入由用户在 LOGODesign 中确认后完成。",
+        "不要自行导入或改动项目目录，导入由用户在 印夏（YinXia） 中确认后完成。",
     ]
 
 
@@ -88,8 +88,8 @@ def cover_sections(p: "logo.Project", platforms: str | None, plain: bool) -> lis
     targets = covers.parse_platforms(platforms)
     plats, ratios = covers.platforms_by_id(), covers.load_config()["ratios"]
     n = logo.fmt_num
-    lines = ["", "## 只要底图（主视觉）", "- **不要画任何 Logo、品牌标志或商标**：Logo 由 LOGODesign 按定稿版本嵌入",
-             "- 尽量不放文字（标题由 LOGODesign 用已登记字体加上）；确需文字时在说明里写明",
+    lines = ["", "## 只要底图（主视觉）", "- **不要画任何 Logo、品牌标志或商标**：Logo 由 印夏（YinXia） 按定稿版本嵌入",
+             "- 尽量不放文字（标题由 印夏（YinXia） 用已登记字体加上）；确需文字时在说明里写明",
              "- 每个画幅一张 PNG，尺寸与画布完全一致；色调与上面的色板协调", "", "## 各画幅要求"]
     for r in covers.needed_ratios(targets):
         c = ratios[r]
@@ -107,9 +107,9 @@ def cover_sections(p: "logo.Project", platforms: str | None, plain: bool) -> lis
     if plain:
         lines += ["每张图直接生成出来；并在回复里为每张图写一段说明（来源、提示词、对应画幅），例如：",
                   "```", 'source = "你的工具或模型名称"', 'prompt = "提示词"', 'ratio = "16x9"', "```",
-                  "用户会下载原图交给 LOGODesign。不要写使用条款与授权判断，那由用户确认。"]
+                  "用户会下载原图交给 印夏（YinXia）。不要写使用条款与授权判断，那由用户确认。"]
     else:
-        lines += [f"每张图存到 LOGODesign 的收件箱 inbox/{p.slug}/<英文短名>-<画幅>.png，旁边写同名加 .import.toml 的说明",
+        lines += [f"每张图存到 印夏（YinXia） 的收件箱 inbox/{p.slug}/<英文短名>-<画幅>.png，旁边写同名加 .import.toml 的说明",
                   "（TOML，字段：source、prompt、name、ratio、note）。不要自行导入，导入由用户确认后完成。"]
     return lines
 
@@ -117,8 +117,8 @@ def cover_sections(p: "logo.Project", platforms: str | None, plain: bool) -> lis
 def cmd_brief(a) -> None:
     p = logo.Project(a.slug)
     what = "封面底图" if a.type == "cover" else "Logo"
-    lines = [f"# 为 LOGODesign 项目「{p.cfg['project'].get('name', p.slug)}」设计{what}",
-             "", f"你生成的{what}将导入 LOGODesign 设计管理系统，请严格按以下要求交付。", "", "## 需求要点"]
+    lines = [f"# 为 印夏（YinXia） 项目「{p.cfg['project'].get('name', p.slug)}」设计{what}",
+             "", f"你生成的{what}将导入 印夏（YinXia） 设计管理系统，请严格按以下要求交付。", "", "## 需求要点"]
     lines += [f"- {x}" for x in brief_points(p)] or ["- （项目简报尚未填写）"]
     import series  # 延迟导入：series.py 依赖 logo
     if (m := series.membership(p)):
@@ -146,29 +146,30 @@ def cmd_brief(a) -> None:
 
 SKILL_TEXT = """---
 name: logodesign-handoff
-description: 为 LOGODesign 设计管理系统生成 Logo 时，按它要求的 SVG 规范与交接格式交付。用户提到 LOGODesign、交接格式或要把 Logo 交给 LOGODesign 时使用。
+description: 为 印夏（YinXia） 设计管理系统生成 Logo 时，按它要求的 SVG 规范与交接格式交付。用户提到 印夏（YinXia）、交接格式或要把 Logo 交给 印夏（YinXia） 时使用。
 ---
 
-# LOGODesign 交接
+# 印夏（YinXia） 交接
 
 用户会给你一份项目说明书（需求、色板、交付方式），以说明书为准；本 skill 是通用规范。
+系统原名 LOGODesign；为兼容已有安装，skill 标识 logodesign-handoff 与 v1 交接标记 LOGODESIGN 保持稳定。
 
 ## SVG 硬性要求
 {rules}
 
 ## 交付
-- 能写文件时：每个 SVG 存到 LOGODesign 的 `inbox/<项目>/<英文短名>.svg`，旁边写 `<同名>.svg.import.toml`
+- 能写文件时：每个 SVG 存到 印夏（YinXia） 的 `inbox/<项目>/<英文短名>.svg`，旁边写 `<同名>.svg.import.toml`
   （TOML，字段：{fields}），可运行 `./logo handoff validate <文件> --project <项目>` 自查。
 - 只能输出文字时：每个文件一段，“=== LOGODESIGN 交接 {version} · 文件 n/N ===”开头、“=== 结束 n/N ===”结尾，
   段内依次是 `[说明]`（上述 TOML 字段）与 `[文件 <英文短名>.svg]`（SVG 代码）。
-- 不要写使用条款与授权判断（由用户确认），不要自行导入或改动 LOGODesign 的项目目录。
+- 不要写使用条款与授权判断（由用户确认），不要自行导入或改动 印夏（YinXia） 的项目目录。
 """
 
 
 def cmd_skill(a) -> None:
     dest = Path(a.dir).expanduser().resolve()
     if logo.ROOT in (dest, *dest.parents) and logo.CACHE not in (dest, *dest.parents):
-        raise logo.LogoError("请把 skill 写到 LOGODesign 仓库之外（它是给其他 Agent 安装的），例如 ~/agent-skills")
+        raise logo.LogoError("请把 skill 写到 印夏（YinXia） 仓库之外（它是给其他 Agent 安装的），例如 ~/agent-skills")
     fields = "、".join(k for k in importer.SIDECAR_FIELDS if k not in ("project", "terms", "kind", "direction"))
     f = dest / "logodesign-handoff" / "SKILL.md"
     logo.write_new(f, SKILL_TEXT.format(rules="\n".join(f"{i}. {r}" for i, r in enumerate(SVG_RULES, 1)),

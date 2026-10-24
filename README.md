@@ -1,6 +1,8 @@
-# LOGODesign
+# 印夏（YinXia）
 
-个人 Logo 设计管理仓库：AI 直接编写 SVG，您审阅；每一次迭代、取舍和交付都可以从成品一路追溯回最初的理念。
+印夏（英文名 YinXia，原名 LOGODesign）是个人 Logo 设计管理系统：AI 直接编写 SVG，您审阅；每一次迭代、取舍和交付都可以从成品一路追溯回最初的理念。
+
+2026-10-24 起采用新名称。命令入口继续使用 `./logo`；为兼容已有交接内容与外部安装，v1 交接文本标记 `LOGODESIGN`、通用 skill 标识及目录名 `logodesign-handoff` 保持稳定。工作区目录可沿用原名，现有品牌项目各自保留名称。
 
 - 项目一览见 [projects/PROJECTS.md](projects/PROJECTS.md)（自动生成）
 - AI 必须遵守的规则见 [AGENTS.md](AGENTS.md)，具体操作步骤见 [logo-workflow 技能](.agents/skills/logo-workflow/SKILL.md)

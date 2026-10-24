@@ -1,6 +1,6 @@
 ---
 name: cover-workflow
-description: LOGODesign 的封面（品牌物料）制作流程：立项、素材登记、主视觉与多画幅延展、校对、上线记录。封面与 Logo 资产分开管理，Logo 流程见 logo-workflow。
+description: 印夏（YinXia） 的封面（品牌物料）制作流程：立项、素材登记、主视觉与多画幅延展、校对、上线记录。封面与 Logo 资产分开管理，Logo 流程见 logo-workflow。
 ---
 
 # Cover Workflow

@@ -1,7 +1,9 @@
 ---
 name: import-workflow
-description: 把其他地方（其他 Agent、对话窗口、设计工具）生成的 Logo 或封面图导入 LOGODesign：收件箱、预演对比、冲突逐项由用户决定（改图片还是改项目规范）、来源与条款追溯。用户提到导入、外部生成、收件箱、别处做的 Logo 时使用。
+description: 把其他地方（其他 Agent、对话窗口、设计工具）生成的 Logo 或封面图导入 印夏（YinXia）：收件箱、预演对比、冲突逐项由用户决定（改图片还是改项目规范）、来源与条款追溯。用户提到导入、外部生成、收件箱、别处做的 Logo 时使用。
 ---
+
+系统现名为印夏（YinXia）；下文 `LOGODESIGN` 是兼容已有交接内容而保留的 v1 协议标记。
 
 # Import Workflow
 
