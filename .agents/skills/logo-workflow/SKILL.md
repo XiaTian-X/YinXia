@@ -1,6 +1,6 @@
 ---
 name: logo-workflow
-description: 印夏（YinXia） 的核心操作流，包括需求访谈、独立/系列立项、概念图、设计方向、迭代评审、决策记录、文字转曲、发布、检查导出。
+description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/系列立项、概念图、设计方向、迭代评审、决策记录、文字转曲、发布、检查导出。
 ---
 
 # Logo Workflow

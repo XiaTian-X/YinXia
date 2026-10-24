@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""印夏（YinXia） 命令行工具。
+"""印夏（YinXia）命令行工具。
 
 所有项目操作（新建、出版本、发布、导出、检查）都通过本脚本完成，
 以保证目录结构、命名、追溯记录和不可变规则始终一致。
@@ -32,6 +32,9 @@ sys.modules.setdefault("logo", sys.modules[__name__])
 # ---------------------------------------------------------------------------
 # 路径与常量
 # ---------------------------------------------------------------------------
+SYSTEM_NAME_ZH = "印夏"
+SYSTEM_NAME_EN = "YinXia"
+SYSTEM_NAME = f"{SYSTEM_NAME_ZH}（{SYSTEM_NAME_EN}）"
 ROOT = Path(__file__).resolve().parent.parent
 PROJECTS = ROOT / "projects"  # 独立的项目 Git 仓库（系统仓库中被忽略）
 TEMPLATES = ROOT / "templates"
@@ -2361,7 +2364,7 @@ def cmd_setup(a) -> None:
 # 入口
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(prog="logo", description="印夏（YinXia） 项目管理工具")
+    ap = argparse.ArgumentParser(prog="logo", description=f"{SYSTEM_NAME}项目管理工具")
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<命令>")
 
     s = sub.add_parser("setup", help="安装依赖并启用 Git 钩子")

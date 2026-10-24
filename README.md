@@ -1,8 +1,8 @@
 # 印夏（YinXia）
 
-印夏（英文名 YinXia，原名 LOGODesign）是个人 Logo 设计管理系统：AI 直接编写 SVG，您审阅；每一次迭代、取舍和交付都可以从成品一路追溯回最初的理念。
+印夏（英文名 YinXia）是个人 Logo 设计管理系统：AI 直接编写 SVG，您审阅；每一次迭代、取舍和交付都可以从成品一路追溯回最初的理念。
 
-2026-10-24 起采用新名称。命令入口继续使用 `./logo`；为兼容已有交接内容与外部安装，v1 交接文本标记 `LOGODESIGN`、通用 skill 标识及目录名 `logodesign-handoff` 保持稳定。工作区目录可沿用原名，现有品牌项目各自保留名称。
+系统中文名为“印夏”，英文名为“YinXia”，工作区目录名为 `YinXia`。命令入口为 `./logo`，交接文本标记为 `YinXia`，通用 skill 标识及目录名为 `yinxia-handoff`。旧版交接内容请按当前模板重新生成；各实际品牌项目使用自己的名称。
 
 - 项目一览见 [projects/PROJECTS.md](projects/PROJECTS.md)（自动生成）
 - AI 必须遵守的规则见 [AGENTS.md](AGENTS.md)，具体操作步骤见 [logo-workflow 技能](.agents/skills/logo-workflow/SKILL.md)
@@ -165,7 +165,7 @@ brief.md 记录访谈结果（含“需求确认”）。检查同时识别残�
   使用条款“不清楚”的导入版本被发布时 `check` 会提醒；收件箱里放了 7 天以上的文件也会提醒。
 
 **交接**：让对方一开始就按规范交付，导入时几乎不用改。`./logo handoff brief <项目>` 生成说明书（能写文件的 Agent 直接放进收件箱；
-`--plain` 给只能对话的窗口，回复用交接文本：每个文件一段，“=== LOGODESIGN 交接 v1 · 文件 n/N ===”开头、“=== 结束 n/N ===”结尾，缺段或截断时不写入任何文件）；
+`--plain` 给只能对话的窗口，回复用交接文本：每个文件一段，“=== YinXia 交接 v1 · 文件 n/N ===”开头、“=== 结束 n/N ===”结尾，缺段或截断时不写入任何文件）；
 封面用 `--type cover --platforms …`：只要底图（各画幅尺寸、安全区、遮挡区，不画 Logo），收到后用 `./logo cover import` 作底图导入；
 `handoff receive` 把交接文本原样拆进收件箱，之后照常预演、确认、导入；`handoff validate` 供对方只读自查；`handoff feedback` 把硬性问题（以及用户决定让对方改的颜色）写成对方能照做的修改意见。
 

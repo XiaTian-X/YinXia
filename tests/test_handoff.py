@@ -10,7 +10,7 @@ from test_series import SeriesBase
 
 
 def block(n: int, total: int, name: str, svg: str, meta: str = 'source = "ChatBot X"\n', end: bool = True) -> str:
-    return (f"=== LOGODESIGN 交接 v1 · 文件 {n}/{total} ===\n[说明]\n{meta}[文件 {name}]\n```xml\n{svg}\n```\n"
+    return (f"=== YinXia 交接 v1 · 文件 {n}/{total} ===\n[说明]\n{meta}[文件 {name}]\n```xml\n{svg}\n```\n"
             + (f"=== 结束 {n}/{total} ===\n" if end else ""))
 
 
@@ -32,14 +32,14 @@ class HandoffTest(unittest.TestCase):
         return ".cache/reply.txt"
 
     def test_brief(self):
-        self.assertIn("印夏（YinXia） 项目管理工具", self.ws.logo("--help").stdout)
+        self.assertIn("印夏（YinXia）项目管理工具", self.ws.logo("--help").stdout)
         brief = self.p / "brief.md"
         brief.write_text(brief.read_text(encoding="utf-8").replace("- **用户确认的要点**： 测试内容", "- **用户确认的要点**： 私密备注"),
                          encoding="utf-8")
         out = self.ws.logo("handoff", "brief", "demo", "--plain").stdout
-        for part in ("# 为 印夏（YinXia） 项目", "## 色板（只能用这些颜色）", f"- primary：{PRIMARY}", "## SVG 硬性要求", "必须有 viewBox",
-                     "=== LOGODESIGN 交接 v1 · 文件 1/N ===", "=== 结束 1/N ===", "不要写使用条款与授权判断",
-                     "发给外部工具前请确认用户同意", "复用口令：按 印夏（YinXia） 交接格式 v1 输出"):
+        for part in ("# 为印夏（YinXia）项目", "## 色板（只能用这些颜色）", f"- primary：{PRIMARY}", "## SVG 硬性要求", "必须有 viewBox",
+                     "=== YinXia 交接 v1 · 文件 1/N ===", "=== 结束 1/N ===", "不要写使用条款与授权判断",
+                     "发给外部工具前请确认用户同意", "复用口令：按印夏（YinXia）交接格式 v1 输出"):
             self.assertIn(part, out)
         self.assertNotIn("私密备注", out)  # 需求确认一节不外发
         self.assertTrue((self.ws.root / ".cache" / "handoff" / "demo-logo-brief-plain.md").exists())
@@ -78,6 +78,15 @@ class HandoffTest(unittest.TestCase):
         self.assertIn("来源方声明（仅供参考，须向用户确认）：使用条款 可商用", out)
         self.assertIn("--terms", ws.logo("import", "demo/badge.svg", "--direction", "A", "--kind", "final", ok=False).stderr)
 
+    def test_generated_template_round_trip(self):
+        out = self.ws.logo("handoff", "brief", "demo", "--plain").stdout
+        template = out.split("```", 2)[1]
+        self.assertIn("=== YinXia 交接 v1 · 文件 1/N ===", template)
+        reply = template.replace("1/N", "1/1").replace(
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200">…</svg>', GOOD)
+        self.ws.logo("handoff", "receive", self.say(reply), "--project", "demo")
+        self.assertEqual((self.ws.root / "inbox" / "demo" / "badge.svg").read_text(encoding="utf-8"), GOOD + "\n")
+
     def test_validate_and_feedback(self):
         ws = self.ws
         good = ws.write("good.svg", GOOD)
@@ -97,7 +106,7 @@ class HandoffTest(unittest.TestCase):
         self.assertNotIn("#FF6600", out)  # 色板外颜色让不让对方改，由用户决定
         out = ws.logo("handoff", "feedback", path, "--project", "demo", "--color", "#FF6600=primary").stdout
         self.assertIn(f"badge.svg：把颜色 #FF6600 改为 {PRIMARY}", out)
-        self.assertIn("输出格式：按 印夏（YinXia） 交接格式 v1 输出", out)
+        self.assertIn("输出格式：按印夏（YinXia）交接格式 v1 输出", out)
         self.assertIn("没有需要对方修改的硬性问题", ws.logo("handoff", "feedback", str(good), "--project", "demo").stdout)
         r = ws.logo("handoff", "feedback", path, "--project", "demo", "--color", "#FF6600", ok=False)
         self.assertIn("--color 写法为", r.stderr)  # 可读的报错，而不是报错堆栈
@@ -117,8 +126,8 @@ class HandoffTest(unittest.TestCase):
         ws = self.ws
         self.assertIn("仓库之外", ws.logo("handoff", "skill", str(ws.root / "tools"), ok=False).stderr)
         ws.logo("handoff", "skill", str(ws.tmp / "skills"))
-        text = (ws.tmp / "skills" / "logodesign-handoff" / "SKILL.md").read_text(encoding="utf-8")
-        for part in ("name: logodesign-handoff", "# 印夏（YinXia） 交接", "必须有 viewBox", "=== 结束 n/N ===", "不要写使用条款"):
+        text = (ws.tmp / "skills" / "yinxia-handoff" / "SKILL.md").read_text(encoding="utf-8")
+        for part in ("name: yinxia-handoff", "# 印夏（YinXia）交接", "必须有 viewBox", "=== 结束 n/N ===", "不要写使用条款"):
             self.assertIn(part, text)
         self.assertNotIn(PRIMARY, text)  # 通用 skill 不含项目信息
 
