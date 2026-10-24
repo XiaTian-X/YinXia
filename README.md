@@ -1,205 +1,342 @@
 # 印夏（YinXia）
 
-印夏（英文名 YinXia）是个人 Logo 设计管理系统：AI 直接编写 SVG，您审阅；每一次迭代、取舍和交付都可以从成品一路追溯回最初的理念。
+**面向设计者与 AI Agent 协作的本地 Logo 与品牌物料管理系统。**
 
-系统中文名为“印夏”，英文名为“YinXia”，工作区目录名为 `YinXia`。命令入口为 `./logo`，交接文本标记为 `YinXia`，通用 skill 标识及目录名为 `yinxia-handoff`。旧版交接内容请按当前模板重新生成；各实际品牌项目使用自己的名称。
+设计由你选用的 Agent 或设计工具完成，印夏负责把需求、概念图、设计方向、版本、评审和交付组织在一起。通过 SVG、Markdown、TOML 和 Git，你可以从最终交付物追溯到设计版本、参考图与关键决策。
 
-- 项目一览见 [projects/PROJECTS.md](projects/PROJECTS.md)（自动生成）
-- AI 必须遵守的规则见 [AGENTS.md](AGENTS.md)，具体操作步骤见 [logo-workflow 技能](.agents/skills/logo-workflow/SKILL.md)
+本公开仓库只包含系统代码、模板、规则和测试，**不附带维护者的业务项目或本地测试项目**。安装后会创建独立的项目仓库，存放你自己的设计资料。
 
-## 快速开始
+[用途](#用途) · [安装](#安装) · [双仓库结构](#双仓库结构) · [使用流程](#使用流程) · [扩展工作流](#扩展工作流) · [检查与安全规则](#检查与安全规则) · [开发与维护](#开发与维护) · [常见问题](#常见问题)
 
-```bash
-./logo setup
-```
+## 用途
 
-首次运行需要 PATH 中的 `python3` 为 Python 3.11 或更新版本，以及 `resvg` 与 `magick`（Homebrew）。没有 `.venv` 时，启动器只为 `setup` 使用系统 Python，引导创建 `.venv`、安装 fonttools 与 uharfbuzz（HarfBuzz 排版）、初始化项目仓库 `projects/`，并为两个仓库启用 pre-commit 钩子；之后各命令使用项目虚拟环境。
+印夏适合需要保留设计过程、反复迭代并输出多种品牌资产的工作：
 
-字体文件不进 Git。需要文字转曲时运行：
+- **管理设计过程**：记录需求简报、参考图、并行方向、版本说明和用户评审，保留每次取舍的依据。
+- **检查 SVG**：核对色板、字体转曲、结构规范，并预览彩色、单色、反白和小尺寸效果。
+- **生成交付物**：从定稿版式生成 SVG、Favicon、iOS/Android 图标和社交头像，附使用指南与文件校验清单。
+- **管理品牌系列**：支持统一型、背书型、独立型架构，以及母子品牌评审和改版跟进。
+- **制作封面物料**：复用已发布的 Logo，管理图片来源、多个画幅、平台裁切与上线记录。
+- **接收外部设计**：先预演、核对冲突和来源，再将其他 Agent 或设计工具的作品纳入版本管理。
 
-```bash
-./logo fonts fetch
-```
+日常操作通过 `./logo` 命令完成。系统没有图形编辑界面；SVG 和文档由设计者或 Agent 编辑，预览结果以图片文件输出。CLI 本身不调用模型 API，使用的 AI 服务或图像生成工具由你另行选择。
 
-它按 [assets/fonts/fonts.toml](assets/fonts/fonts.toml) 中登记的官方地址下载（压缩包取 `archive_member`），sha256 与登记一致才落盘；`./logo fonts` 查看状态。
+## 安装
 
-## 两个仓库
+### 1. 准备环境
 
-| 仓库 | 位置 | 内容 | 提交方式 |
-|---|---|---|---|
-| 系统仓库 | 根目录 | `tools/`、`templates/`、`config/`、字体登记与授权（`assets/fonts/`，不含字体文件）、规则文档、`.githooks/` | `git commit …` |
-| 项目仓库 | `projects/`（系统仓库忽略它） | 各项目目录、`PROJECTS.md` | `git -C projects commit …` |
+下方提供 **macOS + Homebrew** 的安装步骤。其他环境需要提供 Bash、Git、Python 3.11+、`resvg` 与 ImageMagick 的 `magick` 命令，并自行验证运行情况。
 
-系统可以单独分享或克隆；单独克隆时 `./logo check` 会跳过项目相关检查，运行 `./logo setup` 即可新建空的项目仓库。
-每次导出的 `dist/<发布号>/manifest.json` 为每个目标记录 `git_head`（项目仓库）、`system_head`（系统版本）与 `renderer`（resvg 版本）。
-
-## 目录结构
-
-```text
-projects/                     # 项目仓库根目录（独立 .git）
-├── PROJECTS.md                # 看板：独立项目与各系列分组
-├── _series/<系列名>/          # 品牌系列：series.toml（名称、架构、封面骨架）、series.md（系列规则，只追加）、covers/（家族封面）
-└── <slug>/
-    ├── project.toml          # 元数据、色板、当前状态（唯一事实来源）
-    ├── brief.md              # 品牌理念、偏好、字体策略
-    ├── concepts/             # 灵感位图 + 同名 .md（提示词、来源）
-    ├── directions/           # 并行方向 A/B/C，每个版本 vNNN/{logo.svg, notes.md}
-    ├── decisions/            # 关键取舍记录
-    ├── releases/rN/          # 定稿发布：release.md、guide.md、layouts/（必需 primary.svg）
-    ├── covers/NNN-名称/      # 封面：cover.toml、cover.md、assets/、每种画幅一份设计稿
-    └── dist/                 # ./logo export / render 的按需产物（被忽略，不提交）
-```
-
-## 追溯链
-
-```text
-dist/rN/manifest.json ──release──▶ releases/rN/release.md ──基于──▶ directions/X/vNNN ──基于──▶ … ──▶ concepts/
-                                         └──决策依据──▶ decisions/NNN-*.md ──▶ brief.md
-```
-
-`manifest.json` 记录了 `release`、`based_on`（直接来源）与 `design_version`（最终设计版本）、每个目标的生成版本以及每个交付文件的 sha256。
-
-## 常用命令
-
-| 命令 | 作用 |
+| 依赖 | 用途 |
 |---|---|
-| `./logo status [项目] [--json]` | 各项目进度与待办（访谈、未提交、设计、系列、交付、封面、收件箱），新会话先看 |
-| `./logo new <slug> --name 名称 [--series 系列 --role master\|sub] [--targets svg,ios]` | 按需求访谈结果新建独立或系列项目 |
-| `./logo inbox [--json\|--spec]` | 查看收件箱 `inbox/`（外部设计的待导入文件，不进任何仓库） |
-| `./logo handoff brief <项目> [--plain]` / `skill <目录>` | 给其他 Agent 的说明书（需求、色板、SVG 要求、交付格式）/ 通用 skill |
-| `./logo handoff receive <文本> --project <项目>` / `validate` / `feedback` | 交接文本拆进收件箱（检测截断）/ 只读自查 / 生成给对方的修改意见 |
-| `./logo import <文件> --project <项目> … --analyze` | 导入外部生成的 Logo：先预演（对比图与冲突报告），冲突逐项决定后再正式导入 |
-| `./logo series [new\|add]` | 查看系列与成员 / 新建系列（统一型、背书型、独立型）/ 已有项目加入系列 |
-| `./logo series compare <系列> [--with 项目=版本]` | 系列对比图（彩色 / 单色 / 32px）与评审清单 |
-| `./logo series review <系列> --result pass\|revise --note "用户意见"` | 记录系列评审结论（子品牌发布前须通过） |
-| `./logo series sync <子品牌> --palette all\|none\|色名 --note "用户决定"` | 子品牌跟进母品牌新发布（同步色板，旧值保留给冻结的设计） |
-| `./logo series skeleton <系列> --from <项目> <封面> --note "…"` | 登记系列封面骨架；成员立项封面时 `--from-skeleton` 套用 |
-| `./logo cover new series:<系列> <名称> --platforms … --members 主,次` | 家族封面：同时展示多个成员的 Logo（其余封面命令同样接受 `series:<系列>`） |
-| `./logo concept <slug> <图片> --name x --prompt "…"` | 登记概念图 |
-| `./logo direction <slug> A mountain` | 新建方向 |
-| `./logo version <slug> A [--from B-v002 \| --from-master] [--inspired-by 001]` | 新建版本（可引用概念图；系列子品牌可从母品牌主版起稿） |
-| `./logo preview <slug> A-v001` / `compare <slug>` | 预览 / 多版本对比（输出到 `.cache/`） |
-| `./logo decision <slug> select-direction-a` | 新建决策记录 |
-| `./logo state <slug> [key=value…]` | 查看/更新状态 |
-| `./logo release <slug> --from A-v004` | 新建发布（以该版本起稿主版 `primary.svg`） |
-| `./logo export <slug> [目标…]` | 按需生成 svg / favicon / ios / android / avatar 到 `dist/`（不提交） |
-| `./logo render <slug> [版式] --mode mono --size 800` | 生成任意版式、配色、尺寸的单张图（到 `dist/render/<发布号>/`） |
-| `./logo outline --font inter --text "ACME" --fill "#HEX" --project <slug> [--features calt,ss02] [--lang zh-Hans]` | 文字转路径：HarfBuzz 排版，默认只开字距，连字与上下文替换按需开启 |
-| `./logo fonts [fetch\|review] [id…]` | 查看字体状态与使用方 / 下载并校验 / 为非开源字体创建授权复核 |
-| `./logo check` / `index` | 规范与一致性检查 / 刷新看板 |
-| `./logo cover new / asset / status / list` | 封面立项起稿 / 登记素材 / 记录上线 / 查看项目封面 |
-| `./logo cover preview / export <slug> <封面> [平台…]` | 封面校对图 / 按平台导出 PNG（不提交） |
-| `./logo cover import <项目\|series:系列> <图片> --contains-logo no --contains-text … --analyze` | 外部封面图作底图导入（Logo 由系统嵌入；比例不符逐画幅决定裁切或留边） |
-| `./logo cover retarget <slug> <封面> --platforms a,b` | 调整封面的目标平台（新画幅起稿、参考线随之更新） |
-| `./logo cover sync-logo <slug> <封面> [--release rN]` | 把封面中的 Logo 换成新发布（保留位置与显示高度） |
-| `./logo cover platforms [--ratio 3x1]` | 查看封面平台、画幅与裁切比例 |
-| `./logo selftest [测试名]` | 运行系统自动化测试 |
+| Git | 系统与项目版本管理、提交前检查 |
+| Python 3.11+ | 运行 CLI；首次安装时须可通过 `python3` 调用 |
+| resvg | SVG 渲染与位图导出 |
+| ImageMagick（`magick`） | 预览拼图、图片处理与像素检查 |
+| FontTools、uharfbuzz | 字体读取、排版和文字转曲，由 `setup` 安装 |
 
-## 规则如何被强制执行
+已安装 Homebrew 后执行。下例使用本地验证过的 Python 3.14，并将它的 `python3` 放到当前终端的 PATH 前部：
 
-`./logo check` 会拦截下列问题。提交时两个仓库的钩子分别以 `--staged --scope system|projects` 运行：项目仓库的不可变规则与 SVG 规范按暂存区内容检查，其余按工作区检查；系统仓库提交时，项目仓库里的问题只提醒、不拦截。
+```bash
+brew install git python@3.14 resvg imagemagick
+export PATH="$(brew --prefix python@3.14)/libexec/bin:$PATH"
+```
 
-- 已冻结文件（版本 SVG、发布版式、概念图）被修改或删除；只追加文件被改写；
-- SVG 不合规（缺 viewBox、写死宽高、`<text>`/位图/脚本/事件属性、外部引用与 CSS 外部资源、色板外颜色）；
-- 新建文档仍留有模板占位；发布未引用决策记录；版本引用了未登记的概念图；
-- 状态自相矛盾（选定版本不属于选定方向、发布阶段却没有当前发布）、发布的追溯链断裂；
-- 需求访谈未完成（brief.md 未填完，系列成员还要求 series.md 填完）就开始设计（`./logo direction` 拒绝）；登记的封面骨架已不存在或其项目已离开系列；系列关系不一致（系列不存在、角色非法、一个系列多个母品牌、继承型子品牌缺母品牌或其发布）；子品牌未通过系列评审就发布；系列规则 series.md 未填完或被改写；
-- 发布缺少主版 `primary.svg`；新放入发布的文件不是系统认识的版式名（如拼错的 `primay.svg`、旧式 `cover-*.svg`，否则生成时会被静默忽略）；`final/` 等生成物被提交；
-- 字体未登记、校验值不符；SVG 中转曲用到的字体未在项目 `[fonts] used` 声明；非开源字体缺少或未通过授权复核（`LICENSE-REVIEW.md`）；字体文件被提交到系统仓库；
-- 目录结构外的文件（临时文件请放 `.cache/`）；系统仓库按目录和文件类型限定，技能与 Claude 配置目录也分别设白名单；缓存、依赖目录及 `*.tmp.md` 等双后缀临时文件即使用 `git add -f` 暂存也会被钩子拦截；
-- 封面：Logo 被改动（只能移动缩放）、引用未登记或被替换的素材、文字未转曲、画布尺寸不对、缺少目标平台需要的画幅稿、画幅名未登记；封面目录里每一份设计稿都按规则检查；
-- 疑似密钥：文件或目录名（`.env`、私钥/证书、SSH 密钥备份、`auth.json`、服务账号 JSON、凭据目录等）或内容（私钥/证书标记、已知平台令牌，以及 API key、访问令牌、客户端密钥等敏感字段中的长字符串）。内容扫描包含图片等二进制中的明文，不因后缀、空字节或超过 5 MiB 而跳过；提交时读取暂存区，诊断只输出文件名与行号，不回显匹配内容。
+### 2. 克隆并初始化
 
-系统仓库的 `.gitignore` 采用白名单：根目录默认忽略一切，只放行系统文件；放行的目录内仍忽略临时文件、日志、编辑器杂物、密钥与字体文件。
-项目仓库的 `.gitignore` 同样是白名单，逐层只放行规定的项目文件（由 `./logo setup` 从 `templates/projects.gitignore` 生成，与模板不一致时 `check` 会提醒）。
+```bash
+git clone https://github.com/XiaTian-X/YinXia.git
+cd YinXia
+python3 --version
+./logo setup
+./logo --help
+./logo status
+```
 
-同时会提醒（不拦截）：选定版本尚未发布、手工头像超出圆形安全区、Android 图标超出 66dp 安全区、手工 App 图标含透明区域、自动排版的图标中图形与底色几乎无法区分、单色/反白版丢失内部细节（糊成一块）、brief.md 未填完、平台导出规格未核实或缺少来源、`project.toml` 使用了旧写法。
+`setup` 会：
 
-已提交的数据钩子不会再看，以下由手动运行 `./logo check` 提醒：
+1. 创建本地 `.venv` 并安装 [Python 依赖](tools/requirements.txt)。
+2. 在 `projects/` 初始化独立 Git 仓库，生成忽略规则和项目看板。
+3. 为两个仓库启用各自的提交钩子。
+4. 检查渲染工具与已登记字体的就绪情况。
 
-- **当前发布能否交付**：`guide.md` 已提交却留有模板占位（导出会拒绝，只能新建发布）；`release.md` 没有引用决策记录（可补写决策后在末尾追加引用）；发布里有系统不认识的版式文件（`release --from rN` 不会继承它们）；
-- **历史完整性**：扫描项目仓库全部历史，找出用 `--no-verify` 绕过钩子、修改了冻结文件或改写了只追加文件的提交（结果按 HEAD 缓存）；
-- **备份**：两个仓库没有远程、没有上游或有未推送的提交（只读本地记录，不访问网络）。`amend`/`rebase` 改写历史无法在本地察觉，需要远程仓库保护分支。
+首次运行需要联网安装 Python 依赖。以后执行命令会自动使用 `.venv`，无需先手工激活。渲染工具缺失时，`setup` 会提醒你安装；请处理这些提醒后再预览和导出。
 
-这几项只在手动检查时运行，不拖慢提交。
+### 3. 配置提交身份并保存初始项目仓库
 
-`./logo export` 先在临时目录生成点名的目标，全部成功后才逐个替换 `dist/` 中对应目录（其他目标保留）；只用 resvg 渲染，同一发布再导出逐字节相同；发布的 `guide.md` 未填完时拒绝导出。
+两个仓库都需要可用的 Git 提交身份。若已有合适的全局配置，可以沿用；否则把下面的示例姓名和邮箱替换为自己的信息，分别配置本地身份：
 
-## 需求访谈与品牌系列
+```bash
+git config --local user.name "Your Name"
+git config --local user.email "you@example.com"
+git -C projects config --local user.name "Your Name"
+git -C projects config --local user.email "you@example.com"
+```
 
-AI Agent 生成 Logo 之前，先按 [logo-workflow 技能](.agents/skills/logo-workflow/SKILL.md)第 0 步向使用者提问：独立 Logo 还是品牌系列、系列架构与角色、品牌、视觉偏好、使用场景，最后复述需求请用户确认。答案决定建出什么样的项目：
+在新初始化的项目仓库中保存看板与忽略规则：
 
-| 需求 | 命令 | 结果 |
-|---|---|---|
-| 独立 Logo | `./logo new <slug> --targets …` | 普通项目 |
-| 新系列 | `./logo series new <系列名> --architecture …` | `_series/<系列名>/`：系列规则模板随架构不同 |
-| 母品牌 | `./logo new <slug> --series <系列名> --role master` | 项目登记为系列母品牌 |
-| 统一型 / 背书型子品牌 | `./logo new <slug> --series <系列名> --role sub` | 须母品牌已发布；继承其色板、配色模式与 App 图标配色，记录所依据的发布；统一型可 `version --from-master` 以母品牌主版起稿 |
-| 独立型子品牌 | 同上 | 只登记归属，不继承 |
+```bash
+./logo check
+git -C projects add .gitignore PROJECTS.md
+git -C projects commit -m "chore: initialize design workspace"
+```
 
-三种架构：**统一型**（子品牌 = 母品牌标志 + 名称，如 Google 地图）、**背书型**（子品牌有自己的标志并注明母品牌出品，如 Courtyard by Marriott）、**独立型**（各自独立，只归组管理，如宝洁旗下各品牌）。
-brief.md 记录访谈结果（含“需求确认”）。检查同时识别残留占位、缺少的必需章节/字段与空值，删除字段或沿用缺少新版章节的旧简报也会被发现；`direction` 拒绝开始新方向，`status` 与 `check` 提示补齐，简报草稿仍可提交保存。历史简报补齐时依据已有配置、决策与用户本次授权记录，不补造历史访谈确认。看板按系列分组显示，子品牌落后于母品牌当前发布时标出。
+新项目仓库没有远程地址时会出现备份提醒，不影响本地使用。是否保留测试数据、何时为正式项目配置独立远程，由你决定。
 
-已填写完成的发布指南若有事实错误，应在原 `guide.md` 末尾追加注明日期和适用范围的勘误，明确更正内容；再次 `export` 会把勘误带入交付指南。已有内容及冻结 SVG 保留。原指南仍有模板占位的情况继续按“当前发布能否交付”的规则新建发布。
+### 4. 按需下载字体
 
-**系列评审**：统一型 / 背书型子品牌定稿前，Agent 用 `series compare` 生成对比图并按 series.md 逐条向用户提问，用 `series review --note` 记录用户结论；没有该版本通过的评审时 `./logo release` 拒绝（以同一版本最近一次评审为准）。
+```bash
+./logo fonts
+./logo fonts fetch inter
+# 需要中文字体时再执行：
+./logo fonts fetch source-han-sans-sc-bold
+```
 
-**改版跟进**：母品牌出新发布后，`check` 对每个统一型 / 背书型子品牌提醒并列出色板变化；Agent 按 series.md“改版跟进”的约定逐个向用户确认，用 `series sync --note` 记录并同步。被替换的旧色值若仍被子品牌已有设计使用，会保留为 `<色名>_r<N>`，冻结的版本与发布照常通过检查。
+字体登记与授权原文位于 [assets/fonts](assets/fonts)。字体文件本身不进入 Git；`fetch` 从登记的官方地址下载，并核对 SHA-256。新增字体须先登记，非开源字体还须完成授权复核。详细流程见 [Logo 工作流](.agents/skills/logo-workflow/SKILL.md)。
 
-**系列封面骨架**：把一张成员封面登记为骨架后，成员立项封面须明确选择 `--from-skeleton` 或 `--no-skeleton`。套用时 Logo 换成本项目发布（位置不变）、照片换成“图片区”参考框（素材授权按封面登记）、参考线按本封面平台重画；内容仍是骨架原文、或骨架之后被修改时会提醒。
+## 双仓库结构
 
-**家族封面**：放在 `projects/_series/<系列>/covers/`，每个成员一个 `<g id="logo-<项目>">`，逐个按该项目的发布核对指纹、提醒越界与过时，`cover sync-logo series:<系列>` 逐个成员更新；第一个成员为主品牌（更大、底色取它）。
+**系统和设计数据使用两套 Git 历史、远程地址与权限。** 所有品牌项目共同存放在 `projects/` 这个项目仓库内。
 
-## 导入外部设计
+| 仓库 | 内容 | 提交位置 | 远程管理 |
+|---|---|---|---|
+| 系统仓库：根目录 | CLI、模板、平台规格、字体登记与授权、工作流、测试和钩子 | 根目录运行 `git …` | 本公开仓库 `XiaTian-X/YinXia` |
+| 项目仓库：`projects/` | 品牌需求、概念图、设计版本、决策、发布、系列和封面资料 | 使用 `git -C projects …` | 自行配置独立远程，正式设计资料通常使用私有仓库 |
 
-其他 Agent、对话窗口或设计工具生成的 Logo 通过 `./logo import` 加入（流程见 [import-workflow 技能](.agents/skills/import-workflow/SKILL.md)）：
+系统仓库忽略整个 `projects/`，推送系统改动不会把设计数据一起上传。克隆本公开仓库时不会获得任何实际项目；本地运行 `setup` 后才会生成 `projects/PROJECTS.md` 看板。
 
-- **入口**：文件路径（拖进对话框），或系统根目录的收件箱 `inbox/`、`inbox/<项目>/`（不进任何仓库；可附来源说明 `<文件>.import.toml`，只作资料——其中的使用条款与候选/成品只是来源方声明，须由用户确认后用 `--terms` / `--kind` 写明）。
-- **默认原样保留**：外观不变的格式整理（去写死的宽高、编辑器元数据、CSS 类展开、颜色写法统一）须逐像素核对一致才采用；不需要整理的文件逐字保留。
-- **冲突逐项由用户决定**：色板外的颜色——改图片（`--resolve "#RRGGBB=map:色名"`）或改项目规范（`--resolve "#RRGGBB=palette:新色名"`，自动写决策记录；系列子品牌还要选择例外或更新系列规则）。
-  系统硬性规则（脚本、外链、内嵌位图、未转曲文字、DOCTYPE/ENTITY）只能 `--as-concept` 登记为概念图或请来源修正。
-- **先预演**：`--analyze` 生成“原件 / 导入结果”对比图；参数与文件和最后一次预演一致才能正式导入。
-- **初始化**：`--init` 以导入的图初始化尚未开始设计的项目（色板取自图中颜色）；色板已设定或是继承型子品牌时拒绝，改为逐项处理冲突。
-- **安全**：外部 SVG 渲染前一律剔除指向本机文件或网址的引用（只保留文内引用与内嵌位图），封面底图含外部引用直接拒绝；来源说明中的内容写进文档前合并为一行并以代码格式显示，不能伪造标题或“用户意见”；位图先读文件头限制像素尺寸；所有检查做完才开始写入；预演 1 天内有效。
-- **追溯**：原件渲染存档为概念图（记下 sha256、来源、使用条款，原件留在本机 `.cache/imported/`）；位图去掉 EXIF / GPS 等元数据，只作设计依据。
-  使用条款“不清楚”的导入版本被发布时 `check` 会提醒；收件箱里放了 7 天以上的文件也会提醒。
+```text
+YinXia/                           # 系统仓库
+├── .git/
+├── logo                          # 统一命令入口
+├── AGENTS.md                     # Agent 必须遵守的规则
+├── .agents/skills/               # Logo、封面、导入工作流
+├── .githooks/                    # 两个仓库的提交钩子
+├── tools/                       # Python 实现
+├── templates/                   # 项目、版本、发布等模板
+├── config/                      # Logo 目标与封面平台规格
+├── assets/fonts/                # 字体登记、授权；字体文件被忽略
+├── tests/                       # 隔离的自动化测试
+├── projects/                    # 独立的项目仓库，系统仓库忽略它
+│   ├── .git/
+│   ├── .gitignore
+│   ├── PROJECTS.md              # 由 ./logo index 生成
+│   ├── _series/                 # 按需创建：系列规则与家族封面
+│   └── <slug>/
+│       ├── project.toml         # 元数据、状态、色板、字体、导出配置
+│       ├── brief.md             # 需求简报与确认记录
+│       ├── concepts/            # 概念图及来源记录
+│       ├── directions/          # 各方向及 vNNN/{logo.svg, notes.md}
+│       ├── decisions/           # 关键取舍记录
+│       ├── releases/            # 定稿版式、发布说明、使用指南
+│       ├── covers/              # 按需创建：封面稿及已登记素材
+│       └── dist/                # 按需生成的交付物，不提交
+├── inbox/                       # 按需创建：外部设计收件箱，不提交
+├── .cache/                      # 预览与临时文件，不提交
+└── .venv/                       # 本地 Python 环境，不提交
+```
 
-**交接**：让对方一开始就按规范交付，导入时几乎不用改。`./logo handoff brief <项目>` 生成说明书（能写文件的 Agent 直接放进收件箱；
-`--plain` 给只能对话的窗口，回复用交接文本：每个文件一段，“=== YinXia 交接 v1 · 文件 n/N ===”开头、“=== 结束 n/N ===”结尾，缺段或截断时不写入任何文件）；
-封面用 `--type cover --platforms …`：只要底图（各画幅尺寸、安全区、遮挡区，不画 Logo），收到后用 `./logo cover import` 作底图导入；
-`handoff receive` 把交接文本原样拆进收件箱，之后照常预演、确认、导入；`handoff validate` 供对方只读自查；`handoff feedback` 把硬性问题（以及用户决定让对方改的颜色）写成对方能照做的修改意见。
+`project.toml` 的 `[state]` 由 CLI 维护，`PROJECTS.md` 是自动生成的视图。色板、配色模式、字体和导出配置可按需求维护；创建项目、方向、版本、发布和决策记录时，统一使用 `./logo`。
 
-## Logo 资产与封面
+## 使用流程
 
-**Logo 资产**由发布中的主版 SVG 按规则推导，配置在 [config/logo-targets.toml](config/logo-targets.toml)：
+```mermaid
+flowchart LR
+    A[需求访谈与确认] --> B[概念图与设计方向]
+    B --> C[SVG 版本与预览]
+    C --> D[用户评审与决策]
+    D -->|修改| C
+    D -->|定稿| E[发布版式与指南]
+    E --> F[导出交付物]
+    F --> G[确认交付并记录状态]
+```
 
-| 目标 | 产物 | 来源 |
-|---|---|---|
-| `svg` | 各标志版式 × 彩色/单色/反白 | 按色板换色（可用 `<版式>.mono.svg` 等手工覆盖） |
-| `favicon` | 16/32/48 PNG、`.ico`、180 Apple 触控图标 | `icon`（缺省 `primary`）；触控图标同 App 图标排版 |
-| `ios` | 1024 不透明 | 自动排版：`app_background` 铺满，图形占 64%（或 `app-icon.svg`） |
-| `android` | 5 种密度、Play 512、自适应背景/前景/单色层 | 同上；前景层按 66dp 安全区 |
-| `avatar` | 400/800/1080 | 自动排版：图形缩进圆形安全区，占 56%（或 `avatar.svg`） |
+### 与 Agent 协作
 
-规格用 `basis` 标明依据：`official`（须有官方 `source`）、`common`（业内通用，须写 `verify_note`）、`generic`（泛用比例，须写理由）；超过 12 个月未复核会提醒。
+让能读取本地文件、编辑 SVG 并运行命令的 Agent 先阅读 [AGENTS.md](AGENTS.md)，再按对应工作流操作。可以从下面的请求开始：
 
-**封面**是含 Logo 的品牌物料（构图、文案、图像），生成逻辑与 Logo 资产不同，由独立的封面模块 [tools/covers.py](tools/covers.py) 管理，配置在 [config/cover-platforms.toml](config/cover-platforms.toml)：
+> 请阅读 AGENTS.md 和 .agents/skills/logo-workflow/SKILL.md，先运行 ./logo status 告诉我现有待办。我想为一个品牌设计 Logo，请先完成需求访谈，确认项目类型、品牌信息、视觉偏好和使用场景，再开始设计。
 
-- **画幅**（`[ratios]`）：16:9、3:1、2.7:1、6:1、1.91:1、4:3、3:4、9:16、1:1，每种一块设计画布，同画幅的平台共用一份设计稿；
-- **平台**（`[[platform]]`，15 个）：所属画幅、尺寸、安全区/遮挡区与规格依据，导出时从画布居中裁切到平台尺寸。
+每次新会话先看 `./logo status`。预览或对比图生成后，需要打开并交给用户审阅，再把结论记录进项目。
 
-`./logo cover platforms [--ratio 3x1]` 查看平台、尺寸与从画布裁切的比例；配置写错时 `check` 报错。
+### 1. 确认需求并建立项目
 
-封面项目放在 `projects/<slug>/covers/NNN-名称/`（`cover.toml` 元数据、`cover.md` 简报、`assets/` 已登记素材、每种画幅一份设计稿），流程见 [cover-workflow 技能](.agents/skills/cover-workflow/SKILL.md)：`cover new` 立项起稿、`cover asset` 登记素材、`cover retarget` 调整目标平台、`cover status` 记录上线、`cover list` 查看。设计稿中的 Logo 只能移动缩放（按发布比对指纹），关键内容放在 `<g id="content">`。`cover preview` 出校对图（各平台裁切叠遮挡区/安全区、手机缩略图），`cover export` 按平台尺寸导出 PNG 到 `dist/covers/`（不提交、结果可重复，manifest 逐张记录由哪份设计稿导出，过期的会提醒）。校对时会提醒关键内容越界（被裁、超出安全区或被头像遮挡）、Logo 在手机上过小、Logo 过时（上线中的封面优先）；Logo 改版后用 `cover sync-logo` 一键替换。
+以下以虚构项目 `demo` 演示独立 Logo 流程。**按阶段执行；中间的文档填写、设计和用户评审完成后，再执行下一阶段。**
 
-## 自动化测试
+确认需求后创建项目：
 
-修改系统（`tools/`、`templates/`、`config/`、钩子）后、提交前运行：
+```bash
+./logo new demo --name "示例品牌" --targets svg,favicon,ios,android,avatar
+```
+
+填写 `projects/demo/brief.md`，包括品牌理念、文字内容、视觉偏好、使用场景、字体策略和需求确认；再维护 `project.toml` 的色板与导出配置。简报缺少必需章节、字段或仍有占位时，系统会拒绝新建设计方向。
+
+有参考图时先用 `./logo concept` 登记来源；后续版本可通过 `--inspired-by` 引用。品牌系列项目还需要先建立系列并填写系列规则，详见下方扩展工作流。
+
+### 2. 建立方向并迭代 SVG
+
+```bash
+./logo direction demo A geometric --title "几何方向"
+./logo version demo A
+```
+
+完成以下文件：
+
+- `directions/A-geometric/direction.md`：方向理念与视觉基调。
+- `directions/A-geometric/v001/logo.svg`：实际设计，使用项目色板中的颜色。
+- `directions/A-geometric/v001/notes.md`：改动说明、理念体现与评审记录。
+
+上述路径均位于 `projects/demo/`。文字须使用已登记字体，通过 `./logo outline --project demo …` 转曲。
+
+```bash
+./logo preview demo A-v001
+# 有多个候选版本时，可生成对比图：
+./logo compare demo
+```
+
+审阅预览并填完文档后保存迭代：
+
+```bash
+./logo index
+./logo check
+git -C projects add -A
+git -C projects commit -m "[demo] A-v001: geometric direction"
+```
+
+**提交后，该版本的 SVG 冻结。** 下一次修改用 `./logo version demo A` 创建 `A-v002`，评审文字在原记录末尾追加。
+
+### 3. 记录定稿决策并发布
+
+用户确认方案后：
+
+```bash
+./logo decision demo finalize-a-v001 --title "确认 A-v001 定稿"
+./logo state demo selected_version=A-v001
+```
+
+填写新建决策文档，记录选项、取舍和用户结论，再创建发布：
+
+```bash
+./logo release demo --from A-v001
+```
+
+首次发布生成 `projects/demo/releases/r1/`。发布前须完成：
+
+- `layouts/primary.svg`：必需主版，由选定版本起稿；按需增加 `icon.svg`、`horizontal.svg` 等版式。
+- `release.md`：填写发布说明，并引用真实的 `decisions/NNN-*.md`；编号以命令输出为准。
+- `guide.md`：填完标志结构、最小尺寸、安全留白与错误用法，它会随交付物一起导出。
+
+```bash
+./logo preview demo r1
+```
+
+用户审阅通过后：
+
+```bash
+./logo index
+./logo check
+git -C projects add -A
+git -C projects commit -m "[demo] release r1"
+```
+
+### 4. 导出并交付
+
+```bash
+./logo export demo
+# 也可只重新生成指定目标：
+./logo export demo ios avatar
+```
+
+交付物位于 `projects/demo/dist/r1/`，包含目标文件、`guide.md` 和 `manifest.json`，不提交 Git。
+
+| 导出目标 | 主要产物 |
+|---|---|
+| `svg` | 发布中的标志版式及彩色、单色、反白配色 |
+| `favicon` | 多尺寸 PNG、ICO、Apple 触控图标 |
+| `ios` | 不透明 App 图标 |
+| `android` | 多密度图标、Play 图标、自适应背景/前景/单色层 |
+| `avatar` | 多尺寸社交头像 |
+
+图标优先采用 `icon.svg`，缺省时使用 `primary.svg`；App 图标和头像按项目底色与配色配置自动排版，也支持手工覆盖。具体尺寸与规则见 [Logo 导出配置](config/logo-targets.toml)。
+
+`manifest.json` 记录发布来源、设计版本、每个目标对应的系统提交、项目提交、渲染器版本及文件 SHA-256。复现导出时应保持这些版本与配置一致。
+
+实际完成交付后，再记录状态：
+
+```bash
+./logo state demo stage=delivered
+./logo index
+./logo check
+git -C projects add -A
+git -C projects commit -m "[demo] mark r1 delivered"
+```
+
+## 扩展工作流
+
+| 场景 | 入口与说明 |
+|---|---|
+| 品牌系列 | `./logo series`；统一型、背书型子品牌需要母品牌先发布，定稿前须通过系列评审；改版后记录跟进决定。详见 [Logo 工作流](.agents/skills/logo-workflow/SKILL.md) |
+| 外部 Logo | `./logo inbox`、`./logo import … --analyze`；先展示预演，再逐项决定颜色冲突、来源和使用条款。详见 [导入工作流](.agents/skills/import-workflow/SKILL.md) |
+| 外部 Agent 交接 | `./logo handoff brief`、`receive`、`validate`、`feedback`；外发说明书前确认用户同意。交接标记为 `YinXia`，生成的通用 skill 标识为 `yinxia-handoff` |
+| 封面与家族封面 | `./logo cover platforms` 查看 [平台规格](config/cover-platforms.toml)；先立项与登记素材，再设计、预览、导出。Logo 只能引用发布版并移动缩放。详见 [封面工作流](.agents/skills/cover-workflow/SKILL.md) |
+| 母品牌与封面同步 | `./logo series sync` 记录子品牌跟进；`./logo cover sync-logo` 更新封面中的 Logo，之后重新预览 |
+| 单张渲染 | `./logo render demo primary --mode mono --size 800`，输出到 `dist/render/` |
+
+查看完整参数：
+
+```bash
+./logo --help
+./logo import --help
+./logo series --help
+./logo cover --help
+./logo handoff --help
+```
+
+## 检查与安全规则
+
+规则总览见 [AGENTS.md](AGENTS.md)。两个仓库的提交钩子都会运行 `./logo check`；任何错误都需要先修复，再提交。
+
+| 对象 | 规则 |
+|---|---|
+| 版本 SVG、发布版式、概念图、已登记封面素材 | 提交后不可修改或删除；通过新版本、新发布或新素材继续迭代 |
+| 方向、版本说明、决策、概念记录、发布说明、指南、系列规则等过程文档 | 提交后只允许在末尾追加 |
+| SVG | 使用 `viewBox`；文字转曲；颜色来自色板；禁止脚本、事件、外链与 Logo 内嵌位图 |
+| 新建文档 | 提交前填完模板占位；发布说明引用决策，参考图须登记 |
+| 提交内容 | 两个仓库均采用目录白名单；缓存、依赖、临时文件、生成物、字体文件和凭据受忽略与钩子检查保护 |
+| 敏感内容 | 扫描已知密钥特征和敏感字段中的长字符串，覆盖大文件及二进制中的明文；诊断不回显匹配内容 |
+
+提交时会检查暂存区中的 SVG、不可变文件及敏感内容，部分一致性检查还读取工作区。系统提交中，项目工作区的问题会显示为提醒，避免未完成的设计阻塞系统维护。
+
+手动运行 `./logo check` 还会查看当前发布是否可交付、历史不可变性、钩子状态和备份情况。它也会提醒单色细节丢失、图标安全区、封面过时或平台规格需复核等问题；视觉与授权判断仍需要用户参与。
+
+预览、临时脚本放 `.cache/`；外部原件进入 `inbox/`；导出结果放 `dist/`。这些目录均不进入版本控制。字体只提交登记和授权文件，密钥应存放在仓库之外或环境变量中。
+
+## 开发与维护
+
+修改系统代码、模板、配置或钩子后，提交前运行：
 
 ```bash
 ./logo selftest
+./logo check
 ```
 
-测试在临时目录里为每个用例搭建隔离的工作区（系统仓库 + 项目仓库，Git 配置与个人全局配置隔离），经由真实的 `./logo` 命令与提交钩子验证；不访问网络、不触碰真实仓库。`./logo selftest test_unit` 只跑毫秒级的单元测试。
+测试会在临时目录中搭建隔离的系统仓库与项目仓库，覆盖实际命令、Git 钩子、导出、系列、封面、导入和安全规则。默认最多使用 8 个进程；测试缺少渲染工具或字体时，相关用例会跳过，需留意输出。
 
-默认多进程并行（进程数取 CPU 核心数，最多 8；`-j N` 指定，`-j 1` 按原样串行运行，便于排查）：共享夹具（`setUpClass`）的测试类整类在同一进程，其余逐个分配；按 `.cache/selftest-times.json` 记录的上次耗时“最长任务优先”分配，使各进程同时结束。汇总时核对测试数，工作进程异常退出时其测试记为错误，不会漏报。每个进程只完整搭建一次工作区模板，之后的工作区直接复制模板。缺少 `resvg`/`magick` 时导出测试自动跳过，未下载 Inter / 思源黑体时转曲与排版测试自动跳过。
+```bash
+./logo selftest test_unit
+./logo selftest -j 1
+```
+
+系统改动在根目录提交，设计改动在项目仓库提交，两个仓库分别检查、分别保存历史。更新系统后可再次运行 `./logo setup` 同步项目忽略规则与钩子；它若更新了项目仓库的 `.gitignore`，需在项目仓库单独提交该变化。
+
+## 常见问题
+
+**为什么 GitHub 上没有项目看板或示例品牌？** 公开仓库只分发系统；看板和实际项目在本地独立项目仓库中生成，示例中的 `demo` 只是流程演示。
+
+**`direction` 提示需求未完成怎么办？** 补齐简报必需章节、字段和用户确认；系列成员还须填完系列规则。删掉占位所在的整段不能代替填写。
+
+**已提交文件需要修改怎么办？** SVG 用新版本或新发布；只追加文档在末尾补充记录。指南事实错误可追加明确勘误并重新导出；已提交指南仍留有模板占位时，需通过 `release --from rN` 新建发布并填完。
+
+**为什么新安装后有字体或备份提醒？** 字体按需下载；项目仓库默认只在本地初始化，远程地址由你自行配置。正式设计资料建议单独备份，系统仓库的远程不会备份项目数据。
+
+**在哪里查找操作细节？** 命令参数看 `./logo <命令> --help`；完整设计流程看 [Logo 工作流](.agents/skills/logo-workflow/SKILL.md)，外部设计与品牌物料分别看 [导入工作流](.agents/skills/import-workflow/SKILL.md) 和 [封面工作流](.agents/skills/cover-workflow/SKILL.md)。
