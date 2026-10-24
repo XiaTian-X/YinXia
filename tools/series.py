@@ -283,7 +283,7 @@ def cmd_compare(a) -> None:
         for i, r in enumerate(rules, 1):
             print(f"  {i}. {r}")
     with_ = " ".join(f"--with {p.slug}={ref}" for p, _, ref in items)
-    print(f"\n用户给出结论后记录：./logo series review {a.id} --result pass|revise --note \"用户意见\" {with_}")
+    print(f"\n用户给出结论后记录：{logo.cli_prefix()} series review {a.id} --result pass|revise --note \"用户意见\" {with_}")
 
 
 def reviews(sid: str) -> list[dict]:
@@ -456,7 +456,7 @@ def cmd_sync(a) -> None:
     print(f"{p.slug} 已跟进母品牌 {master.slug} {latest}：" + ("；".join(report) or "色板不改"))
     if skipped:
         print(f"未跟随：{'、'.join(skipped)}")
-    print("如母品牌的图形也有调整、子品牌需要改版：出新版本后用 ./logo series compare 与用户重新评审")
+    print(f"如母品牌的图形也有调整、子品牌需要改版：出新版本后用 {logo.cli_prefix()} series compare 与用户重新评审")
 
 
 # ---------------------------------------------------------------------------
@@ -561,7 +561,7 @@ def index_groups() -> list[tuple[str, list[tuple["logo.Project", str, str]]]]:
 def cmd_list(a) -> None:
     found = all_series()
     if not found:
-        print("还没有系列（./logo series new <系列名> --name 名称 --architecture unified|endorsed|independent）")
+        print(f"还没有系列（{logo.cli_prefix()} series new <系列名> --name 名称 --architecture unified|endorsed|independent）")
         return
     for sid, s in found.items():
         print(f"{sid}  {s.get('name', '')}  [{ARCHITECTURES.get(s.get('architecture'), '?')}]  规则：{rules_path(sid)}"
@@ -575,6 +575,9 @@ def cmd_list(a) -> None:
 
 
 def cmd_new(a) -> None:
+    import repositories
+    if repositories.kind(logo.PROJECTS) == "single":
+        raise logo.LogoError("single 仓库只管理独立品牌；系列请放在 workspace 仓库")
     if not logo.projects_repo_ready():
         raise logo.LogoError("项目仓库 projects/ 尚未初始化，请先运行 ./logo setup")
     if not logo.SLUG_RE.match(a.id):
@@ -592,7 +595,7 @@ def cmd_new(a) -> None:
     logo.write_new(d / "series.md", logo.render_template(f"series-{a.architecture}.md", id=a.id, name=name,
                                                          date=logo.today()))
     print(f"已创建系列：{logo.rel(d)}（{ARCHITECTURES[a.architecture]}）")
-    print(f"下一步：按需求访谈填写 {rules_path(a.id)}，再用 ./logo new <slug> --series {a.id} --role master 创建母品牌")
+    print(f"下一步：按需求访谈填写 {rules_path(a.id)}，再用 {logo.cli_prefix()} new <slug> --series {a.id} --role master 创建母品牌")
 
 
 def cmd_skeleton(a) -> None:
@@ -619,11 +622,14 @@ def cmd_skeleton(a) -> None:
         md.write_text(md.read_text(encoding="utf-8").rstrip("\n") + (
             f"\n\n### {logo.today()} 封面骨架：{ref}\n- **画幅**：{ratios}\n- **用户意见**：{note}\n"), encoding="utf-8")
     print(f"已登记系列 {a.id} 的封面骨架：{ref}（画幅：{ratios}）")
-    print("成员立项封面时须先问用户是否套用：./logo cover new <项目> <名称> --platforms … --from-skeleton | --no-skeleton")
+    print(f"成员立项封面时须先问用户是否套用：{logo.cli_prefix()} cover new <项目> <名称> --platforms … --from-skeleton | --no-skeleton")
 
 
 def cmd_add(a) -> None:
     """已有项目加入系列（新项目请用 ./logo new --series）。只登记关系，不改动已有的色板与设计。"""
+    import repositories
+    if repositories.kind(logo.PROJECTS) == "single":
+        raise logo.LogoError("single 仓库只管理独立品牌；系列请放在 workspace 仓库")
     p = logo.Project(a.slug)
     if membership(p):
         raise logo.LogoError(f"{p.slug} 已属于系列 {membership(p).get('id')}")

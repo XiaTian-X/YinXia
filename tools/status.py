@@ -27,6 +27,7 @@ def project_todo(p: "logo.Project") -> list[dict]:
     out: list[dict] = []
 
     def add(kind: str, text: str, command: str = "") -> None:
+        command = logo.scope_hint(command).replace("git -C projects", logo.projects_git_prefix())
         out.append({"kind": kind, "text": text, "command": command})
 
     st = p.cfg.get("state", {})
@@ -101,7 +102,7 @@ def project_todo(p: "logo.Project") -> list[dict]:
     # -- 收件箱 --
     for it in importer.inbox_items():
         if it["meta"].get("project") == p.slug:
-            add("收件箱", f"inbox/{it['file']} 待导入（{it['type']}）", f"./logo import / cover import … --analyze，给用户看后导入")
+            add("收件箱", f"{logo.rel(importer.INBOX)}/{it['file']} 待导入（{it['type']}）", f"./logo import / cover import … --analyze，给用户看后导入")
     return sorted(out, key=lambda x: KINDS.index(x["kind"]))
 
 
@@ -112,7 +113,7 @@ def global_todo() -> list[dict]:
     out = []
     for it in importer.inbox_items():
         if not it["meta"].get("project"):
-            out.append({"kind": "收件箱", "text": f"inbox/{it['file']} 去向待定（{it['type']}）", "command": "问用户放进哪个项目"})
+            out.append({"kind": "收件箱", "text": f"{logo.rel(importer.INBOX)}/{it['file']} 去向待定（{it['type']}）", "command": "问用户放进哪个项目"})
     for sid in series.all_series():
         fam = covers.Family(sid)
         for cdir in covers.project_covers(fam):
@@ -125,14 +126,16 @@ def global_todo() -> list[dict]:
     backup: list[str] = []
     logo.check_backup(backup)
     out += [{"kind": "备份", "text": w.split("：", 1)[0], "command": "添加私有远程并定期推送"} for w in backup]
+    for item in out:
+        item["command"] = logo.scope_hint(item["command"])
     return out
 
 
 def cmd_status(a) -> None:
     if not logo.projects_repo_ready():
-        raise logo.LogoError("项目仓库 projects/ 尚未初始化，请先运行 ./logo setup")
+        raise logo.LogoError(f"项目仓库 {logo.rel(logo.PROJECTS)}/ 尚未初始化，请先运行 {logo.cli_prefix()} setup")
     projects = [logo.Project(a.slug)] if a.slug else logo.all_projects()
-    data = {"projects": [], "global": [] if a.slug else global_todo()}
+    data = {"repository": logo.REPOSITORY_ID, "projects": [], "global": [] if a.slug else global_todo()}
     for p in projects:
         try:
             st = p.cfg.get("state", {})
@@ -145,8 +148,10 @@ def cmd_status(a) -> None:
     if a.json:
         print(json.dumps(data, ensure_ascii=False, indent=2))
         return
+    if logo.REPOSITORY_ID != "default":
+        print(f"设计仓库：{logo.REPOSITORY_ID}（{logo.rel(logo.PROJECTS)}）")
     if not data["projects"]:
-        print("还没有项目：先与用户完成需求访谈（logo-workflow 第 0 步），再 ./logo new")
+        print(f"还没有项目：先与用户完成需求访谈（logo-workflow 第 0 步），再 {logo.cli_prefix()} new")
     for pr in data["projects"]:
         print(f"{pr['slug']}（{pr['name']} · {pr['stage']}" + (f" · 当前发布 {pr['current_release']}" if pr["current_release"] else "") + "）")
         for i, t in enumerate(pr["todo"], 1):
@@ -164,4 +169,5 @@ def register(sub) -> None:
     s = sub.add_parser("status", help="各项目的进度与待办（新会话先运行，把待办讲给用户）")
     s.add_argument("slug", nargs="?", help="只看这个项目")
     s.add_argument("--json", action="store_true", help="以 JSON 输出（供 Agent 读取）")
+    s.add_argument("--all-repos", action="store_true", help="汇总所有已登记设计仓库")
     s.set_defaults(fn=cmd_status)

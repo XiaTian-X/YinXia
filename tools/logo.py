@@ -15,6 +15,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import struct
 import subprocess
@@ -36,7 +37,9 @@ SYSTEM_NAME_ZH = "印夏"
 SYSTEM_NAME_EN = "YinXia"
 SYSTEM_NAME = f"{SYSTEM_NAME_ZH}（{SYSTEM_NAME_EN}）"
 ROOT = Path(__file__).resolve().parent.parent
-PROJECTS = ROOT / "projects"  # 独立的项目 Git 仓库（系统仓库中被忽略）
+REPOSITORY_ID = "default"
+PROJECTS = ROOT / "projects"  # 当前选中的独立设计仓库；CLI 解析后、业务模块导入前绑定
+INBOX = ROOT / "inbox"
 TEMPLATES = ROOT / "templates"
 CONFIG = ROOT / "config"
 TARGETS_TOML = CONFIG / "logo-targets.toml"
@@ -109,7 +112,7 @@ SYSTEM_FILE_PATTERNS = [re.compile(p) for p in (
     r"tests/[a-z0-9_]+\.py",
 )]
 # 项目仓库根目录允许的文件；项目目录内的文件见 PROJECT_FILE_PATTERNS，系列记录见 SERIES_FILE_RE
-PROJECTS_ROOT_FILES = {"PROJECTS.md", ".gitignore"}
+PROJECTS_ROOT_FILES = {"PROJECTS.md", ".gitignore", "repository.toml"}
 SERIES_FILE_RE = re.compile(r"_series/([a-z0-9]+(?:-[a-z0-9]+)*)/(.+)")  # 系列目录内：series.toml/md 与家族封面
 
 # 密钥与凭据：文件名特征，以及内容特征（私钥、各平台访问令牌）
@@ -205,6 +208,32 @@ RELEASE_META_KEYS = {"基于": "based_on", "日期": "date", "based_on": "based_
 
 class LogoError(Exception):
     """可预期的用户错误，直接打印信息并以非零状态退出。"""
+
+
+def cli_prefix() -> str:
+    if REPOSITORY_ID.startswith("hook-"):
+        return "./logo --repo-path " + shlex.quote(str(PROJECTS))
+    if REPOSITORY_ID != "default":
+        return "./logo --repo " + REPOSITORY_ID
+    import repositories
+    try:
+        active = repositories.registry()["active"]
+    except LogoError:
+        active = "?"
+    return "./logo" if active == "default" else "./logo --repo default"
+
+
+def scope_hint(text: str) -> str:
+    """为系统生成的操作提示补仓库选择；已有显式选择的不重复添加。"""
+    return re.sub(r"\./logo(?!\s+--repo(?:-path)?\b)(?=\s|$)", lambda _: cli_prefix(), text)
+
+
+def projects_git_prefix() -> str:
+    return "git -C " + shlex.quote(rel(PROJECTS))
+
+
+def project_hooks_path() -> str:
+    return os.path.relpath(ROOT / ".githooks" / "projects", PROJECTS)
 
 
 # ---------------------------------------------------------------------------
@@ -815,9 +844,17 @@ def alpha_outside_circle(png: Path, radius_ratio: float) -> float:
 def cmd_new(a) -> None:
     slug = a.slug
     if not projects_repo_ready():
-        raise LogoError("项目仓库 projects/ 尚未初始化，请先运行 ./logo setup")
+        raise LogoError(f"项目仓库 {rel(PROJECTS)}/ 尚未初始化，请先运行 {cli_prefix()} setup")
+    import repositories
+    if repositories.kind(PROJECTS) == "single":
+        if all_projects():
+            raise LogoError("single 仓库最多容纳一个品牌项目；请新建另一个仓库或使用 workspace 模式")
+        if a.series or a.role:
+            raise LogoError("single 仓库只管理独立品牌；系列请放在 workspace 仓库")
     if not SLUG_RE.match(slug):
         raise LogoError("项目短名只能使用小写英文、数字和短横线，例如 acme 或 green-tea")
+    if slug == "inbox":
+        raise LogoError("inbox 是收件箱保留目录，不能作为品牌项目短名")
     d = PROJECTS / slug
     if d.exists():
         raise LogoError(f"项目已存在：{rel(d)}")
@@ -849,7 +886,7 @@ def cmd_new(a) -> None:
     if master:
         print(f"色板与配色模式已继承母品牌 {master.slug}（{master.cfg['state']['current_release']}）")
     print(f"下一步：按需求访谈填完 {rel(d / 'brief.md')}"
-          + ("" if master else " 与 project.toml 中的色板") + "，经用户确认后再 ./logo direction 开始设计")
+          + ("" if master else " 与 project.toml 中的色板") + f"，经用户确认后再 {cli_prefix()} direction 开始设计")
 
 
 def cmd_direction(a) -> None:
@@ -1023,7 +1060,7 @@ def cmd_release(a) -> None:
         print(f"未继承 {src} 中不属于 Logo 版式的文件：{', '.join(skipped)}（封面请用 ./logo cover 管理）")
     if VERSION_ID_RE.match(src) and (layouts / "primary.svg").exists():
         print(f"已用 {src}/logo.svg 起稿主版 layouts/primary.svg：提交前可调整（如留白），提交后冻结")
-    print("其余版式可选（见 release.md 清单）；完成后用 ./logo preview 查看自动排版效果")
+    print(f"其余版式可选（见 release.md 清单）；完成后用 {cli_prefix()} preview 查看自动排版效果")
 
 
 def cmd_state(a) -> None:
@@ -1472,6 +1509,7 @@ def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist:
     files = sorted([dist / "guide.md"] + [f for t in present for f in (dist / t).rglob("*") if f.is_file()])
     manifest = {
         "project": p.slug,
+        "repository": REPOSITORY_ID,
         "release": rid,
         "based_on": load_release_meta(rdir).get("based_on", ""),
         "design_version": root_version,
@@ -1909,7 +1947,7 @@ def profile_warnings() -> list[str]:
 def git(*args: str, check: bool = True, repo: str = "system") -> subprocess.CompletedProcess:
     """在系统仓库（ROOT）或项目仓库（projects/）中执行 git。"""
     if repo == "projects" and not projects_repo_ready():
-        raise LogoError("项目仓库 projects/ 尚未初始化，请先运行 ./logo setup")
+        raise LogoError(f"项目仓库 {rel(PROJECTS)}/ 尚未初始化，请先运行 {cli_prefix()} setup")
     path = PROJECTS if repo == "projects" else ROOT
     return subprocess.run(["git", "-C", str(path), *args], capture_output=True, check=check)
 
@@ -1932,15 +1970,15 @@ def check_immutability(staged: bool, errors: list[str]) -> None:
             continue
         if any(pt.match(path) for pt in FROZEN_PATTERNS):
             action = "删除" if status == "D" else "修改"
-            errors.append(f"projects/{path}: 已冻结的文件被{action}（请新建版本/发布，而不是改动已提交的内容）")
+            errors.append(f"{rel(PROJECTS)}/{path}: 已冻结的文件被{action}（请新建版本/发布，而不是改动已提交的内容）")
         elif any(pt.match(path) for pt in APPEND_ONLY_PATTERNS):
             if status == "D":
-                errors.append(f"projects/{path}: 只追加文件不能删除")
+                errors.append(f"{rel(PROJECTS)}/{path}: 只追加文件不能删除")
                 continue
             old = git("show", f"HEAD:{path}", repo="projects").stdout
             new = git("show", f":{path}", repo="projects").stdout if staged else (PROJECTS / path).read_bytes()
             if not new.startswith(old.rstrip(b"\n")):
-                errors.append(f"projects/{path}: 只允许在末尾追加内容，已有内容不能修改")
+                errors.append(f"{rel(PROJECTS)}/{path}: 只允许在末尾追加内容，已有内容不能修改")
 
 
 def projects_paths(*args: str) -> set[str]:
@@ -1999,7 +2037,7 @@ def check_history(warnings: list[str]) -> None:
 
 def check_backup(warnings: list[str]) -> None:
     """两个仓库是否有本机之外的备份：没有远程、没有上游或有未推送的提交时提醒（只读本地记录，不访问网络）。"""
-    for repo, label, cmd in (("system", "系统", "git"), ("projects", "项目", "git -C projects")):
+    for repo, label, cmd in (("system", "系统", "git"), ("projects", "项目", projects_git_prefix())):
         if repo == "projects" and not projects_repo_ready():
             continue
         if git("rev-parse", "--verify", "HEAD", check=False, repo=repo).returncode != 0:
@@ -2107,31 +2145,31 @@ def check_new_docs(staged: bool, errors: list[str], warnings: list[str]) -> None
         holes = document_issues(path, text)
         if holes:
             what = "缺失或未填写" if path in briefs else "模板占位未填写"
-            sink.append(f"projects/{path}: 还有 {len(holes)} 处{what}（如“{holes[0]}”）")
+            sink.append(f"{rel(PROJECTS)}/{path}: 还有 {len(holes)} 处{what}（如“{holes[0]}”）")
         if path in briefs or path not in added:
             continue
         slug = path.split("/", 1)[0]
         if re.match(r"^[^/]+/releases/r\d+/release\.md$", path):
             refs = DECISION_REF_RE.findall(text)
             if not refs:
-                sink.append(f"projects/{path}: “决策依据”须引用决策记录 decisions/NNN-*.md（用 ./logo decision 创建）")
+                sink.append(f"{rel(PROJECTS)}/{path}: “决策依据”须引用决策记录 decisions/NNN-*.md（用 {cli_prefix()} decision 创建）")
             for ref in refs:
                 if not (PROJECTS / slug / "decisions" / ref).exists():
-                    sink.append(f"projects/{path}: 引用的决策记录不存在 decisions/{ref}")
+                    sink.append(f"{rel(PROJECTS)}/{path}: 引用的决策记录不存在 decisions/{ref}")
         if re.match(r"^[^/]+/directions/[^/]+/v\d{3}/notes\.md$", path):
             for ref in CONCEPT_REF_RE.findall(text):
                 if not (PROJECTS / slug / "concepts" / ref).exists():
-                    sink.append(f"projects/{path}: 灵感来源引用的概念图不存在 concepts/{ref}")
+                    sink.append(f"{rel(PROJECTS)}/{path}: 灵感来源引用的概念图不存在 concepts/{ref}")
 
 
 def check_hooks(warnings: list[str]) -> None:
     """钩子缺失时 git 会静默跳过检查，这里显式提醒。"""
     expected = {"system": (".githooks", ROOT / ".githooks" / "pre-commit"),
-                "projects": ("../.githooks/projects", ROOT / ".githooks" / "projects" / "pre-commit")}
+                "projects": (project_hooks_path(), ROOT / ".githooks" / "projects" / "pre-commit")}
     gi = PROJECTS / ".gitignore"
     if projects_repo_ready() and (not gi.exists() or gi.read_text(encoding="utf-8")
                                   != PROJECTS_GITIGNORE_TEMPLATE.read_text(encoding="utf-8")):
-        warnings.append("projects/.gitignore 与系统模板不一致，运行 ./logo setup 更新后在项目仓库提交")
+        warnings.append(f"{rel(gi)} 与系统模板不一致，运行 {cli_prefix()} setup 更新后在项目仓库提交")
     for repo, (hooks_path, script) in expected.items():
         if repo == "projects" and not projects_repo_ready():
             continue
@@ -2147,6 +2185,8 @@ def path_allowed(path: str, scope: str) -> bool:
         return False  # 即使 git add -f，也不能把缓存、依赖或备份伪装成白名单内的源码/文档
     if scope == "system":
         return any(pt.fullmatch(path) for pt in SYSTEM_FILE_PATTERNS)
+    if parts[0] == "inbox":
+        return False  # 收件箱中的外部资料未经正式导入，不能强制提交
     if len(parts) == 1:
         return path in PROJECTS_ROOT_FILES
     if SLUG_RE.match(parts[0]):
@@ -2166,7 +2206,7 @@ def check_secrets(scope: str, staged: bool, errors: list[str]) -> None:
     """
     if git("rev-parse", "--git-dir", check=False, repo=scope).returncode != 0:
         return
-    prefix = "projects/" if scope == "projects" else ""
+    prefix = rel(PROJECTS) + "/" if scope == "projects" else ""
     root = PROJECTS if scope == "projects" else ROOT
 
     def ls(*args: str) -> list[str]:
@@ -2199,7 +2239,7 @@ def check_stray_files(scope: str, errors: list[str], warnings: list[str]) -> Non
     """拦截目录结构之外的文件（描摹中间件、临时脚本等）。已纳入/暂存的文件报错，未跟踪的文件提醒。"""
     if git("rev-parse", "--git-dir", check=False, repo=scope).returncode != 0:
         return
-    prefix = "projects/" if scope == "projects" else ""
+    prefix = rel(PROJECTS) + "/" if scope == "projects" else ""
 
     def ls(*args: str) -> set[str]:
         return {x for x in git("ls-files", "-z", *args, repo=scope).stdout.decode("utf-8").split("\0") if x}
@@ -2265,12 +2305,14 @@ def cmd_check(a) -> None:
     else:
         staged = a.staged and scope == "projects"
         perr: list[str] = []
+        import repositories
+        repositories.check_selected(perr, staged)
         projects = [Project(a.slug)] if a.slug else all_projects()
         for p in projects:
             check_project(p, perr, warnings, staged)
         if not a.slug:
             if not PROJECTS_MD.exists() or PROJECTS_MD.read_text(encoding="utf-8") != build_index():
-                msg = "projects/PROJECTS.md 不是最新，请运行 ./logo index"
+                msg = f"{rel(PROJECTS_MD)} 不是最新，请运行 {cli_prefix()} index"
                 (perr if staged else warnings).append(msg)
             check_stray_files("projects", perr, warnings)
             check_new_docs(staged, perr, warnings)
@@ -2304,9 +2346,9 @@ def cmd_check(a) -> None:
         except LogoError as e:
             errors.append(str(e))
     for w in warnings:
-        print(f"⚠ {w}")
+        print(f"⚠ {scope_hint(w)}")
     for e in errors:
-        print(f"✗ {e}")
+        print(f"✗ {scope_hint(e)}")
     if errors:
         print(f"\n检查未通过：{len(errors)} 个错误，{len(warnings)} 个提醒")
         sys.exit(1)
@@ -2335,18 +2377,9 @@ def cmd_selftest(a) -> None:
 def cmd_setup(a) -> None:
     run(["git", "-C", str(ROOT), "config", "core.hooksPath", ".githooks"])
     print("已启用系统仓库钩子（.githooks/pre-commit）")
-    PROJECTS.mkdir(exist_ok=True)
-    if not projects_repo_ready():
-        run(["git", "init", "-q", str(PROJECTS)])
-        print("已初始化项目仓库 projects/")
-    gi = PROJECTS / ".gitignore"
-    want = PROJECTS_GITIGNORE_TEMPLATE.read_text(encoding="utf-8")
-    if not gi.exists() or gi.read_text(encoding="utf-8") != want:
-        gi.write_text(want, encoding="utf-8")
-        print("已写入 projects/.gitignore（白名单模板），请在项目仓库提交")
-    # 相对路径以项目仓库根目录为基准，钩子脚本随系统仓库一起版本管理
-    run(["git", "-C", str(PROJECTS), "config", "core.hooksPath", "../.githooks/projects"])
-    print("已启用项目仓库钩子（.githooks/projects/pre-commit）")
+    import repositories
+    repositories.setup_data_repository(PROJECTS)
+    print(f"已启用设计仓库 {REPOSITORY_ID} 的钩子（{rel(PROJECTS)}）")
     if not PROJECTS_MD.exists():
         PROJECTS_MD.write_text(build_index(), encoding="utf-8")
     venv = ROOT / ".venv"
@@ -2369,6 +2402,8 @@ def cmd_setup(a) -> None:
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="logo", description=f"{SYSTEM_NAME}项目管理工具")
+    ap.add_argument("--repo", dest="repository", help="本次操作的设计仓库名（默认：本机 active，初始为 default）")
+    ap.add_argument("--repo-path", help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="<命令>")
 
     s = sub.add_parser("setup", help="安装依赖并启用 Git 钩子")
@@ -2471,6 +2506,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_render)
 
     s = sub.add_parser("check", help="检查规范、不可变规则与导出一致性")
+    s.add_argument("--all-repos", action="store_true", help="检查系统与所有已登记设计仓库")
     s.add_argument("slug", nargs="?")
     s.add_argument("--staged", action="store_true", help="检查暂存区（供 pre-commit 使用）")
     s.add_argument("--scope", choices=["all", "system", "projects"], default="all",
@@ -2493,6 +2529,8 @@ def build_parser() -> argparse.ArgumentParser:
     handoff.register(sub)
     import status  # 延迟导入：status.py 依赖本模块
     status.register(sub)
+    import repositories
+    repositories.register(sub)
 
     s = sub.add_parser("index", help="重新生成 PROJECTS.md")
     s.set_defaults(fn=cmd_index)
@@ -2500,11 +2538,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> None:
-    args = build_parser().parse_args(argv)
     try:
+        import repositories
+        selection = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+        group = selection.add_mutually_exclusive_group()
+        group.add_argument("--repo")
+        group.add_argument("--repo-path")
+        selected, rest = selection.parse_known_args(sys.argv[1:] if argv is None else argv)
+        management = bool(rest and rest[0] in ("repo", "selftest", "--help", "-h")) or "--all-repos" in rest
+        repositories.configure(selected.repo or ("default" if management else None), selected.repo_path)
+        args = build_parser().parse_args(rest)
+        if getattr(args, "all_repos", False):
+            if selected.repo or selected.repo_path:
+                raise LogoError("--all-repos 与单个仓库选择不能同时使用")
+            return repositories.all_repositories(args)
         args.fn(args)
     except LogoError as e:
-        print(f"✗ {e}", file=sys.stderr)
+        print(f"✗ {scope_hint(str(e))}", file=sys.stderr)
         sys.exit(1)
 
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# 项目仓库（projects/）提交前检查；由 ./logo setup 设置为项目仓库的 core.hooksPath
+# 当前设计仓库提交前检查；使用 Git 的工作目录，避免 active 指向别的仓库
 set -e
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-"$ROOT/.venv/bin/python" "$ROOT/tools/logo.py" check --staged --scope projects
+"$ROOT/.venv/bin/python" "$ROOT/tools/logo.py" --repo-path "$PWD" check --staged --scope projects

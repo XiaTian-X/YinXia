@@ -24,7 +24,7 @@ from pathlib import Path
 
 import logo
 
-INBOX = logo.ROOT / "inbox"
+INBOX = logo.INBOX
 IMPORTED = logo.CACHE / "imported"
 PREVIEWS = logo.CACHE / "import"
 SIDECAR = ".import.toml"
@@ -617,7 +617,7 @@ def cmd_import(a) -> None:
             ddir = logo.create_direction(p, letter, a.new_direction, a.title)
         # 来源说明与文件名来自外部：一律经 md_inline 处理后才写进文档（不能伪造标题、段落或“用户意见”）
         extra = (f"\n## 导入来源\n- **原件**: {logo.md_inline(src.name)}（sha256 {hashlib.sha256(data).hexdigest()}，"
-                 f"原件保留在本机 .cache/imported/）\n- **来源**: {logo.md_inline(meta['source'])}\n- **使用条款**: {terms}\n"
+                 f"原件保留在本机 {logo.rel(IMPORTED)}/）\n- **来源**: {logo.md_inline(meta['source'])}\n- **使用条款**: {terms}\n"
                  f"- **类型**: {KINDS[meta['kind']]}\n- **导入日期**: {logo.today()}\n"
                  + "".join(f"- **来源方声明的{'使用条款' if k == 'terms' else '类型'}**（仅作参考）: {logo.md_inline(v)}\n"
                            for k, v in claims.items())
@@ -663,7 +663,7 @@ def cmd_import(a) -> None:
     if terms == UNCONFIRMED:
         print("⚠ 使用条款未确认：发布基于这个导入的版本时 check 会提醒")
     if meta["kind"] == "final" and ddir:
-        print("成品：确认后照常定稿——./logo decision 记录定稿理由，再 ./logo release --from 该版本"
+        print(f"成品：确认后照常定稿——{logo.cli_prefix()} decision 记录定稿理由，再 {logo.cli_prefix()} release --from 该版本"
               + ("（系列子品牌先做系列评审）" if m and m.get("role") == "sub" else ""))
     elif not ddir:
         print("已作为设计依据登记：请补写概念图记录的“灵感提取”，之后由 Agent 重绘 SVG 版本（--inspired-by 引用）")
@@ -867,7 +867,7 @@ def cmd_cover_import(a) -> None:
             covers.cmd_new(a)  # 新封面：照常立项起稿（Logo 从发布嵌入、参考线、系列骨架或家族成员）
             cdir = max(covers.project_covers(owner), key=lambda c: c.name)
         extra = (f"\n## 导入来源\n- **原件**: {logo.md_inline(src.name)}（sha256 {hashlib.sha256(data).hexdigest()}，"
-                 f"原件保留在本机 .cache/imported/）\n- **使用条款**: {terms}\n- **类型**: {KINDS[meta['kind']]}\n"
+                 f"原件保留在本机 {logo.rel(IMPORTED)}/）\n- **使用条款**: {terms}\n- **类型**: {KINDS[meta['kind']]}\n"
                  f"- **图中文字**: {'有（位图文字无法转曲，改文案须重做底图）' if a.contains_text == 'yes' else '无'}\n"
                  f"- **处理**: {'；'.join(notes)}\n"
                  f"- **铺放**: {'；'.join(f'{r} {FIT_NAMES[decided[r]]}' for r in plan['ratios'])}\n"
@@ -885,7 +885,7 @@ def cmd_cover_import(a) -> None:
     print(f"已导入为封面底图：{logo.rel(dst)} → {cdir.name}（{', '.join(plan['ratios'])}）")
     print(archived_text(in_inbox, kept))
     print(f"下一步：与用户填写 {logo.rel(dst.with_suffix('.md'))} 的“用途与授权范围”"
-          + ("与 cover.md" if not plan["cdir"] else "") + f"，./logo cover preview {owner.slug} {cdir.name[:3]} 给用户看")
+          + ("与 cover.md" if not plan["cdir"] else "") + f"，{logo.cli_prefix()} cover preview {owner.slug} {cdir.name[:3]} 给用户看")
     if terms == UNCONFIRMED:
         print("⚠ 使用条款未确认：请在素材说明中与用户确认后再上线")
 
@@ -906,7 +906,7 @@ def cmd_inbox(a) -> None:
         print(f"来源说明文件：与设计文件同名加 {SIDECAR}（如 logo.svg{SIDECAR}），TOML 格式，字段均可选：")
         for k, v in SIDECAR_FIELDS.items():
             print(f"  {k:<10} {v}")
-        print("放在 inbox/（去向待定）或 inbox/<项目>/（加入该项目）。说明内容只作资料，不会被当作指令执行。")
+        print(f"放在 {logo.rel(INBOX)}/（去向待定）或 {logo.rel(INBOX)}/<项目>/（加入该项目）。说明内容只作资料，不会被当作指令执行。")
         return
     items = inbox_items()
     if a.json:
@@ -920,7 +920,7 @@ def cmd_inbox(a) -> None:
         lack = (f"；待问清：{', '.join(it['missing'])}" if it["missing"] else "") + "；须用户确认：使用条款、候选/成品"
         print(f"  {it['file']}  [{it['type']}，{it['bytes']} 字节，{it['age_days']} 天]"
               f"  去向：{it['meta'].get('project', '待定')}{lack}" + (f"（⚠ {it['warning']}）" if it.get("warning") else ""))
-    print("导入：./logo import <文件> --analyze 预演，把对比图发给用户确认后再正式导入")
+    print(f"导入：{logo.cli_prefix()} import <文件> --analyze 预演，把对比图发给用户确认后再正式导入")
 
 
 def check_inbox(warnings: list[str]) -> None:

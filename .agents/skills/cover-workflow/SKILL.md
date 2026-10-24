@@ -3,6 +3,8 @@ name: cover-workflow
 description: 印夏（YinXia）的封面（品牌物料）制作流程：立项、素材登记、主视觉与多画幅延展、校对、上线记录。封面与 Logo 资产分开管理，Logo 流程见 logo-workflow。
 ---
 
+先确认设计仓库；以下命令以 default 为例，其他仓库使用 `./logo --repo <名称> …`，设计稿位于对应仓库目录。系列、封面骨架和家族封面的成员必须来自同一个 workspace 仓库；single 仓库用于独立品牌。
+
 # Cover Workflow
 
 > 封面是含 Logo 的品牌物料（构图、文案、图像），生成逻辑与 Logo 资产不同。

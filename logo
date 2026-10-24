@@ -4,7 +4,16 @@ set -euo pipefail
 logo_root="$(cd "$(dirname "$0")" && pwd)"
 logo_python="$logo_root/.venv/bin/python"
 if [[ ! -x "$logo_python" ]]; then
-    if [[ "${1:-}" != "setup" ]]; then
+    logo_args=("$@")
+    logo_index=0
+    while (( logo_index < ${#logo_args[@]} )); do
+        case "${logo_args[$logo_index]}" in
+            --repo|--repo-path) logo_index=$((logo_index + 2)) ;;
+            --repo=*|--repo-path=*) logo_index=$((logo_index + 1)) ;;
+            *) break ;;
+        esac
+    done
+    if [[ "${logo_args[$logo_index]:-}" != "setup" ]]; then
         echo "✗ Python 环境尚未就绪，请先运行 ./logo setup" >&2
         exit 1
     fi

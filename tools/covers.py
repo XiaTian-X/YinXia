@@ -641,7 +641,7 @@ def cmd_export(a) -> None:
             files[f.name] = prev
         else:
             files[f.name] = {"sha256": logo.sha256_file(f), "design": None}  # 来源不明（旧格式或被改动）
-    manifest = {"project": p.slug, "cover": cdir.name, "title": cfg["cover"]["title"], "files": files}
+    manifest = {"project": p.slug, "repository": logo.REPOSITORY_ID, "cover": cdir.name, "title": cfg["cover"]["title"], "files": files}
     (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     print(f"已导出 {', '.join(written)} → {logo.rel(dist)}（不提交）")
     for w in warnings + stale_exports(p, cdir, cfg):
@@ -954,7 +954,7 @@ def sync_family(fam: Family, cdir: Path, cfg: dict, a) -> None:
     print(f"已同步 {cdir.name} 的成员 Logo：\n  " + "\n  ".join(report))
     for w in cover_warnings(fam, cdir):
         print(f"⚠ {w}")
-    print(f"请运行 ./logo cover preview {fam.slug} {cdir.name[:3]} 查看效果后提交")
+    print(f"请运行 {logo.cli_prefix()} cover preview {fam.slug} {cdir.name[:3]} 查看效果后提交")
 
 
 def cmd_sync_logo(a) -> None:
@@ -983,7 +983,7 @@ def cmd_sync_logo(a) -> None:
     print(f"已同步 {cdir.name} 的 Logo 到 {rid}：\n  " + "\n  ".join(report))
     for w in cover_warnings(p, cdir):
         print(f"⚠ {w}")
-    print(f"请运行 ./logo cover preview {p.slug} {cdir.name[:3]} 查看效果后提交")
+    print(f"请运行 {logo.cli_prefix()} cover preview {p.slug} {cdir.name[:3]} 查看效果后提交")
 
 
 # -- 命令 --------------------------------------------------------------------------
@@ -1306,7 +1306,7 @@ def cmd_retarget(a) -> None:
         print(f"⚠ {n}")
     if unused:
         print(f"不再需要的画幅稿已保留：{', '.join(unused)}（确认不用后可删除）")
-    print(f"请运行 ./logo cover preview {p.slug} {cdir.name[:3]} 查看效果后提交")
+    print(f"请运行 {logo.cli_prefix()} cover preview {p.slug} {cdir.name[:3]} 查看效果后提交")
 
 
 def cmd_asset(a) -> None:
@@ -1358,7 +1358,7 @@ def cmd_list(a) -> None:
     p = owner_of(a.slug)
     covers = project_covers(p)
     if not covers:
-        print(f"{a.slug} 还没有封面（./logo cover new 创建）")
+        print(f"{a.slug} 还没有封面（{logo.cli_prefix()} cover new 创建）")
         return
     print("".join(pad(h, w) for h, w in zip(("封面", "状态", "Logo", "目标平台"), (26, 10, 8, 40))) + "上线")
     for cdir in covers:

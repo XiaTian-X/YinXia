@@ -56,6 +56,7 @@ def brief_points(p: "logo.Project") -> list[str]:
 
 
 def format_text(plain: bool, slug: str) -> list[str]:
+    inbox, cli = logo.rel(importer.INBOX), logo.cli_prefix()
     fields = "、".join(k for k in importer.SIDECAR_FIELDS if k not in ("project", "terms", "kind", "direction"))
     if plain:
         return [
@@ -75,9 +76,9 @@ def format_text(plain: bool, slug: str) -> list[str]:
             "说明部分是 TOML 格式；文件名只用小写英文、数字和短横线。不要写使用条款与授权判断，那由用户确认。",
         ]
     return [
-        f"请把每个 SVG 保存到印夏（YinXia）的收件箱 inbox/{slug}/<英文短名>.svg，",
+        f"请把每个 SVG 保存到印夏（YinXia）的收件箱 {inbox}/{slug}/<英文短名>.svg，",
         f"并在旁边写一份同名加 .import.toml 的说明（TOML，字段：{fields}）。",
-        "写好后可以运行 `./logo handoff validate inbox/" + slug + "/<文件> --project " + slug + "` 自查并修正。",
+        f"写好后可以运行 `{cli} handoff validate {inbox}/{slug}/<文件> --project {slug}` 自查并修正。",
         "不要自行导入或改动项目目录，导入由用户在印夏（YinXia）中确认后完成。",
     ]
 
@@ -111,7 +112,7 @@ def cover_sections(p: "logo.Project", platforms: str | None, plain: bool) -> lis
                   "```", 'source = "你的工具或模型名称"', 'prompt = "提示词"', 'ratio = "16x9"', "```",
                   "用户会下载原图交给印夏（YinXia）。不要写使用条款与授权判断，那由用户确认。"]
     else:
-        lines += [f"每张图存到印夏（YinXia）的收件箱 inbox/{p.slug}/<英文短名>-<画幅>.png，旁边写同名加 .import.toml 的说明",
+        lines += [f"每张图存到印夏（YinXia）的收件箱 {logo.rel(importer.INBOX)}/{p.slug}/<英文短名>-<画幅>.png，旁边写同名加 .import.toml 的说明",
                   "（TOML，字段：source、prompt、name、ratio、note）。不要自行导入，导入由用户确认后完成。"]
     return lines
 
@@ -121,6 +122,8 @@ def cmd_brief(a) -> None:
     what = "封面底图" if a.type == "cover" else "Logo"
     lines = [f"# 为印夏（YinXia）项目「{p.cfg['project'].get('name', p.slug)}」设计{what}",
              "", f"你生成的{what}将导入印夏（YinXia）设计管理系统，请严格按以下要求交付。", "", "## 需求要点"]
+    if logo.REPOSITORY_ID != "default":
+        lines[2:2] = [f"设计仓库：{logo.REPOSITORY_ID}；命令前缀：`{logo.cli_prefix()}`；收件箱：`{logo.rel(importer.INBOX)}/`。", ""]
     lines += [f"- {x}" for x in brief_points(p)] or ["- （项目简报尚未填写）"]
     import series  # 延迟导入：series.py 依赖 logo
     if (m := series.membership(p)):
@@ -159,8 +162,8 @@ description: 为印夏（YinXia）设计管理系统生成 Logo 时，按它要�
 {rules}
 
 ## 交付
-- 能写文件时：每个 SVG 存到印夏（YinXia）的 `inbox/<项目>/<英文短名>.svg`，旁边写 `<同名>.svg.import.toml`
-  （TOML，字段：{fields}），可运行 `./logo handoff validate <文件> --project <项目>` 自查。
+- 能写文件时：每个 SVG 存到项目说明书指定的收件箱，旁边写 `<同名>.svg.import.toml`
+  （TOML，字段：{fields}）；使用说明书指定的仓库命令前缀运行 `handoff validate <文件> --project <项目>` 自查。
 - 只能输出文字时：每个文件一段，“{protocol_header}n/N ===”开头、“=== 结束 n/N ===”结尾，
   段内依次是 `[说明]`（上述 TOML 字段）与 `[文件 <英文短名>.svg]`（SVG 代码）。
 - 不要写使用条款与授权判断（由用户确认），不要自行导入或改动印夏（YinXia）的项目目录。

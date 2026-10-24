@@ -33,7 +33,7 @@ class BootstrapTest(unittest.TestCase):
 
     def test_first_setup_creates_environment_and_hooks(self):
         ws = self.ws
-        result = subprocess.run([str(ws.root / "logo"), "setup"], cwd=ws.tmp, env=ws.env,
+        result = subprocess.run([str(ws.root / "logo"), "--repo", "default", "setup"], cwd=ws.tmp, env=ws.env,
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertFalse((ws.root / ".venv").is_symlink())

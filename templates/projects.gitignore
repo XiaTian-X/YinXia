@@ -5,6 +5,7 @@
 /*
 !/.gitignore
 !/PROJECTS.md
+!/repository.toml
 !/*/
 /.*/
 
@@ -145,3 +146,6 @@ service_account*.json
 .netrc
 .npmrc
 .pypirc
+
+# 收件箱是外部待确认文件，不进入设计仓库
+/inbox/
