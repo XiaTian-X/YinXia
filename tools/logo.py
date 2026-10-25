@@ -12,6 +12,7 @@ import argparse
 import datetime as dt
 import functools
 import hashlib
+import html
 import json
 import os
 import re
@@ -38,6 +39,7 @@ SYSTEM_NAME_EN = "YinXia"
 SYSTEM_NAME = f"{SYSTEM_NAME_ZH}（{SYSTEM_NAME_EN}）"
 ROOT = Path(__file__).resolve().parent.parent
 REPOSITORY_ID = "default"
+STAGED_CHECK = False  # 提交检查时，设计配置以将提交的暂存区内容为准
 PROJECTS = ROOT / "projects"  # 当前选中的独立设计仓库；CLI 解析后、业务模块导入前绑定
 INBOX = ROOT / "inbox"
 TEMPLATES = ROOT / "templates"
@@ -277,19 +279,22 @@ def append_text(path: Path, text: str) -> None:
 
 def load_toml(p: Path) -> dict:
     try:
+        if STAGED_CHECK and p.resolve().is_relative_to(PROJECTS):
+            raw = staged_bytes(p)
+            if raw is None:
+                raise LogoError(f"暂存区缺少配置：{rel(p)}")
+            return tomllib.loads(raw.decode("utf-8"))
         with p.open("rb") as f:
             return tomllib.load(f)
     except FileNotFoundError:
         raise LogoError(f"文件不存在：{rel(p)}")
-    except tomllib.TOMLDecodeError as e:
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
         raise LogoError(f"{rel(p)} 格式错误：{e}")
 
 
 def render_template(template_name: str, **values: str) -> str:
     text = (TEMPLATES / template_name).read_text(encoding="utf-8")
-    for k, v in values.items():
-        text = text.replace("{{" + k + "}}", v)
-    return text
+    return re.sub(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}", lambda m: values.get(m[1], m[0]), text)
 
 
 def write_new(p: Path, content: str) -> None:
@@ -315,7 +320,8 @@ class Project:
             raise LogoError("项目短名必须是小写英文、数字和短横线，不能使用路径或收件箱保留名")
         self.slug = slug
         self.dir = PROJECTS / slug
-        if not (self.dir / "project.toml").exists():
+        exists = staged_bytes(self.dir / "project.toml") is not None if STAGED_CHECK else (self.dir / "project.toml").exists()
+        if not exists:
             raise LogoError(f"项目不存在：{slug}（可用 ./logo new 创建）")
 
     # -- 配置 ---------------------------------------------------------------
@@ -490,6 +496,9 @@ class Project:
 
 
 def all_projects() -> list[Project]:
+    if STAGED_CHECK:
+        return [Project(path.split("/")[0]) for path in sorted(projects_paths("ls-files", "-z", "--cached"))
+                if re.fullmatch(r"[^/]+/project\.toml", path)]
     if not PROJECTS.exists():
         return []
     return [Project(p.name) for p in sorted(PROJECTS.iterdir()) if (p / "project.toml").exists()]
@@ -878,7 +887,8 @@ def cmd_new(a) -> None:
     targets = [x for x in TARGET_NAMES if x in targets]
     kind, rules = series.describe(a.series, a.role)
     vals = {"name": a.name or slug, "slug": slug, "date": today()}
-    toml = render_template("project.toml", **vals).replace(
+    toml_vals = {k: json.dumps(v, ensure_ascii=False)[1:-1] for k, v in vals.items()}
+    toml = render_template("project.toml", **toml_vals).replace(
         'targets = ["svg", "favicon"]', "targets = [" + ", ".join(f'"{x}"' for x in targets) + "]")
     if master:
         toml = series.inherit_from(toml, master)
@@ -1097,6 +1107,8 @@ def cmd_state(a) -> None:
     sd, sv = merged.get("selected_direction"), merged.get("selected_version")
     if updates and sd and sv and sv.split("-")[0] != sd:
         raise LogoError(f"selected_version {sv} 不属于 selected_direction {sd}")
+    if updates and merged.get("stage") in ("releasing", "delivered") and not merged.get("current_release"):
+        raise LogoError("releasing / delivered 阶段必须有 current_release；请先创建发布")
     if not updates:
         st = p.cfg["state"]
         for k in STATE_KEYS + ["updated"]:
@@ -1528,18 +1540,27 @@ def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist:
         + f"\n\n---\n\n## 附录：色板（自动生成）\n\n| 色名 | 色值 |\n|---|---|\n{pal_rows}\n", encoding="utf-8")
 
     try:
-        old = json.loads((dist / "manifest.json").read_text(encoding="utf-8")).get("targets", {})
+        previous = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
+        old, old_files = previous.get("targets", {}), previous.get("files", {})
     except (OSError, ValueError, AttributeError):
-        old = {}
+        old, old_files = {}, {}
     old = old if isinstance(old, dict) else {}  # 旧格式（目标列表）没有逐目标来源
+    old_files = old_files if isinstance(old_files, dict) else {}
     origin = {
         "git_head": short_head("projects"),  # 项目仓库：设计内容的版本
         "system_head": short_head("system"),  # 系统仓库：生成它的工具版本
         "renderer": resvg_version(),          # 渲染器版本：重新生成出现像素差异时据此排查
     }
     present = [t for t in TARGET_NAMES if (dist / t).is_dir()]
-    targets = {t: origin if t in built else old.get(t, dict.fromkeys(origin)) for t in present}
     files = sorted([dist / "guide.md"] + [f for t in present for f in (dist / t).rglob("*") if f.is_file()])
+    hashes = {f.relative_to(dist).as_posix(): sha256_file(f) for f in files}
+    targets = {}
+    for target in present:
+        current_files = {name: sha for name, sha in hashes.items() if name.startswith(target + "/")}
+        previous_files = {name: sha for name, sha in old_files.items() if name.startswith(target + "/")}
+        retained = old.get(target)
+        targets[target] = origin if target in built else retained if (
+            isinstance(retained, dict) and current_files == previous_files) else dict.fromkeys(origin)
     manifest = {
         "project": p.slug,
         "repository": REPOSITORY_ID,
@@ -1547,7 +1568,7 @@ def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist:
         "based_on": load_release_meta(rdir).get("based_on", ""),
         "design_version": root_version,
         "targets": targets,
-        "files": {f.relative_to(dist).as_posix(): sha256_file(f) for f in files},
+        "files": hashes,
     }
     (dist / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return manifest
@@ -1568,7 +1589,7 @@ def cmd_export(a) -> None:
     if holes:
         raise LogoError(f"{rid}/guide.md 是交付物的一部分，还有 {len(holes)} 处模板占位未填写（如“{holes[0]}”）；"
                         "guide.md 只能追加，请新建发布并在提交前填完")
-    targets = a.targets or project_targets(p)
+    targets = list(dict.fromkeys(a.targets or project_targets(p)))
     unknown = [t for t in targets if t not in TARGET_NAMES]
     if unknown:
         raise LogoError(f"未知目标：{', '.join(unknown)}（可选：{', '.join(TARGET_NAMES)}）")
@@ -2316,6 +2337,8 @@ def check_stray_files(scope: str, errors: list[str], warnings: list[str]) -> Non
                 path = tail.partition("\t")[2]
                 errors.append(f"{prefix}{path}: 设计资料不能提交符号链接或嵌套 Git 仓库")
     for path in sorted(tracked):
+        if scope == "projects" and STAGED_CHECK and path.endswith((".svg", ".toml")) and not (PROJECTS / path).is_file():
+            errors.append(f"{prefix}{path}: 暂存区文件在工作区缺失，无法完整检查；请先从暂存区恢复该文件")
         if scope == "system" and FONT_BINARY_RE.search(path):
             errors.append(f"{path}: 字体文件不应提交到 Git（由 ./logo fonts fetch 下载）")
     for path in sorted(tracked | untracked):
@@ -2327,8 +2350,10 @@ def check_stray_files(scope: str, errors: list[str], warnings: list[str]) -> Non
 def index_row(p: Project, role: str | None = None) -> str:
     c = p.cfg
     st = c.get("state", {})
+    name = html.escape(c.get('project', {}).get('name', ''), quote=False).replace("|", "&#124;")
+    name = name.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
     return (f"| [{p.slug}]({p.slug}/brief.md) | " + (f"{role} | " if role else "")
-            + f"{c.get('project', {}).get('name', '')} | "
+            + f"{name} | "
             f"{st.get('stage', '')} | {len(p.directions())} | {st.get('selected_direction') or '—'} | "
             f"{st.get('selected_version') or '—'} | {st.get('current_release') or '—'} | {st.get('updated', '')} |")
 
@@ -2363,6 +2388,8 @@ def cmd_check(a) -> None:
     errors: list[str] = []
     warnings: list[str] = []
     scope = a.scope
+    global STAGED_CHECK
+    STAGED_CHECK = a.staged and scope == "projects"
     if a.staged and scope == "all":
         raise LogoError("--staged 需要配合 --scope system 或 --scope projects（由各仓库的钩子传入）")
     has_projects = projects_repo_ready()
@@ -2391,7 +2418,8 @@ def cmd_check(a) -> None:
         for p in projects:
             check_project(p, perr, warnings, staged)
         if not a.slug:
-            if not PROJECTS_MD.exists() or PROJECTS_MD.read_text(encoding="utf-8") != build_index():
+            board = staged_bytes(PROJECTS_MD) if staged else PROJECTS_MD.read_bytes() if PROJECTS_MD.exists() else None
+            if board != build_index().encode("utf-8"):
                 msg = f"{rel(PROJECTS_MD)} 不是最新，请运行 {cli_prefix()} index"
                 (perr if staged else warnings).append(msg)
             check_stray_files("projects", perr, warnings)

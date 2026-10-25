@@ -372,8 +372,30 @@ def preview_key(data: bytes, a, name: str) -> str:
     """预演与正式导入须完全相同：文件内容与所有影响写入内容的参数。"""
     fields = [hashlib.sha256(data).hexdigest(), a.project, bool(a.init), bool(a.as_concept), a.direction or "",
               a.new_direction or "", a.new_direction_letter or "", a.title or "", a.series_rule or "", name,
-              sorted(a.resolve or [])]
+              sorted(a.resolve or []), preview_context(logo.Project(a.project))]
     return hashlib.sha256(json.dumps(fields, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def preview_context(owner) -> str:
+    """预演依赖的色板、发布、系列及封面规格变化后必须重新确认。"""
+    import covers
+    import series
+    projects = [p for p, _ in series.members(owner.sid)] if covers.is_family(owner) else [owner]
+    files = {logo.CONFIG / "cover-platforms.toml"}
+    for project in projects:
+        files.add(project.toml_path)
+        files.update((project.dir / "releases").glob("r*/layouts/*.svg"))
+        files.update((project.dir / "covers").glob("*/cover.toml"))
+        files.update((project.dir / "covers").glob("*/*.svg"))
+        member = series.membership(project)
+        if member and logo.SLUG_RE.fullmatch(member.get("id", "")):
+            files.update((series.SERIES_DIR / member["id"]).glob("series.*"))
+    if covers.is_family(owner):
+        files.update(owner.dir.glob("series.*"))
+        files.update((owner.dir / "covers").glob("*/cover.toml"))
+        files.update((owner.dir / "covers").glob("*/*.svg"))
+    records = [(logo.rel(path), logo.sha256_file(path)) for path in sorted(files) if path.is_file()]
+    return hashlib.sha256(json.dumps(records, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def preview_ok(key: str) -> bool:
@@ -821,7 +843,8 @@ def cmd_cover_import(a) -> None:
     key = hashlib.sha256(json.dumps(
         ["cover", hashlib.sha256(data).hexdigest(), owner.slug, a.cover or "", a.ratio or "", a.platforms or "",
          sorted(fits.items()), a.contains_logo, a.contains_text, bool(a.from_skeleton), bool(a.no_skeleton),
-         a.members or "", a.release or "", name, a.title or ""], ensure_ascii=False).encode("utf-8")).hexdigest()
+         a.members or "", a.release or "", name, a.title or "", preview_context(owner)],
+        ensure_ascii=False).encode("utf-8")).hexdigest()
     with tempfile.TemporaryDirectory() as td:
         img, notes = cover_image(src, data, kind, Path(td), name)
         size = image_size(img)

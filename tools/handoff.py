@@ -244,7 +244,8 @@ def cmd_receive(a) -> None:
     if problems:
         raise logo.LogoError("交接文本不完整，未写入任何文件：\n  " + "\n  ".join(problems))
     dest = importer.INBOX / p.slug
-    clash = [b["file"] for b in blocks if (dest / b["file"]).exists()]
+    clash = [name for b in blocks for name in (b["file"], b["file"] + importer.SIDECAR)
+             if (dest / name).exists()]
     if clash:
         raise logo.LogoError(f"收件箱中已有同名文件：{', '.join(clash)}（先导入或移走）")
     dest.mkdir(parents=True, exist_ok=True)
