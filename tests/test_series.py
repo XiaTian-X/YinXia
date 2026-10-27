@@ -720,5 +720,83 @@ class FamilyCoverTest(SeriesBase):
         self.assertNotIn("✗", ws.logo("check").stdout)
 
 
+def styled(color: str) -> str:
+    """同名渐变 id 与同名样式类的 Logo：嵌入同一张封面时若不隔离，会互相串色。"""
+    return ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><defs><linearGradient id="g">'
+            f'<stop offset="0" stop-color="{color}"/><stop offset="1" stop-color="{color}"/></linearGradient></defs>'
+            '<style>.s{fill:url(#g)}</style><path class="s" d="M10 10h80v80H10Z"/></svg>\n')
+
+
+@unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
+class FamilyCoverIsolationTest(SeriesBase):
+    """家族封面中各成员 Logo 的 id、样式类互不干扰（母品牌绿色、子品牌灰色，导出后各自保持原色）。"""
+
+    def test_same_ids_keep_their_own_colors(self):
+        ws = self.ws
+        brand = ws.new_project("brand")
+        ws.new_version("brand", svg=styled(PRIMARY))
+        self.commit_ok("[brand] A-v001")
+        ws.logo("decision", "brand", "finalize", "--title", "定稿")
+        fill_doc(next((brand / "decisions").glob("*.md")))
+        ws.logo("release", "brand", "--from", "A-v001")
+        self.series("pets", "independent")
+        ws.logo("series", "add", "pets", "brand", "--role", "master")
+        ws.logo("new", "food", "--series", "pets", "--role", "sub")
+        food = ws.projects / "food"
+        toml = food / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('primary = "#000000"', f'primary = "{PRIMARY}"', 1),
+                        encoding="utf-8")
+        fill_doc(food / "brief.md")
+        ws.new_version("food", "A", "paw", svg=styled("#666666"))
+        fill_doc(food / "directions" / "A-paw" / "direction.md")
+        ws.logo("decision", "food", "finalize", "--title", "定稿")
+        fill_doc(next((food / "decisions").glob("*.md")))
+        ws.logo("release", "food", "--from", "A-v001")
+        for p in (brand, food):
+            r = p / "releases" / "r1"
+            fill_doc(r / "release.md")
+            with (r / "release.md").open("a", encoding="utf-8") as f:
+                f.write("\n依据：decisions/001-finalize.md\n")
+            fill_doc(r / "guide.md")
+            t = p / "project.toml"  # 彩色 Logo 放在深色底上，便于取样
+            t.write_text(t.read_text(encoding="utf-8").replace('icon_mode = "reversed"', 'icon_mode = "color"')
+                         .replace('app_background = "primary"', 'app_background = "ink"'), encoding="utf-8")
+        self.commit_ok("r1")
+        ws.logo("cover", "new", "series:pets", "fam", "--platforms", "x", "--members", "brand,food")
+        fam = ws.projects / "_series" / "pets" / "covers" / "001-fam"
+        fill_doc(fam / "cover.md")
+        self.commit_ok("[pets] family cover")
+        svg = fam / "3x1.svg"
+        text = svg.read_text(encoding="utf-8")
+        root = ET.fromstring(text)
+        ids = [el.get("id") for el in root.iter() if el.get("id")]
+        self.assertEqual(len(ids), len(set(ids)))
+        self.assertIn('fill:url(#yx-logo-food-g)', text)
+        self.assertNotIn("✗", ws.logo("check").stdout)
+
+        ws.logo("cover", "export", "series:pets", "001", "x")
+        png = next((ws.projects / "_series" / "pets" / "dist" / "covers" / "001-fam").glob("x-*.png"))
+        width = float(root.get("viewBox").split()[2])
+        k = int(subprocess.run(["magick", "identify", "-format", "%w", str(png)], capture_output=True, text=True,
+                               check=True).stdout) / width
+        for slug, color in (("brand", PRIMARY[1:]), ("food", "666666")):
+            g = next(el for el in root.iter() if el.get("id") == f"logo-{slug}")
+            x, y, scale = map(float, re.findall(r"[-\d.]+", g.get("transform")))
+            cx, cy = (x + 50 * scale) * k, (y + 50 * scale) * k
+            px = subprocess.run(["magick", str(png), "-format", f"%[hex:p{{{int(cx)},{int(cy)}}}]", "info:"],
+                                capture_output=True, text=True, check=True).stdout.strip().upper()[:6]
+            self.assertEqual(px, color, slug)
+
+        # 旧版嵌入（id 未隔离）：check 报不一致，sync-logo 在发布未变时也能重新嵌入
+        legacy = text.replace("yx-logo-food-", "").replace("yx-logo-brand-", "")
+        legacy = re.sub(r' id="yx-logo-(?:food|brand)"', "", legacy)
+        legacy = legacy.replace("#yx-logo-food .s", ".s").replace("#yx-logo-brand .s", ".s")
+        svg.write_text(legacy, encoding="utf-8")
+        self.assertIn("Logo 与 r1/primary.svg", ws.logo("check", ok=False).stdout)
+        self.assertIn("已同步", ws.logo("cover", "sync-logo", "series:pets", "001").stdout)
+        self.assertEqual(svg.read_text(encoding="utf-8"), text)
+        self.assertIn("无需同步", ws.logo("cover", "sync-logo", "series:pets", "001").stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

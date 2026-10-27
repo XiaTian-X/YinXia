@@ -64,6 +64,32 @@ class SvgAndStateTest(GuardBase):
         (v2 / "logo.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")  # 工作区改好，暂存区仍是坏的
         self.assertBlocked(self.ws.commit("projects", "x", add=False), "#FF0000")
 
+    def test_required_files_checked_in_index(self):
+        """必需文件以暂存区为准：logo.svg 只在工作区、没有暂存时，提交里就缺了图形文件。"""
+        v2 = self.ws.new_version()
+        self.ws.git("projects", "add", "-A")
+        self.ws.git("projects", "reset", "-q", str(v2 / "logo.svg"))
+        self.assertBlocked(self.ws.commit("projects", "x", add=False), "v002: 缺少 logo.svg（未暂存）")
+        self.ws.git("projects", "add", str(v2 / "logo.svg"))
+        self.assertCommitted(self.ws.commit("projects", "[demo] A-v002", add=False))
+
+    def test_state_must_reference_staged_content(self):
+        self.ws.new_version()  # A-v002 只在工作区
+        toml = self.p / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace('selected_direction = ""', 'selected_direction = "A"')
+                        .replace('selected_version = ""', 'selected_version = "A-v002"'), encoding="utf-8")
+        self.ws.logo("index")
+        self.ws.git("projects", "add", "demo/project.toml", "PROJECTS.md")
+        self.assertBlocked(self.ws.commit("projects", "x", add=False), "selected_version 无效", "A-v002 没有暂存")
+
+    def test_unstaged_work_does_not_block_other_commits(self):
+        v2 = self.ws.new_version()
+        (v2 / "logo.svg").write_text(TRIANGLE.format(c="#FF0000"), encoding="utf-8")  # 未完成、未暂存的新版本
+        notes = self.v1 / "notes.md"
+        notes.write_text(notes.read_text(encoding="utf-8") + "\n- 2026-10-27 用户：可以\n", encoding="utf-8")
+        self.ws.git("projects", "add", str(notes))
+        self.assertCommitted(self.ws.commit("projects", "[demo] review", add=False))
+
     def test_event_attr_and_external_css(self):
         v2 = self.ws.new_version()
         (v2 / "logo.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 9 9" onload="x()">'
@@ -370,6 +396,14 @@ class RepoSplitTest(GuardBase):
         r = self.ws.commit("system", "docs")
         self.assertCommitted(r)
         self.assertIn("[项目仓库]", r.stdout + r.stderr)
+
+    def test_system_commit_not_blocked_by_broken_project_config(self):
+        (self.p / "project.toml").write_text("[project\nname = ", encoding="utf-8")
+        self.ws.write("README.md", self.ws.read("README.md") + "\n<!-- note -->\n")
+        r = self.ws.commit("system", "docs")
+        self.assertCommitted(r)
+        self.assertIn("project.toml 格式错误", r.stdout + r.stderr)  # 只提醒
+        self.assertBlocked(self.ws.commit("projects", "x"), "project.toml 格式错误")  # 设计仓库仍拦截
 
     def test_hook_and_gitignore_drift_warnings(self):
         self.ws.git("projects", "config", "--unset", "core.hooksPath")

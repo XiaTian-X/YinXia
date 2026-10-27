@@ -123,6 +123,14 @@ class LicenseReviewTest(FontsFetchTest):
         fill("是（含商标注册）", "是")
         self.assertEqual(self.check_errors(), "")
 
+    def test_outline_requires_passed_review(self):
+        """转曲与 check 使用同一授权准入：未通过复核的非开源字体不能生成 SVG。"""
+        self.register(hashlib.sha256(FAKE_FONT).hexdigest(), tier="free-commercial")
+        r = self.ws.logo("outline", "--font", "testfont", "--text", "A", "--fill", "#000000", ok=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("授权复核未通过", r.stderr)
+        self.assertNotIn("<path", r.stdout)
+
     def test_open_source_needs_no_review(self):
         self.assertNotIn("授权复核", self.ws.logo("check").stdout)
 

@@ -109,6 +109,13 @@ COVER_DIR_RE = re.compile(r"^\d{3}-[a-z0-9-]+$")
 COVER_STATUSES = ("draft", "live", "archived")
 ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 LOGO_FREE_ATTRS = {"x", "y", "width", "height", "preserveAspectRatio"}  # 嵌入 Logo 时允许改动的根属性
+LOGO_GROUP_ATTRS = {"id", "data-project", "data-release", "data-layout", "data-mode", "transform"}  # Logo 分组允许的属性
+_NUM = r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?"
+PLACE_RE = re.compile(rf"\s*(?:translate\(\s*{_NUM}(?:\s*[\s,]\s*{_NUM})?\s*\))?\s*(?:scale\(\s*({_NUM})\s*\))?\s*")
+ISOLATE_PREFIX = "yx-"  # 嵌入 Logo 的内部 id / class 前缀；不以 logo 开头，免得被当成 Logo 分组
+URL_REF_RE = re.compile(r"""(url\(\s*['"]?#)([^'")\s]+)(['"]?\s*\))""")
+CSS_RULE_RE = re.compile(r"([^{}]*)\{([^{}]*)\}")
+CSS_NAME_RE = re.compile(r"([.#])(-?[A-Za-z_][\w-]*)")
 
 
 def platforms_by_id() -> dict[str, dict]:
@@ -253,11 +260,61 @@ def canonical(el: ET.Element) -> str:
     return ET.canonicalize(ET.tostring(copy, encoding="unicode"), strip_text=True)
 
 
+def isolate(root: ET.Element, gid: str) -> ET.Element:
+    """把嵌入的 Logo 与封面其余部分隔离：内部 id、class 加上前缀 yx-<分组>-，同步改写 url(#…)、href="#…"，
+    内嵌 <style> 的选择器限定在该 Logo 的根元素之内。多个 Logo（或封面自己的 defs、样式）重名时，
+    渐变、剪切、样式类就不会串到别的图形上。比对指纹时对发布版式做同样的处理，结果可重复。"""
+    prefix = f"{ISOLATE_PREFIX}{gid}-"
+    ids = {el.get("id") for el in root.iter() if el.get("id")}
+    classes = {c for el in root.iter() for c in (el.get("class") or "").split()}
+
+    def ref(m: re.Match) -> str:
+        return m.group(1) + (prefix + m.group(2) if m.group(2) in ids else m.group(2)) + m.group(3)
+
+    def name(m: re.Match) -> str:
+        known = classes if m.group(1) == "." else ids
+        return m.group(1) + (prefix + m.group(2) if m.group(2) in known else m.group(2))
+
+    for el in root.iter():
+        for k, v in list(el.attrib.items()):
+            attr = k.split("}")[-1]
+            if attr == "id":
+                el.set(k, prefix + v)
+            elif attr == "href" and v.startswith("#") and v[1:] in ids:
+                el.set(k, "#" + prefix + v[1:])
+            elif attr == "class":
+                el.set(k, " ".join(prefix + c for c in v.split()))
+            elif "url(" in v:
+                el.set(k, URL_REF_RE.sub(ref, v))
+    anchor = root.get("id") or f"{ISOLATE_PREFIX}{gid}"
+    root.set("id", anchor)
+
+    def rule(m: re.Match) -> str:
+        sel, body = m.group(1), URL_REF_RE.sub(ref, m.group(2))
+        if sel.strip().startswith("@"):  # @font-face 等规则没有选择器
+            return f"{sel}{{{body}}}"
+        scoped = []
+        for s in sel.split(","):
+            lead = s[:len(s) - len(s.lstrip())]
+            scoped.append(f"{lead}#{anchor} {CSS_NAME_RE.sub(name, s.strip())}" if s.strip() else s)
+        return ",".join(scoped) + "{" + body + "}"
+
+    for el in root.iter(f"{{{logo.SVG_NS}}}style"):
+        if el.text:
+            el.text = CSS_RULE_RE.sub(rule, el.text)
+    return root
+
+
+def embedded_root(p: "logo.Project", ldir: Path, layout: str, mode: str, gid: str) -> ET.Element:
+    """发布版式在某配色下、按分组 gid 隔离后的根元素（嵌入与指纹比对共用）。"""
+    return isolate(ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode)), gid)
+
+
 def logo_group(p: "logo.Project", ldir: Path, release: str, layout: str, mode: str,
                x: float, y: float, height: float, gid: str = "logo") -> str:
-    """把发布中的版式按指定配色原样嵌入为 <g id="logo">（家族封面为 logo-<项目>，并标注 data-project），
-    用 transform 定位与缩放。"""
-    root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
+    """把发布中的版式按指定配色嵌入为 <g id="logo">（家族封面为 logo-<项目>，并标注 data-project），
+    内部 id 与样式按分组隔离，用 transform 定位与缩放。"""
+    root = embedded_root(p, ldir, layout, mode, gid)
     _, _, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
     root.set("width", logo.fmt_num(vw))
     root.set("height", logo.fmt_num(vh))
@@ -273,7 +330,30 @@ def logo_errors(p: "logo.Project", root: ET.Element, where: str) -> list[str]:
     groups = [el for el in root.iter(f"{{{logo.SVG_NS}}}g") if el.get("id") == "logo"]
     if len(groups) != 1:
         return [f"{where}: 须有且只有一个 <g id=\"logo\">（Logo 由 ./logo cover new / sync-logo 嵌入）"]
-    return group_errors(p, groups[0], where)
+    return frame_errors(root, groups[0], where) + group_errors(p, groups[0], where)
+
+
+def frame_errors(root: ET.Element, g: ET.Element, where: str) -> list[str]:
+    """Logo 分组本身只能带定位与等比缩放（translate / scale），外层分组不能带任何会改变外观的属性——
+    透明度、滤镜、遮罩、剪切、隐藏、变形、样式类等都会让 Logo 走样或消失，而分组内部的指纹查不到。"""
+    out = []
+    extra = sorted(k for k in g.attrib if k not in LOGO_GROUP_ATTRS)
+    if extra:
+        out.append(f"{where}: <g id=\"{g.get('id')}\"> 不能带 {', '.join(extra)}——Logo 只能移动、缩放，"
+                   f"不能加透明度、滤镜、遮罩等效果")
+    m = PLACE_RE.fullmatch(g.get("transform", ""))
+    if not m or (m.group(1) is not None and float(m.group(1)) <= 0):
+        out.append(f"{where}: <g id=\"{g.get('id')}\"> 的 transform 只能是 translate(x y) scale(s)（s > 0），"
+                   f"收到：{g.get('transform')!r}——Logo 不能旋转、斜切或变形")
+    parents = {c: el for el in root.iter() for c in el}
+    el = parents.get(g)
+    while el is not None and el is not root:
+        attrs = sorted(k for k in el.attrib if k != "id" and not k.startswith("data-"))
+        if attrs:
+            out.append(f"{where}: <g id=\"{g.get('id')}\"> 的外层 <{el.tag.split('}')[-1]}> 带有 {', '.join(attrs)}，"
+                       f"会改变 Logo 的外观；Logo 外层只能是不带效果的分组")
+        el = parents.get(el)
+    return out
 
 
 def group_errors(p: "logo.Project", g: ET.Element, where: str) -> list[str]:
@@ -287,7 +367,7 @@ def group_errors(p: "logo.Project", g: ET.Element, where: str) -> list[str]:
         return [f"{where}: Logo 标注的版式 {layout!r} 不在 {rid} 中"]
     inner = list(g)
     try:
-        expected = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
+        expected = embedded_root(p, ldir, layout, mode, g.get("id", ""))
     except (logo.LogoError, ET.ParseError) as e:
         return [f"{where}: 无法读取 {rid}/{layout}（{mode}）：{e}"]
     if len(inner) != 1 or canonical(inner[0]) != canonical(expected):
@@ -310,7 +390,7 @@ def family_logo_errors(fam: Family, root: ET.Element, where: str, c: dict) -> li
         if g.get("data-project") != slug:
             out.append(f"{where}: <g id=\"{g.get('id')}\"> 标注的项目 {g.get('data-project')!r} 应为 {slug}")
             continue
-        found = group_errors(logo.Project(slug), g, f"{where} Logo（{slug}）")
+        found = frame_errors(root, g, f"{where} Logo（{slug}）") + group_errors(logo.Project(slug), g, f"{where} Logo（{slug}）")
         out.extend(found)
         if not found and g.get("data-release") != c["releases"].get(slug):
             out.append(f"{where}: Logo（{slug}）标注的发布 {g.get('data-release')} 与 cover.toml 记录的 "
@@ -323,6 +403,18 @@ def family_logo_errors(fam: Family, root: ET.Element, where: str, c: dict) -> li
 
 
 # -- 设计稿规则 --------------------------------------------------------------------
+COVER_SELECTOR_RE = re.compile(rf"\.(?!{ISOLATE_PREFIX})-?[A-Za-z_][\w-]*")
+
+
+def cover_css_problems(text: str) -> list[str]:
+    """封面自己的 <style> 中不是简单类选择器的部分（Logo 内部的类已加前缀，类选择器碰不到 Logo）。"""
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.S)
+    rules = CSS_RULE_RE.findall(text)
+    rest = CSS_RULE_RE.sub("", text).strip()
+    out = [rest] if rest else []  # 没有配对的花括号，或 @media 等嵌套规则
+    for sel, _ in rules:
+        out += [s.strip() for s in sel.split(",") if not COVER_SELECTOR_RE.fullmatch(s.strip())]
+    return out
 def check_cover_svg(path: Path, canvas: dict, assets: set[str], errors: list[str], staged: bool) -> ET.Element | None:
     """封面设计稿规则：画布尺寸固定；位图只能引用已登记素材；颜色不限；文字须转曲（参考线层除外）；
     禁止脚本、事件属性与外部资源。返回解析后的根元素。"""
@@ -339,9 +431,11 @@ def check_cover_svg(path: Path, canvas: dict, assets: set[str], errors: list[str
     if root.get("width") or root.get("height"):
         errors.append(f"{r}: 根元素不要写死 width/height，只用 viewBox")
 
-    def walk(el: ET.Element, in_guides: bool) -> None:
+    def walk(el: ET.Element, in_guides: bool, in_logo: bool = False) -> None:
         tag = el.tag.split("}")[-1]
         guides = in_guides or el.get("id") == "guides"
+        # 发布嵌入的 Logo 自带的样式已隔离（Logo 分组本身另由指纹核对，冒充的分组会被报出）
+        in_logo = in_logo or (tag == "g" and (el.get("id") or "").startswith("logo") and el.get("data-release") is not None)
         if tag in ("script", "foreignObject"):
             errors.append(f"{r}: 禁止 <{tag}>")
         if tag in ("text", "tspan", "textPath") and not guides:
@@ -359,8 +453,13 @@ def check_cover_svg(path: Path, canvas: dict, assets: set[str], errors: list[str
                     errors.append(f"{r}: 位图 {val} 未登记（./logo cover asset 登记来源与授权后再引用）")
         if tag == "style" and el.text and logo.EXTERNAL_CSS_RE.search(el.text):
             errors.append(f"{r}: <style> 禁止 @import 或引用外部资源")
+        if tag == "style" and el.text and not in_logo:
+            bad = cover_css_problems(el.text)
+            if bad:
+                errors.append(f"{r}: 封面 <style> 只能用类选择器（如 .title），收到 {bad[0]!r}——"
+                              f"元素、id、通配等选择器会改到 Logo 的外观")
         for child in el:
-            walk(child, guides)
+            walk(child, guides, in_logo)
 
     walk(root, False)
     return root
@@ -844,7 +943,7 @@ def swap_logo(text: str, p: "logo.Project", ldir: Path, rid: str, gid: str = "lo
     mode = old.get("data-mode", "color")
     inner = list(old)[0] if len(old) else None
     old_h = float(inner.get("height")) if inner is not None and inner.get("height") else None
-    root = ET.fromstring(logo.layout_mode_text(p, ldir, layout, mode))
+    root = embedded_root(p, ldir, layout, mode, gid)
     _, _, vw, vh = (float(v) for v in re.split(r"[\s,]+", root.get("viewBox").strip()))
     h = old_h or vh  # 保持原来的显示高度，宽度随新 Logo 的比例变化
     root.set("width", logo.fmt_num(h * vw / vh))
@@ -933,19 +1032,23 @@ def sync_family(fam: Family, cdir: Path, cfg: dict, a) -> None:
         raise logo.LogoError(f"{a.member} 不是这张家族封面的成员（成员：{', '.join(rels)}）")
     wanted = {s: (a.release if a.member else None) or logo.Project(s).cfg["state"].get("current_release")
               for s in ([a.member] if a.member else rels)}
-    changes = {s: r for s, r in wanted.items() if r and r != rels[s]}
-    if not changes:
-        print(f"{cdir.name} 的成员 Logo 已是目标发布，无需同步")
-        return
+    wanted = {s: r for s, r in wanted.items() if r}
+    changes = {s: r for s, r in wanted.items() if r != rels[s]}
     ratios = load_config()["ratios"]
     texts, report = {}, []
     for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):
-        text = svg.read_text(encoding="utf-8")
-        for slug, rid in changes.items():
+        text = old = svg.read_text(encoding="utf-8")
+        for slug, rid in wanted.items():  # 发布未变也重新嵌入：旧封面的 Logo 未隔离 id 时借此更新
             proj = logo.Project(slug)
-            text, change = swap_logo(text, proj, release_layouts(proj, rid), rid, gid=f"logo-{slug}")
-            report.append(f"{svg.stem} {slug}：{change}")
-        texts[svg] = text
+            new, change = swap_logo(text, proj, release_layouts(proj, rid), rid, gid=f"logo-{slug}")
+            if new != text:
+                report.append(f"{svg.stem} {slug}：{change}")
+            text = new
+        if text != old:
+            texts[svg] = text
+    if not texts and not changes:
+        print(f"{cdir.name} 的成员 Logo 已是目标发布，无需同步")
+        return
     for svg, text in texts.items():  # 全部生成成功后再写回
         svg.write_text(text, encoding="utf-8")
     cfg["cover"]["releases"] = {**rels, **changes}
@@ -967,14 +1070,17 @@ def cmd_sync_logo(a) -> None:
         raise logo.LogoError("--member 只用于家族封面")
     rid = a.release or p.cfg["state"].get("current_release")
     ldir = release_layouts(p, rid)
-    if cfg["cover"]["release"] == rid:
-        print(f"{cdir.name} 已在使用 {rid}，无需同步")
-        return
     new_texts, report = {}, []
     ratios = load_config()["ratios"]
     for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):  # 含预备中的画幅，免得发布不一致
-        new_texts[svg], change = swap_logo(svg.read_text(encoding="utf-8"), p, ldir, rid)
-        report.append(f"{svg.stem}：{change}")
+        old = svg.read_text(encoding="utf-8")
+        new, change = swap_logo(old, p, ldir, rid)  # 发布未变也重新嵌入：旧封面的 Logo 未隔离 id 时借此更新
+        if new != old:
+            new_texts[svg] = new
+            report.append(f"{svg.stem}：{change}")
+    if cfg["cover"]["release"] == rid and not new_texts:
+        print(f"{cdir.name} 已在使用 {rid}，无需同步")
+        return
     for svg, text in new_texts.items():  # 全部生成成功后再写回
         svg.write_text(text, encoding="utf-8")
     cfg["cover"]["release"] = rid

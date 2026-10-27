@@ -40,6 +40,7 @@ SYSTEM_NAME = f"{SYSTEM_NAME_ZH}（{SYSTEM_NAME_EN}）"
 ROOT = Path(__file__).resolve().parent.parent
 REPOSITORY_ID = "default"
 STAGED_CHECK = False  # 提交检查时，设计配置以将提交的暂存区内容为准
+STAGED_SYSTEM = False  # 系统仓库提交检查时，系统配置（config/、字体登记与授权）以暂存区内容为准
 PROJECTS = ROOT / "projects"  # 当前选中的独立设计仓库；CLI 解析后、业务模块导入前绑定
 INBOX = ROOT / "inbox"
 TEMPLATES = ROOT / "templates"
@@ -284,6 +285,11 @@ def load_toml(p: Path) -> dict:
             if raw is None:
                 raise LogoError(f"暂存区缺少配置：{rel(p)}")
             return tomllib.loads(raw.decode("utf-8"))
+        if STAGED_SYSTEM and is_system_config(p):
+            raw = system_staged_bytes(p)
+            if raw is None:
+                raise LogoError(f"暂存区缺少配置：{rel(p)}")
+            return tomllib.loads(raw.decode("utf-8"))
         with p.open("rb") as f:
             return tomllib.load(f)
     except FileNotFoundError:
@@ -447,8 +453,10 @@ class Project:
         for f in files:
             if not f.exists():
                 continue
-            data = staged_bytes(f) if staged else None
-            text = (data if data is not None else f.read_bytes()).decode("utf-8", errors="ignore")
+            data = staged_bytes(f) if staged else f.read_bytes()
+            if data is None:  # 未暂存，不在这次提交中
+                continue
+            text = data.decode("utf-8", errors="ignore")
             for fid in sorted(set(OUTLINE_FONT_RE.findall(text))):
                 found.setdefault(fid, []).append(rel(f))
         return found
@@ -1196,6 +1204,10 @@ def cmd_outline(a) -> None:
     except ImportError:
         raise LogoError("缺少 fonttools，请先运行 ./logo setup")
     entry = find_font(a.font)
+    if entry.get("tier") != "open-source":  # 与 check 的授权准入一致：未通过复核的字体不能转曲
+        problems = license_review_errors(entry)
+        if problems:
+            raise LogoError(f"字体 {a.font} 不是开源字体，授权复核未通过，不能用于 Logo 转曲：{problems[0]}")
     path = FONTS_DIR / entry["file"]
     if not path.exists():
         raise LogoError(f"字体文件未下载：{rel(path)}，请运行 ./logo fonts fetch {a.font}")
@@ -1672,6 +1684,26 @@ def check_color_value(val: str, palette: set[str], where: str, errors: list[str]
     errors.append(f"{where}: 颜色 “{v}” 不合规（只允许色板中的 6 位十六进制、none 或 url(#…)）")
 
 
+def is_system_config(path: Path) -> bool:
+    """系统提交检查要按暂存区读取的系统文件：config/ 下的配置与 assets/fonts/ 下的登记、授权文本。"""
+    p = path.resolve()
+    return p.is_relative_to(CONFIG.resolve()) or p.is_relative_to(FONTS_DIR.resolve())
+
+
+def system_staged_bytes(path: Path) -> bytes | None:
+    """系统仓库暂存区中的文件内容；不在暂存区时返回 None。"""
+    r = git("show", f":{path.resolve().relative_to(ROOT.resolve()).as_posix()}", check=False)
+    return r.stdout if r.returncode == 0 else None
+
+
+def system_text(path: Path) -> str | None:
+    """读取系统文件：系统提交检查时取暂存区，否则取工作区；不存在时返回 None。"""
+    if STAGED_SYSTEM and is_system_config(path):
+        raw = system_staged_bytes(path)
+        return raw.decode("utf-8") if raw is not None else None
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
 def staged_bytes(path: Path) -> bytes | None:
     """返回文件在 Git 暂存区中的内容；不在暂存区时返回 None。"""
     r = git("show", f":{path.resolve().relative_to(PROJECTS).as_posix()}", check=False, repo="projects")
@@ -1683,6 +1715,9 @@ def check_svg(path: Path, palette: set[str], errors: list[str], warnings: list[s
     """检查 SVG 规范；staged=True 时检查暂存区里将被提交的内容，而不是工作区。"""
     r = rel(path)
     data = staged_bytes(path) if staged else None
+    if staged and data is None:
+        errors.append(f"{r}: 没有暂存，不在这次提交中")
+        return
     try:
         root = ET.fromstring(data) if data is not None else ET.parse(path).getroot()
     except ET.ParseError as e:
@@ -1783,6 +1818,17 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
         errors.append(str(e))
         return
     r = rel(p.toml_path)
+    # 提交检查以暂存区为准：工作区里有、却没暂存的文件不会进入提交，不能拿来充数
+    indexed = projects_paths("ls-files", "-z", "--cached") if staged else set()
+
+    def present(f: Path) -> bool:
+        return f.relative_to(PROJECTS).as_posix() in indexed if staged else f.exists()
+
+    def included(d: Path) -> bool:
+        """目录是否属于将提交的内容（暂存区里有它的文件）；手动检查时总是检查。"""
+        prefix = d.relative_to(PROJECTS).as_posix() + "/"
+        return not staged or any(x.startswith(prefix) for x in indexed)
+
     for sect in ("project", "state", "palette"):
         if sect not in cfg:
             errors.append(f"{r}: 缺少 [{sect}]")
@@ -1804,7 +1850,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
                     ("current_release", p.release_dir)):
         if st.get(key):
             try:
-                fn(st[key])
+                if not included(fn(st[key])):
+                    raise LogoError(f"{st[key]} 没有暂存，不在这次提交中")
                 valid.add(key)
             except LogoError as e:
                 errors.append(f"{r}: {key} 无效：{e}")
@@ -1832,31 +1879,38 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
             warnings.append(f"{r}: [fonts] used 声明了 {fid}，但没有 SVG 用它转曲（依据 outline 生成的注释判断）")
     palette = set(vals)
     for d in p.directions():
+        if not included(d):  # 整个方向都没暂存：不在这次提交中
+            continue
         if not re.fullmatch(r"[A-Z]-[a-z0-9-]+", d.name):
             errors.append(f"{rel(d)}: 方向目录应命名为 A-name")
-        if not (d / "direction.md").exists():
-            errors.append(f"{rel(d)}: 缺少 direction.md")
+        if not present(d / "direction.md"):
+            errors.append(f"{rel(d)}: 缺少 direction.md" + ("（未暂存）" if staged else ""))
         for v in p.versions_in(d):
+            if not included(v):
+                continue
             for need in ("logo.svg", "notes.md"):
-                if not (v / need).exists():
-                    errors.append(f"{rel(v)}: 缺少 {need}")
-            if (v / "logo.svg").exists():
+                if not present(v / need):
+                    errors.append(f"{rel(v)}: 缺少 {need}" + ("（未暂存）" if staged else ""))
+            if present(v / "logo.svg"):
                 check_svg(v / "logo.svg", palette, errors, warnings, staged)
 
     modes = cfg.get("color_modes", {}).get("modes", ["color"])
     release_versions: dict[str, str] = {}
     committed = projects_paths("ls-tree", "-r", "--name-only", "-z", "HEAD")  # 已提交（冻结/只追加生效）的文件
-    indexed = projects_paths("ls-files", "-z", "--cached") if staged else set()
     for rd in p.releases():
+        if not included(rd):
+            continue
         try:
             release_versions[rd.name] = p.release_root_version(rd.name)
         except LogoError as e:
             errors.append(f"{rel(rd)}: 追溯链断裂：{e}")
         ldir = rd / "layouts"
-        if not (ldir / "primary.svg").exists():
-            errors.append(f"{rel(ldir)}: 缺少主版 primary.svg（发布唯一必需的版式）")
+        if not present(ldir / "primary.svg"):
+            errors.append(f"{rel(ldir)}: 缺少主版 primary.svg（发布唯一必需的版式）" + ("（未暂存）" if staged else ""))
         unknown: dict[str, list[str]] = {"frozen": [], "new": [], "staged": []}
         for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
+            if not present(f):  # 未暂存的文件不会提交
+                continue
             check_svg(f, layout_palette(p, f, palette), errors, warnings, staged)
             if not is_layout_file(f.name):
                 path = f.relative_to(PROJECTS).as_posix()
@@ -1920,9 +1974,9 @@ def license_review_path(entry: dict) -> Path:
 def license_review_errors(entry: dict) -> list[str]:
     """非开源字体的授权复核：文件存在、模板填完、两项“允许”均为“是”。"""
     f = license_review_path(entry)
-    if not f.exists():
+    text = system_text(f)
+    if text is None:
         return [f"非开源字体须有授权复核 {rel(f)}（./logo fonts review {entry.get('id')} 创建）"]
-    text = f.read_text(encoding="utf-8")
     lines = {ln.strip() for ln in text.splitlines()}
     holes = [ph for ph in template_placeholders("font-license-review.md") if ph in lines]
     if holes:
@@ -1960,7 +2014,7 @@ def check_fonts(errors: list[str], warnings: list[str]) -> None:
                 warnings.append(f"{where}: 字体文件未下载，运行 ./logo fonts fetch {fid}")
             elif f.get("sha256") and sha256_file(fp) != f["sha256"]:
                 errors.append(f"{where}: sha256 与文件不符")
-        if f.get("license_file") and not (FONTS_DIR / f["license_file"]).exists():
+        if f.get("license_file") and system_text(FONTS_DIR / f["license_file"]) is None:
             errors.append(f"{where}: 授权文件不存在")
 
 
@@ -2388,8 +2442,9 @@ def cmd_check(a) -> None:
     errors: list[str] = []
     warnings: list[str] = []
     scope = a.scope
-    global STAGED_CHECK
+    global STAGED_CHECK, STAGED_SYSTEM
     STAGED_CHECK = a.staged and scope == "projects"
+    STAGED_SYSTEM = a.staged and scope == "system"
     if a.staged and scope == "all":
         raise LogoError("--staged 需要配合 --scope system 或 --scope projects（由各仓库的钩子传入）")
     has_projects = projects_repo_ready()
@@ -2412,23 +2467,33 @@ def cmd_check(a) -> None:
     else:
         staged = a.staged and scope == "projects"
         perr: list[str] = []
-        import repositories
-        repositories.check_selected(perr, staged)
-        projects = [Project(a.slug)] if a.slug else all_projects()
-        for p in projects:
-            check_project(p, perr, warnings, staged)
-        if not a.slug:
-            board = staged_bytes(PROJECTS_MD) if staged else PROJECTS_MD.read_bytes() if PROJECTS_MD.exists() else None
-            if board != build_index().encode("utf-8"):
-                msg = f"{rel(PROJECTS_MD)} 不是最新，请运行 {cli_prefix()} index"
-                (perr if staged else warnings).append(msg)
-            check_stray_files("projects", perr, warnings)
-            check_new_docs(staged, perr, warnings)
-            import series  # 延迟导入：series.py 依赖本模块
-            series.check_series(perr, warnings)
-            import covers  # 延迟导入：covers.py 依赖本模块
-            covers.check_family_covers(perr, warnings, staged)
-            check_secrets("projects", staged, perr)
+        try:
+            import repositories
+            repositories.check_selected(perr, staged)
+            projects = [Project(a.slug)] if a.slug else all_projects()
+            for p in projects:
+                check_project(p, perr, warnings, staged)
+            if not a.slug:
+                board = staged_bytes(PROJECTS_MD) if staged else PROJECTS_MD.read_bytes() if PROJECTS_MD.exists() else None
+                try:
+                    stale = board != build_index().encode("utf-8")
+                except LogoError as e:  # 项目配置损坏时看板无法生成；具体原因已由 check_project 报出
+                    stale = False
+                    perr.append(f"{rel(PROJECTS_MD)} 无法生成：{e}")
+                if stale:
+                    msg = f"{rel(PROJECTS_MD)} 不是最新，请运行 {cli_prefix()} index"
+                    (perr if staged else warnings).append(msg)
+                check_stray_files("projects", perr, warnings)
+                check_new_docs(staged, perr, warnings)
+                import series  # 延迟导入：series.py 依赖本模块
+                series.check_series(perr, warnings)
+                import covers  # 延迟导入：covers.py 依赖本模块
+                covers.check_family_covers(perr, warnings, staged)
+                check_secrets("projects", staged, perr)
+        except LogoError as e:
+            if scope != "system":
+                raise
+            perr.append(f"项目检查中断：{e}")  # 系统提交不受设计仓库内容影响，只提醒
         if scope != "system":
             check_immutability(staged, perr)
             errors.extend(perr)

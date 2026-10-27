@@ -1,6 +1,7 @@
 """封面模块（第二期）：平台登记的拆分、校验与查看。"""
 from __future__ import annotations
 
+import re
 import subprocess
 import tempfile
 import unittest
@@ -101,6 +102,24 @@ class CoverCliTest(unittest.TestCase):
         r = self.ws.commit("system", "x")
         self.assertNotEqual(r.returncode, 0)
         self.assertTrue(any("16x10" in ln for ln in self.ws.blocked(r)))
+
+    def test_staged_config_is_what_gets_checked(self):
+        """系统提交检查暂存区里的配置：暂存了坏配置、只在工作区改好，仍要拦截；反之工作区的未完成改动不拦截。"""
+        cfg = self.ws.root / "config" / "cover-platforms.toml"
+        good = cfg.read_text(encoding="utf-8")
+        bad = good.replace('ratio = "16x9"', 'ratio = "16x10"', 1)
+        cfg.write_text(bad, encoding="utf-8")
+        self.ws.git("system", "add", "config/cover-platforms.toml")
+        cfg.write_text(good, encoding="utf-8")
+        r = self.ws.commit("system", "x", add=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertTrue(any("16x10" in ln for ln in self.ws.blocked(r)))
+        self.ws.git("system", "reset", "-q")
+        cfg.write_text(bad, encoding="utf-8")
+        self.ws.write("README.md", self.ws.read("README.md") + "\n<!-- note -->\n")
+        self.ws.git("system", "add", "README.md")
+        r = self.ws.commit("system", "docs", add=False)
+        self.assertEqual(r.returncode, 0, self.ws.blocked(r))
 
     def test_single_logo_module_when_run_as_script(self):
         code = ("import runpy, sys\n"
@@ -221,6 +240,27 @@ class CoverWorkflowTest(unittest.TestCase):
         self.addCleanup(self.ws.git, "projects", "reset", "-q", "--hard", "HEAD~1")
         self.svg().write_text(moved.replace('d="M10 90 50 10 90 90Z"', 'd="M10 90 50 20 90 90Z"'), encoding="utf-8")
         self.blocked("Logo 与 r1/primary.svg", "不能改动内部")
+
+    def test_logo_frame_is_protected(self):
+        """Logo 分组内部不变还不够：分组本身、外层分组与封面样式都不能改变 Logo 的外观。"""
+        good = self.svg().read_text(encoding="utf-8")
+        a0, a1 = covers.group_span(good, "logo")
+        content = '<g id="content">'
+        cases = {
+            "不能带 opacity": good.replace('<g id="logo"', '<g id="logo" opacity="0"', 1),
+            "transform 只能是": re.sub(r'(<g id="logo"[^>]*transform="[^"]*)"', r'\1 rotate(30)"', good, count=1),
+            "外层 <g> 带有 opacity": good[:a0] + '<g opacity="0">' + good[a0:a1] + "</g>" + good[a1:],
+            "只能用类选择器": good.replace(content, "<style>#logo path{fill:#FF0000}</style>" + content, 1),
+        }
+        for msg, text in cases.items():
+            with self.subTest(msg=msg):
+                self.assertNotEqual(text, good)
+                self.svg().write_text(text, encoding="utf-8")
+                self.blocked(msg)
+                self.ws.git("projects", "reset", "-q", "--hard")
+        allowed = good[:a0] + '<g id="row">' + good[a0:a1] + "</g>" + good[a1:]  # 不带效果的分组、类样式可以
+        self.svg().write_text(allowed.replace(content, "<style>.title{fill:#FFFFFF}</style>" + content, 1), encoding="utf-8")
+        self.assertFalse([ln for ln in self.ws.logo("check").stdout.splitlines() if "3x1.svg" in ln and "✗" in ln])
 
     def test_text_rules(self):
         text = self.svg().read_text(encoding="utf-8")
