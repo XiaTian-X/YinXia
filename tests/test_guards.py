@@ -126,6 +126,24 @@ class DocsTest(GuardBase):
             f.write("\n依据：decisions/007-missing.md\n")
         self.assertBlocked(self.ws.commit("projects", "x"), "决策记录不存在")
 
+    def test_referenced_decision_must_be_staged(self):
+        """release.md 引用的决策记录只在工作区、没有暂存时，历史里的追溯链是断的。"""
+        self.ws.logo("decision", "demo", "finalize", "--title", "定稿")
+        dec = next((self.p / "decisions").glob("*.md"))
+        fill_doc(dec)
+        self.ws.logo("release", "demo", "--from", "A-v001")
+        rdir = self.p / "releases" / "r1"
+        fill_doc(rdir / "release.md")
+        with (rdir / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-finalize.md\n")
+        fill_doc(rdir / "guide.md")
+        self.ws.logo("index")
+        self.ws.git("projects", "add", "-A")
+        self.ws.git("projects", "reset", "-q", str(dec))
+        self.assertBlocked(self.ws.commit("projects", "x", add=False), "决策记录不存在 decisions/001-finalize.md（或未暂存）")
+        self.ws.git("projects", "add", str(dec))
+        self.assertCommitted(self.ws.commit("projects", "[demo] r1", add=False))
+
     def test_brief_only_warns(self):
         brief = self.p / "brief.md"
         brief.write_text(brief.read_text(encoding="utf-8") + "\n- **行业/领域**：\n", encoding="utf-8")  # 模板原样的空字段

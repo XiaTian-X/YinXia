@@ -464,8 +464,9 @@ def cmd_sync(a) -> None:
 def check_series(errors: list[str], warnings: list[str]) -> None:
     """系列记录与成员关系：系列须有效、角色合法、一个系列最多一个母品牌、继承型子品牌须有母品牌及其发布。"""
     valid: dict[str, dict] = {}
+    staged = logo.STAGED_CHECK  # 提交检查以暂存区为准：未暂存的系列不在提交中，引用它的成员会被报出
     for d in sorted(SERIES_DIR.iterdir()) if SERIES_DIR.exists() else []:
-        if not d.is_dir():
+        if not d.is_dir() or (staged and not logo.staged_dir(d)):
             continue
         where = logo.rel(d)
         if not logo.SLUG_RE.fullmatch(d.name):
@@ -482,8 +483,8 @@ def check_series(errors: list[str], warnings: list[str]) -> None:
             errors.append(f"{where}/series.toml: architecture 须为 {' / '.join(ARCHITECTURES)}")
         if not s.get("name"):
             errors.append(f"{where}/series.toml: 缺少 name")
-        if not (d / "series.md").exists():
-            errors.append(f"{where}: 缺少系列规则 series.md")
+        if not logo.present(d / "series.md", staged):
+            errors.append(f"{where}: 缺少系列规则 series.md" + ("（未暂存）" if staged else ""))
         if (ref := s and logo.load_toml(d / "series.toml").get("covers", {}).get("skeleton")):
             if (problem := skeleton_problem(d.name, ref)):
                 errors.append(f"{where}/series.toml: {problem}（重新 ./logo series skeleton 登记）")

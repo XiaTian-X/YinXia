@@ -1710,6 +1710,17 @@ def staged_bytes(path: Path) -> bytes | None:
     return r.stdout if r.returncode == 0 else None
 
 
+def present(path: Path, staged: bool) -> bool:
+    """文件是否在将要提交的内容中（staged，以暂存区为准）或工作区中。被引用、被要求的文件都按它判断。"""
+    return staged_bytes(path) is not None if staged else path.exists()
+
+
+def staged_dir(d: Path) -> bool:
+    """设计仓库中的目录是否有文件在暂存区（即属于将提交的内容）。"""
+    r = git("ls-files", "--cached", "-z", "--", d.resolve().relative_to(PROJECTS).as_posix(), check=False, repo="projects")
+    return r.returncode == 0 and bool(r.stdout.strip(b"\0"))
+
+
 def check_svg(path: Path, palette: set[str], errors: list[str], warnings: list[str],
               staged: bool = False) -> None:
     """检查 SVG 规范；staged=True 时检查暂存区里将被提交的内容，而不是工作区。"""
@@ -2291,13 +2302,13 @@ def check_new_docs(staged: bool, errors: list[str], warnings: list[str]) -> None
             refs = DECISION_REF_RE.findall(text)
             if not refs:
                 sink.append(f"{rel(PROJECTS)}/{path}: “决策依据”须引用决策记录 decisions/NNN-*.md（用 {cli_prefix()} decision 创建）")
-            for ref in refs:
-                if not (PROJECTS / slug / "decisions" / ref).exists():
-                    sink.append(f"{rel(PROJECTS)}/{path}: 引用的决策记录不存在 decisions/{ref}")
+            for ref in refs:  # 提交时被引用的记录也须在提交中，否则追溯链在历史里是断的
+                if not present(PROJECTS / slug / "decisions" / ref, staged):
+                    sink.append(f"{rel(PROJECTS)}/{path}: 引用的决策记录不存在 decisions/{ref}" + ("（或未暂存）" if staged else ""))
         if re.match(r"^[^/]+/directions/[^/]+/v\d{3}/notes\.md$", path):
             for ref in CONCEPT_REF_RE.findall(text):
-                if not (PROJECTS / slug / "concepts" / ref).exists():
-                    sink.append(f"{rel(PROJECTS)}/{path}: 灵感来源引用的概念图不存在 concepts/{ref}")
+                if not present(PROJECTS / slug / "concepts" / ref, staged):
+                    sink.append(f"{rel(PROJECTS)}/{path}: 灵感来源引用的概念图不存在 concepts/{ref}" + ("（或未暂存）" if staged else ""))
 
 
 def check_hooks(warnings: list[str]) -> None:

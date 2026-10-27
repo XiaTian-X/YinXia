@@ -415,7 +415,8 @@ def cover_css_problems(text: str) -> list[str]:
     for sel, _ in rules:
         out += [s.strip() for s in sel.split(",") if not COVER_SELECTOR_RE.fullmatch(s.strip())]
     return out
-def check_cover_svg(path: Path, canvas: dict, assets: set[str], errors: list[str], staged: bool) -> ET.Element | None:
+def check_cover_svg(path: Path, canvas: dict, assets: set[str], errors: list[str], staged: bool,
+                    family: bool = False) -> ET.Element | None:
     """封面设计稿规则：画布尺寸固定；位图只能引用已登记素材；颜色不限；文字须转曲（参考线层除外）；
     禁止脚本、事件属性与外部资源。返回解析后的根元素。"""
     r = logo.rel(path)
@@ -434,8 +435,10 @@ def check_cover_svg(path: Path, canvas: dict, assets: set[str], errors: list[str
     def walk(el: ET.Element, in_guides: bool, in_logo: bool = False) -> None:
         tag = el.tag.split("}")[-1]
         guides = in_guides or el.get("id") == "guides"
-        # 发布嵌入的 Logo 自带的样式已隔离（Logo 分组本身另由指纹核对，冒充的分组会被报出）
-        in_logo = in_logo or (tag == "g" and (el.get("id") or "").startswith("logo") and el.get("data-release") is not None)
+        # 发布嵌入的 Logo 自带的样式已隔离。只认会被指纹核对的分组（单品牌 logo、家族 logo-<成员>）：
+        # <style> 不论写在哪里都作用于整份设计稿，放进别名分组也不能躲过下面的选择器检查
+        gid = el.get("id") or ""
+        in_logo = in_logo or (tag == "g" and (gid.startswith("logo-") if family else gid == "logo"))
         if tag in ("script", "foreignObject"):
             errors.append(f"{r}: 禁止 <{tag}>")
         if tag in ("text", "tspan", "textPath") and not guides:
@@ -472,7 +475,8 @@ def check_covers(p: "logo.Project", errors: list[str], warnings: list[str], stag
     except logo.LogoError:
         return  # 平台登记的问题由 check_platforms 报告
     for cdir in project_covers(p):
-        check_cover(p, cdir, errors, warnings, staged)
+        if not staged or logo.staged_dir(cdir):  # 提交检查只看将提交的封面；整个未暂存的封面不在提交中
+            check_cover(p, cdir, errors, warnings, staged)
 
 
 def family_members_ok(fam: Family, c: dict, where: str, errors: list[str]) -> bool:
@@ -511,7 +515,8 @@ def check_family_covers(errors: list[str], warnings: list[str], staged: bool = F
     for sid in series.all_series():
         fam = Family(sid)
         for cdir in project_covers(fam):
-            check_cover(fam, cdir, errors, warnings, staged)
+            if not staged or logo.staged_dir(cdir):
+                check_cover(fam, cdir, errors, warnings, staged)
 
 
 def skeleton_notes(cdir: Path, c: dict) -> list[str]:
@@ -567,31 +572,39 @@ def check_cover(p: "logo.Project", cdir: Path, errors: list[str], warnings: list
     for img in sorted(adir.glob("*")) if adir.exists() else []:
         if img.suffix.lower() not in ASSET_SUFFIXES:
             continue
-        md = img.with_suffix(".md")
-        if not md.exists():
-            errors.append(f"{logo.rel(img)}: 素材未登记（缺少 {md.name}；用 ./logo cover asset 登记）")
+        data = logo.staged_bytes(img) if staged else img.read_bytes()
+        if data is None:  # 未暂存的素材不在提交中；设计稿若引用它，下面会报未登记
             continue
-        m = re.search(r"sha256\*\*[:：]\s*([0-9a-f]{64})", md.read_text(encoding="utf-8"))
-        if not m or m.group(1) != logo.sha256_file(img):
+        md = img.with_suffix(".md")
+        record = logo.staged_bytes(md) if staged else md.read_bytes() if md.exists() else None
+        if record is None:
+            errors.append(f"{logo.rel(img)}: 素材未登记（缺少 {md.name}" + ("或未暂存" if staged else "")
+                          + "；用 ./logo cover asset 登记）")
+            continue
+        m = re.search(r"sha256\*\*[:：]\s*([0-9a-f]{64})", record.decode("utf-8", errors="replace"))
+        if not m or m.group(1) != hashlib.sha256(data).hexdigest():
             errors.append(f"{logo.rel(img)}: 内容与登记的 sha256 不符（素材登记后不可替换，换图请重新登记）")
             continue
         assets.add(f"assets/{img.name}")
     need = needed_ratios(targets)
     for key in need:
-        if not (cdir / f"{key}.svg").exists():
-            errors.append(f"{where}: 缺少画幅稿 {key}.svg（目标平台需要）")
+        if not logo.present(cdir / f"{key}.svg", staged):
+            errors.append(f"{where}: 缺少画幅稿 {key}.svg（目标平台需要）" + ("（未暂存）" if staged else ""))
     for svg in sorted(cdir.glob("*.svg")):  # 目录里的每一份设计稿都按规则检查，不只是目标平台需要的
+        if staged and not logo.present(svg, staged):
+            continue  # 未暂存，不在这次提交中
         if svg.stem not in ratios:
             errors.append(f"{logo.rel(svg)}: {svg.stem} 不是已登记的画幅（可选：{', '.join(ratios)}）")
             continue
         if svg.stem not in need:
             warnings.append(f"{logo.rel(svg)}: 当前目标平台不需要画幅 {svg.stem}"
                             f"（若是为新平台预备，可用 ./logo cover retarget 加入目标平台）")
-        root = check_cover_svg(svg, ratios[svg.stem], assets, errors, staged)
+        root = check_cover_svg(svg, ratios[svg.stem], assets, errors, staged, is_family(p))
         if root is not None and is_family(p):
             errors.extend(family_logo_errors(p, root, logo.rel(svg), c))
             fonts = {f.get("id") for f in logo.load_fonts()}  # 家族封面不属于项目：转曲字体只须已登记
-            for fid in sorted(set(logo.OUTLINE_FONT_RE.findall(svg.read_text(encoding="utf-8"))) - fonts):
+            text = (logo.staged_bytes(svg) if staged else svg.read_bytes()).decode("utf-8", errors="replace")
+            for fid in sorted(set(logo.OUTLINE_FONT_RE.findall(text)) - fonts):
                 errors.append(f"{logo.rel(svg)}: 转曲所用字体 {fid} 未在 fonts.toml 登记")
         elif root is not None:
             found = logo_errors(p, root, logo.rel(svg))

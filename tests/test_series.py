@@ -101,6 +101,18 @@ class SeriesBase(unittest.TestCase):
 
 
 class SeriesTest(SeriesBase):
+    def test_series_rules_must_be_staged(self):
+        """series.md 只在工作区、没有暂存时不能提交系列。"""
+        d = self.series("pets", "independent")
+        self.ws.logo("index")
+        self.ws.git("projects", "add", "-A")
+        self.ws.git("projects", "reset", "-q", str(d / "series.md"))
+        r = self.ws.commit("projects", "x", add=False)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("缺少系列规则 series.md（未暂存）", "\n".join(self.ws.blocked(r)))
+        self.ws.git("projects", "add", str(d / "series.md"))
+        self.commit_ok("[pets] series")
+
     # -- 独立项目与访谈门槛 ----------------------------------------------------------
     def test_standalone_project_from_intake(self):
         ws = self.ws

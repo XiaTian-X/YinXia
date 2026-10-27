@@ -251,6 +251,8 @@ class CoverWorkflowTest(unittest.TestCase):
             "transform 只能是": re.sub(r'(<g id="logo"[^>]*transform="[^"]*)"', r'\1 rotate(30)"', good, count=1),
             "外层 <g> 带有 opacity": good[:a0] + '<g opacity="0">' + good[a0:a1] + "</g>" + good[a1:],
             "只能用类选择器": good.replace(content, "<style>#logo path{fill:#FF0000}</style>" + content, 1),
+            "收到 '#logo path'": good.replace(content, '<g id="logo-x" data-release="r1"><style>#logo path{fill:#FF0000}'
+                                                    "</style></g>" + content, 1),  # 别名分组躲不过样式检查
         }
         for msg, text in cases.items():
             with self.subTest(msg=msg):
@@ -261,6 +263,24 @@ class CoverWorkflowTest(unittest.TestCase):
         allowed = good[:a0] + '<g id="row">' + good[a0:a1] + "</g>" + good[a1:]  # 不带效果的分组、类样式可以
         self.svg().write_text(allowed.replace(content, "<style>.title{fill:#FFFFFF}</style>" + content, 1), encoding="utf-8")
         self.assertFalse([ln for ln in self.ws.logo("check").stdout.splitlines() if "3x1.svg" in ln and "✗" in ln])
+
+    def test_cover_files_checked_in_index(self):
+        """目标平台需要的画幅稿须在暂存区；整个未暂存的封面不在提交中，不拦截别的提交。"""
+        ws = self.ws
+        ws.logo("cover", "new", "demo", "summer", "--platforms", "x", "--title", "夏")
+        c = self.p / "covers" / "002-summer"
+        fill_doc(c / "cover.md")
+        ws.logo("index")
+        ws.git("projects", "add", "-A")
+        ws.git("projects", "reset", "-q", str(c / "3x1.svg"))
+        self.assertIn("002-summer: 缺少画幅稿 3x1.svg（目标平台需要）（未暂存）", "\n".join(ws.blocked(ws.commit("projects", "x", add=False))))
+        ws.git("projects", "reset", "-q")
+        notes = self.c / "cover.md"
+        notes.write_text(notes.read_text(encoding="utf-8") + "\n- 2026-10-27 用户：可以\n", encoding="utf-8")
+        ws.git("projects", "add", str(notes))
+        r = ws.commit("projects", "[demo] cover review", add=False)
+        self.assertEqual(r.returncode, 0, ws.blocked(r))
+        ws.git("projects", "reset", "-q", "--soft", "HEAD~1")  # 撤销这次提交，保持类级工作区不变
 
     def test_text_rules(self):
         text = self.svg().read_text(encoding="utf-8")
