@@ -1,12 +1,25 @@
-# 印夏（YinXia）
+<p align="center">
+  <img src="https://raw.githubusercontent.com/XiaTian-X/xia-logo/main/yinxia/latest/yinxia-primary-latest.svg" alt="印夏 YinXia Logo" width="240">
+</p>
 
-**面向设计者与 AI Agent 协作的本地 Logo 与品牌物料管理系统。**
+<h1 align="center">印夏（YinXia）</h1>
+
+<p align="center"><strong>面向设计者与 AI Agent 协作的本地 Logo 与品牌物料管理系统</strong></p>
+
+<p align="center">
+  <a href="#用途">用途</a> ·
+  <a href="#安装">安装</a> ·
+  <a href="#系统与设计仓库">系统与设计仓库</a> ·
+  <a href="#使用流程">使用流程</a> ·
+  <a href="#扩展工作流">扩展工作流</a> ·
+  <a href="#检查与安全规则">检查与安全规则</a> ·
+  <a href="#开发与维护">开发与维护</a> ·
+  <a href="#常见问题">常见问题</a>
+</p>
 
 设计由你选用的 Agent 或设计工具完成，印夏负责把需求、概念图、设计方向、版本、评审和交付组织在一起。通过 SVG、Markdown、TOML 和 Git，你可以从最终交付物追溯到设计版本、参考图与关键决策。
 
 本公开仓库只包含系统代码、模板、规则和测试，**不附带维护者的业务项目或本地测试项目**。安装后会创建默认设计仓库；也可接入多个独立仓库，分别存放自己的设计资料。
-
-[用途](#用途) · [安装](#安装) · [系统与设计仓库](#系统与设计仓库) · [使用流程](#使用流程) · [扩展工作流](#扩展工作流) · [检查与安全规则](#检查与安全规则) · [开发与维护](#开发与维护) · [常见问题](#常见问题)
 
 ## 用途
 
@@ -170,36 +183,36 @@ YinXia/                           # 系统仓库
 ├── AGENTS.md                     # Agent 必须遵守的规则
 ├── .agents/skills/               # Logo、封面、导入工作流
 ├── .githooks/                    # 系统及设计仓库的提交钩子
-├── tools/                       # Python 实现
-├── templates/                   # 项目、版本、发布等模板
-├── config/                      # Logo 目标与封面平台规格
-├── assets/fonts/                # 字体登记、授权；字体文件被忽略
-├── tests/                       # 隔离的自动化测试
-├── projects/                    # default：兼容保留的独立设计仓库
+├── tools/                        # Python 实现
+├── templates/                    # 项目、版本、发布等模板
+├── config/                       # Logo 目标与封面平台规格
+├── assets/fonts/                 # 字体登记、授权；字体文件被忽略
+├── tests/                        # 隔离的自动化测试
+├── projects/                     # default：兼容保留的独立设计仓库
 │   ├── .git/
 │   ├── .gitignore
-│   ├── PROJECTS.md              # 由 ./logo --repo default index 生成
-│   ├── _series/                 # 按需创建：系列规则与家族封面
+│   ├── PROJECTS.md               # 由 ./logo --repo default index 生成
+│   ├── _series/                  # 按需创建：系列规则与家族封面
 │   └── <slug>/
-│       ├── project.toml         # 元数据、状态、色板、字体、导出配置
-│       ├── brief.md             # 需求简报与确认记录
-│       ├── concepts/            # 概念图及来源记录
-│       ├── directions/          # 各方向及 vNNN/{logo.svg, notes.md}
-│       ├── decisions/           # 关键取舍记录
-│       ├── releases/            # 定稿版式、发布说明、使用指南
-│       ├── covers/              # 按需创建：封面稿及已登记素材
-│       ├── latest/              # 按需创建：当前发布的固定地址副本（./logo latest，需提交）
-│       └── dist/                # 按需生成的交付物，不提交
-├── repositories/                # 按需创建，整个目录被系统 Git 忽略
-│   ├── studio/                 # workspace：独立 .git、repository.toml、PROJECTS.md
-│   │   ├── <slug>/             # 与默认仓库相同的品牌目录结构
-│   │   ├── _series/            # 本工作区内的系列
-│   │   └── inbox/              # 本仓库收件箱，不提交
-│   └── acme/                   # single：独立 Git，最多一个 <slug>/
-├── .yinxia/                     # 本机登记表与默认选择，不提交
-├── inbox/                       # default 专用收件箱，不提交
-├── .cache/                      # 按仓库隔离的预览、预演与临时文件，不提交
-└── .venv/                       # 共享的本地 Python 环境，不提交
+│       ├── project.toml          # 元数据、状态、色板、字体、导出配置
+│       ├── brief.md              # 需求简报与确认记录
+│       ├── concepts/             # 概念图及来源记录
+│       ├── directions/           # 各方向及 vNNN/{logo.svg, notes.md}
+│       ├── decisions/            # 关键取舍记录
+│       ├── releases/             # 定稿版式、发布说明、使用指南
+│       ├── covers/               # 按需创建：封面稿及已登记素材
+│       ├── latest/               # 按需创建：当前发布的固定地址副本（./logo latest，需提交）
+│       └── dist/                 # 按需生成的交付物，不提交
+├── repositories/                 # 按需创建，整个目录被系统 Git 忽略
+│   ├── studio/                   # workspace：独立 .git、repository.toml、PROJECTS.md
+│   │   ├── <slug>/               # 与默认仓库相同的品牌目录结构
+│   │   ├── _series/              # 本工作区内的系列
+│   │   └── inbox/                # 本仓库收件箱，不提交
+│   └── acme/                     # single：独立 Git，最多一个 <slug>/
+├── .yinxia/                      # 本机登记表与默认选择，不提交
+├── inbox/                        # default 专用收件箱，不提交
+├── .cache/                       # 按仓库隔离的预览、预演与临时文件，不提交
+└── .venv/                        # 共享的本地 Python 环境，不提交
 ```
 
 系统代码、模板、平台规格与字体登记由所有仓库共享；品牌需求、系列、版本、封面、看板和交付物在各设计仓库内独立保存。默认仓库沿用根目录 `inbox/`；其他仓库使用各自根目录的 `inbox/`。预演记录按仓库与路径隔离，不能用一个仓库的预演记录直接导入另一个仓库。色板、发布、系列或封面规格变化后，需要重新预演并确认。
@@ -293,7 +306,7 @@ git -C projects commit -m "[demo] A-v001: geometric direction"
 
 首次发布生成 `projects/demo/releases/r1/`。发布前须完成：
 
-- `layouts/primary.svg`：必需主版，由选定版本起稿；按需增加 `icon.svg`、`horizontal.svg` 等版式。
+- `layouts/primary.svg`：必需主版，由选定版本起稿。按需增加 `icon.svg`、`horizontal.svg`、`wordmark-cn.svg`、`wordmark-en.svg`、`wordmark-pinyin.svg`；App 图标与头像可用 `app-icon.svg`、`avatar.svg` 手工覆盖，单色、反白可用 `<版式>.mono.svg`、`<版式>.reversed.svg` 覆盖。
 - `release.md`：填写发布说明，并引用真实的 `decisions/NNN-*.md`；编号以命令输出为准。
 - `guide.md`：填完标志结构、最小尺寸、安全留白与错误用法，它会随交付物一起导出。
 - 可选 `./logo latest demo`：把当前发布的标志版式（彩色、单色、反白）写入 `projects/demo/latest/demo-<版式>[-<配色>]-latest.svg`，README 等外部引用这个固定地址即可随发布更新。latest/ 一旦存在，之后每次发布都要重新生成并一起提交，检查会核对它与当前发布一致。
@@ -327,7 +340,7 @@ git -C projects commit -m "[demo] release r1"
 | `favicon` | 多尺寸 PNG、ICO、Apple 触控图标 |
 | `ios` | 不透明 App 图标 |
 | `android` | 多密度图标、Play 图标、自适应背景/前景/单色层 |
-| `avatar` | 多尺寸社交头像 |
+| `avatar` | 多尺寸社交头像，图形留在圆形安全区内，适配圆形裁切 |
 
 图标优先采用 `icon.svg`，缺省时使用 `primary.svg`；App 图标和头像按项目底色与配色配置自动排版，也支持手工覆盖。具体尺寸与规则见 [Logo 导出配置](config/logo-targets.toml)。
 
