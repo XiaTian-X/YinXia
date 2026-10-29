@@ -50,6 +50,7 @@ CACHE = ROOT / ".cache"
 FONTS_DIR = ROOT / "assets" / "fonts"
 FONTS_TOML = FONTS_DIR / "fonts.toml"
 PROJECTS_MD = PROJECTS / "PROJECTS.md"
+README_MD = PROJECTS / "README.md"  # 设计仓库首页：repository.toml 有 [readme] 时由 ./logo index 生成
 
 SVG_NS = "http://www.w3.org/2000/svg"
 XLINK_NS = "http://www.w3.org/1999/xlink"
@@ -115,7 +116,7 @@ SYSTEM_FILE_PATTERNS = [re.compile(p) for p in (
     r"tests/[a-z0-9_]+\.py",
 )]
 # 项目仓库根目录允许的文件；项目目录内的文件见 PROJECT_FILE_PATTERNS，系列记录见 SERIES_FILE_RE
-PROJECTS_ROOT_FILES = {"PROJECTS.md", ".gitignore", "repository.toml"}
+PROJECTS_ROOT_FILES = {"PROJECTS.md", "README.md", ".gitignore", "repository.toml"}
 SERIES_FILE_RE = re.compile(r"_series/([a-z0-9]+(?:-[a-z0-9]+)*)/(.+)")  # 系列目录内：series.toml/md 与家族封面
 
 # 密钥与凭据：文件名特征，以及内容特征（私钥、各平台访问令牌）
@@ -2523,9 +2524,120 @@ def build_index() -> str:
     return "\n".join(lines) + "\n"
 
 
+LICENSE_URLS = {"OFL-1.1": "https://openfontlicense.org", "Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0"}
+
+
+def readme_config() -> dict | None:
+    """设计仓库 repository.toml 的 [readme]（提交检查时读暂存区）；没有时返回 None，表示不生成 README。"""
+    meta = PROJECTS / "repository.toml"
+    raw = staged_bytes(meta) if STAGED_CHECK else (meta.read_bytes() if meta.exists() else None)
+    if raw is None:
+        return None
+    try:
+        cfg = tomllib.loads(raw.decode("utf-8")).get("readme")
+    except (UnicodeError, tomllib.TOMLDecodeError) as e:
+        raise LogoError(f"{rel(meta)} 格式错误：{e}")
+    if cfg is None:
+        return None
+    if not isinstance(cfg, dict) or not isinstance(cfg.get("title"), str) or not cfg["title"].strip():
+        raise LogoError(f"{rel(meta)}: [readme] 需要非空的 title")
+    for key in ("description", "notice"):
+        if not isinstance(cfg.get(key, ""), str):
+            raise LogoError(f"{rel(meta)}: [readme] {key} 须为字符串")
+    for key, what in (("names", "项目短名"), ("series", "系列名")):
+        table = cfg.get(key, {})
+        if not isinstance(table, dict) or not all(isinstance(v, str) for v in table.values()):
+            raise LogoError(f"{rel(meta)}: [readme.{key}] 须为 {what} = \"显示名\" 的映射")
+    return cfg
+
+
+def build_readme() -> str | None:
+    """设计仓库首页 README：标题与简介、各品牌当前标志（优先引用 latest/）、系列、所用字体与使用声明。
+    文字来自 repository.toml 的 [readme]，其余均由项目记录生成；没有 [readme] 时返回 None。"""
+    cfg = readme_config()
+    if cfg is None:
+        return None
+    import series  # 延迟导入：series.py 依赖本模块
+    exists = (lambda f: staged_bytes(f) is not None) if STAGED_CHECK else (lambda f: f.exists())
+    read = (lambda f: (staged_bytes(f) or b"").decode("utf-8")) if STAGED_CHECK else (lambda f: f.read_text(encoding="utf-8"))
+    names = cfg.get("names", {})
+
+    def label(p: Project) -> str:
+        name = p.cfg.get("project", {}).get("name", p.slug)
+        alt = names.get(p.slug, "").strip()
+        return f"{name} {alt}" if alt and alt != name else name
+
+    def series_label(sid: str) -> str:
+        name = series.all_series().get(sid, {}).get("name", sid)
+        alt = cfg.get("series", {}).get(sid, "").strip()
+        return f"{name} {alt}" if alt and alt != name else f"{name}（{sid}）"
+
+    lines = [f"# {cfg['title'].strip()}", "", "<!-- 由 ./logo index 自动生成，请勿手改；标题、简介、显示名与声明见 repository.toml 的 [readme] -->", ""]
+    if cfg.get("description", "").strip():
+        lines += [cfg["description"].strip(), ""]
+    lines += ["## 品牌", ""]
+    used_fonts: dict[str, None] = {}
+    projects = all_projects()
+    for p in projects:
+        st = p.cfg.get("state", {})
+        rid = st.get("current_release")
+        lines += [f"### {label(p)}", ""]
+        if not rid:
+            lines += ["尚未发布。", ""]
+            continue
+        ldir = p.release_dir(rid) / "layouts"
+        latest = p.dir / "latest" / latest_name(p.slug, "primary", "color")
+        img = latest if exists(latest) else ldir / "primary.svg"
+        src = img.relative_to(PROJECTS).as_posix()
+        lines += [f'<a href="{src}"><img src="{src}" alt="{html.escape(label(p))}" height="200"></a>', ""]
+        m = series.membership(p)
+        role = (f"{series_label(m['id'])} 系列的{series.ROLES.get(m.get('role'), m.get('role', ''))}"
+                if m else "独立品牌")
+        rdir = f"{p.slug}/releases/{rid}"
+        lines += [f"- 角色：{role}",
+                  f"- 当前发布：[{rid}]({rdir}/release.md) · [使用指南]({rdir}/guide.md)"]
+        if exists(latest):
+            lines.append(f"- 固定地址（始终指向当前发布）：[`{p.slug}/latest/`]({p.slug}/latest/)")
+        lines.append("")
+        for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
+            if exists(f):
+                for fid in OUTLINE_FONT_RE.findall(read(f)):
+                    used_fonts[fid] = None
+    groups = series.all_series()
+    if groups:
+        lines += ["## 系列", ""]
+        for sid, s in groups.items():
+            arch = series.ARCHITECTURES.get(s.get("architecture"), "")
+            lines.append(f"- [{series_label(sid)}](_series/{sid}/series.md) · {arch}："
+                         + "、".join(f"{series.ROLES.get(role, role)} {label(p)}"
+                                    for p, role in sorted(series.members(sid), key=lambda x: (x[1] != "master", x[0].slug))))
+        lines.append("")
+    fonts = {f["id"]: f for f in load_fonts()}
+    if used_fonts:
+        lines += ["## 标志所用字体", ""]
+        for fid in used_fonts:
+            f = fonts.get(fid, {})
+            title = " ".join(x for x in (f.get("family"), f.get("weight")) if x) or fid
+            lic = f.get("license", "")
+            lic_text = f"[{lic}]({LICENSE_URLS[lic]})" if lic in LICENSE_URLS else lic
+            lines.append(f"- [{title}]({f['official_url']})" if f.get("official_url") else f"- {title}")
+            lines[-1] += f" · {lic_text}" if lic_text else ""
+        lines.append("")
+    if cfg.get("notice", "").strip():
+        lines += ["## 使用声明", "", cfg["notice"].strip(), ""]
+    lines += ["---", "", "项目进度见 [PROJECTS.md](PROJECTS.md)。"]
+    return "\n".join(lines) + "\n"
+
+
 def cmd_index(a) -> None:
     PROJECTS_MD.write_text(build_index(), encoding="utf-8")
     print(f"已更新：{rel(PROJECTS_MD)}")
+    readme = build_readme()
+    if readme is not None:
+        README_MD.write_text(readme, encoding="utf-8")
+        print(f"已更新：{rel(README_MD)}")
+    elif README_MD.exists():
+        print(f"⚠ {rel(README_MD)} 不再生成（repository.toml 没有 [readme]）；不需要时请删除")
 
 
 def cmd_check(a) -> None:
@@ -2574,6 +2686,16 @@ def cmd_check(a) -> None:
                 if stale:
                     msg = f"{rel(PROJECTS_MD)} 不是最新，请运行 {cli_prefix()} index"
                     (perr if staged else warnings).append(msg)
+                readme = staged_bytes(README_MD) if staged else README_MD.read_bytes() if README_MD.exists() else None
+                try:
+                    want = build_readme()
+                    if want is None and readme is not None:
+                        (perr if staged else warnings).append(
+                            f"{rel(README_MD)} 只能由 {cli_prefix()} index 生成：先在 repository.toml 中填写 [readme]，或删除它")
+                    elif want is not None and readme != want.encode("utf-8"):
+                        (perr if staged else warnings).append(f"{rel(README_MD)} 不是最新，请运行 {cli_prefix()} index")
+                except LogoError as e:
+                    perr.append(f"{rel(README_MD)} 无法生成：{e}")
                 check_stray_files("projects", perr, warnings)
                 check_new_docs(staged, perr, warnings)
                 import series  # 延迟导入：series.py 依赖本模块

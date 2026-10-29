@@ -127,7 +127,7 @@ class PathRulesTest(unittest.TestCase):
             self.assertFalse(logo.path_allowed(p, "system"), p)
 
     def test_projects_allowlist(self):
-        ok = ["PROJECTS.md", ".gitignore", "acme/project.toml", "acme/brief.md", "acme/concepts/001-ref.png",
+        ok = ["PROJECTS.md", "README.md", ".gitignore", "acme/project.toml", "acme/brief.md", "acme/concepts/001-ref.png",
               "acme/concepts/001-ref.md", "acme/directions/A-mountain/direction.md",
               "acme/directions/A-mountain/v001/logo.svg", "acme/decisions/001-secret-garden.md",
               "acme/releases/r1/layouts/cover-2.7x1.svg", "acme/releases/r1/layouts/icon.mono.svg",

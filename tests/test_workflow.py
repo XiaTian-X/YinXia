@@ -104,6 +104,63 @@ class LatestTest(unittest.TestCase):
         self.assertIn("还没有当前发布", ws.logo("check", ok=False).stdout)
 
 
+class ReadmeTest(unittest.TestCase):
+    """设计仓库首页 README：repository.toml 有 [readme] 时由 ./logo index 生成，提交时必须是最新。"""
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.addCleanup(self.ws.cleanup)
+        self.p = self.ws.new_project()
+        self.ws.new_version()
+        assert self.ws.commit("projects", "[demo] A-v001").returncode == 0
+        self.meta = self.ws.projects / "repository.toml"
+        self.readme = self.ws.projects / "README.md"
+
+    def configure(self) -> None:
+        old = self.meta.read_text(encoding="utf-8") if self.meta.exists() else '[repository]\nkind = "workspace"\n'
+        self.meta.write_text(old + '\n[readme]\ntitle = "Demo 标志仓库"\ndescription = "演示用简介"\n'
+                             'notice = """\n保留所有权利。\n"""\n\n[readme.names]\ndemo = "Démo"\n', encoding="utf-8")
+
+    def test_readme_generated_and_kept_current(self):
+        ws = self.ws
+        ws.logo("index")
+        self.assertFalse(self.readme.exists())  # 没有 [readme] 不生成
+        self.configure()
+        ws.logo("index")
+        text = self.readme.read_text(encoding="utf-8")
+        for part in ("# Demo 标志仓库", "演示用简介", "### Demo Démo", "尚未发布", "## 使用声明", "保留所有权利。"):
+            self.assertIn(part, text)
+        r = ws.commit("projects", "[repo] readme")
+        self.assertEqual(r.returncode, 0, ws.blocked(r))
+
+        prepare_release(ws)  # 发布后 README 引用发布版式，并列出所用字体（无转曲文字时不列）
+        text = self.readme.read_text(encoding="utf-8")
+        self.assertIn('src="demo/releases/r1/layouts/primary.svg"', text)
+        self.assertIn("[r1](demo/releases/r1/release.md)", text)
+        self.assertNotIn("## 标志所用字体", text)
+        ws.logo("latest", "demo")
+        ws.logo("index")
+        self.assertIn('src="demo/latest/demo-primary-latest.svg"', self.readme.read_text(encoding="utf-8"))
+        self.assertEqual(ws.commit("projects", "[demo] latest").returncode, 0)
+
+        self.readme.write_text(self.readme.read_text(encoding="utf-8") + "手改\n", encoding="utf-8")
+        self.assertIn("README.md 不是最新", ws.logo("check").stdout)
+        r = ws.commit("projects", "[repo] 手改 README")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("README.md 不是最新", "\n".join(ws.blocked(r)))
+
+    def test_readme_without_config_is_rejected(self):
+        ws = self.ws
+        self.readme.write_text("# 手写\n", encoding="utf-8")
+        self.assertIn("只能由", ws.logo("check").stdout)
+        r = ws.commit("projects", "[repo] 手写 README")
+        self.assertNotEqual(r.returncode, 0)
+        self.configure()
+        self.meta.write_text(self.meta.read_text(encoding="utf-8").replace('title = "Demo 标志仓库"', 'title = ""'),
+                             encoding="utf-8")
+        self.assertIn("[readme] 需要非空的 title", ws.logo("check", ok=False).stdout)
+
+
 class LifecycleTest(unittest.TestCase):
     def setUp(self):
         self.ws = Workspace()

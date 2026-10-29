@@ -189,6 +189,7 @@ def bind(name: str, path: Path) -> None:
     """绑定命令上下文；管理命令无需先打开默认设计仓库。"""
     logo.REPOSITORY_ID, logo.PROJECTS = name, path
     logo.PROJECTS_MD = path / "PROJECTS.md"
+    logo.README_MD = path / "README.md"
     location = hashlib.sha256(str(path).encode()).hexdigest()[:16]
     logo.CACHE = logo.ROOT / ".cache" if name == "default" else logo.ROOT / ".cache" / "repositories" / name / location
     logo.HISTORY_CACHE = logo.CACHE / "history-check.json"

@@ -9,6 +9,8 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
 > 先用 `./logo repo list` 确认目标设计仓库。`default` 在 `projects/`，其他仓库独立保存于 `repositories/<名称>/` 或登记路径；下文以 default 为例。操作其他仓库时统一使用 `./logo --repo <名称> …`，路径与 Git 提交位置替换为该仓库目录。`single` 每库一个独立品牌，系列须放在支持多品牌的 `workspace` 中。
 > 设计工作一律提交到对应的**设计仓库**；根目录的系统仓库只在修改系统本身时提交。
 > 任何中间产物（描摹、调试图、脚本）都放 `.cache/<slug>/`，不要放到根目录或项目目录。
+> 设计仓库的 `repository.toml` 有 `[readme]` 时，`./logo index` 还会生成首页 `README.md`（品牌标志优先引用 latest/、系列、所用字体、使用声明）；
+> 发布、latest/ 或 `[readme]` 变化后重新 `./logo index` 并一起提交，README 不得手改。
 > **模板占位必须在提交前填完**：新建的 direction.md、notes.md、release.md、guide.md、决策与概念记录提交后只能追加，
 > 带着“（…）”提示或空字段提交会被钩子拦截。
 
