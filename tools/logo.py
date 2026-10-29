@@ -2577,7 +2577,9 @@ def build_readme() -> str | None:
         lines += [cfg["description"].strip(), ""]
     lines += ["## 品牌", ""]
     used_fonts: dict[str, None] = {}
-    projects = all_projects()
+    # 已发布的在前；同为已发布或未发布时母品牌在前，其余按短名
+    projects = sorted(all_projects(), key=lambda p: (not p.cfg.get("state", {}).get("current_release"),
+                                                     (series.membership(p) or {}).get("role") != "master", p.slug))
     for p in projects:
         st = p.cfg.get("state", {})
         rid = st.get("current_release")

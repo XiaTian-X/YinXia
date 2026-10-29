@@ -142,6 +142,9 @@ class ReadmeTest(unittest.TestCase):
         ws.logo("index")
         self.assertIn('src="demo/latest/demo-primary-latest.svg"', self.readme.read_text(encoding="utf-8"))
         self.assertEqual(ws.commit("projects", "[demo] latest").returncode, 0)
+        ws.new_project("alpha")  # 未发布的品牌排在已发布的之后，即使短名靠前
+        text = self.readme.read_text(encoding="utf-8")
+        self.assertLess(text.index("### Demo Démo"), text.index("### Alpha"))
 
         self.readme.write_text(self.readme.read_text(encoding="utf-8") + "手改\n", encoding="utf-8")
         self.assertIn("README.md 不是最新", ws.logo("check").stdout)
