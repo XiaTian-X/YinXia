@@ -188,6 +188,7 @@ YinXia/                           # 系统仓库
 │       ├── decisions/           # 关键取舍记录
 │       ├── releases/            # 定稿版式、发布说明、使用指南
 │       ├── covers/              # 按需创建：封面稿及已登记素材
+│       ├── latest/              # 按需创建：当前发布的固定地址副本（./logo latest，需提交）
 │       └── dist/                # 按需生成的交付物，不提交
 ├── repositories/                # 按需创建，整个目录被系统 Git 忽略
 │   ├── studio/                 # workspace：独立 .git、repository.toml、PROJECTS.md
@@ -295,6 +296,7 @@ git -C projects commit -m "[demo] A-v001: geometric direction"
 - `layouts/primary.svg`：必需主版，由选定版本起稿；按需增加 `icon.svg`、`horizontal.svg` 等版式。
 - `release.md`：填写发布说明，并引用真实的 `decisions/NNN-*.md`；编号以命令输出为准。
 - `guide.md`：填完标志结构、最小尺寸、安全留白与错误用法，它会随交付物一起导出。
+- 可选 `./logo latest demo`：把当前发布的标志版式（彩色、单色、反白）写入 `projects/demo/latest/demo-<版式>[-<配色>]-latest.svg`，README 等外部引用这个固定地址即可随发布更新。latest/ 一旦存在，之后每次发布都要重新生成并一起提交，检查会核对它与当前发布一致。
 
 ```bash
 ./logo preview demo r1

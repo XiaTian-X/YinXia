@@ -49,6 +49,61 @@ def pixel(png: Path, x: str, y: str) -> str:
                           capture_output=True, text=True, check=True).stdout.strip().upper()
 
 
+class LatestTest(unittest.TestCase):
+    """latest/：当前发布的固定地址副本，由 ./logo latest 生成，提交时必须与当前发布一致。"""
+
+    def setUp(self):
+        self.ws = Workspace()
+        self.addCleanup(self.ws.cleanup)
+        self.p = self.ws.new_project()
+        self.ws.new_version()
+        assert self.ws.commit("projects", "[demo] A-v001").returncode == 0
+
+    def test_latest_follows_current_release(self):
+        ws, p = self.ws, self.p
+        self.assertIn("current_release", ws.logo("latest", "demo", ok=False).stderr)
+        prepare_release(ws, extra={"icon.svg": TRIANGLE.format(c=PRIMARY)})
+        d = p / "latest"
+        ws.logo("latest", "demo")
+        self.assertEqual(sorted(f.name for f in d.iterdir()),
+                         sorted(f"demo-{n}{m}-latest.svg" for n in ("primary", "icon") for m in ("", "-mono", "-reversed")))
+        self.assertEqual((d / "demo-primary-latest.svg").read_bytes(),
+                         (p / "releases" / "r1" / "layouts" / "primary.svg").read_bytes())
+        self.assertNotIn(PRIMARY, (d / "demo-primary-mono-latest.svg").read_text(encoding="utf-8"))
+        r = ws.commit("projects", "[demo] latest")
+        self.assertEqual(r.returncode, 0, ws.blocked(r))
+
+        # 新发布去掉了 icon，却没更新 latest/：提交被拦截
+        self.assertIn("latest demo", ws.logo("release", "demo", "--from", "r1").stdout)
+        rdir = p / "releases" / "r2"
+        (rdir / "layouts" / "icon.svg").unlink()
+        fill_doc(rdir / "release.md")
+        with (rdir / "release.md").open("a", encoding="utf-8") as f:
+            f.write("\n依据：decisions/001-finalize-a-v001.md\n")
+        fill_doc(rdir / "guide.md")
+        ws.logo("index")
+        r = ws.commit("projects", "[demo] release r2")
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("与当前发布 r2 不一致", "\n".join(ws.blocked(r)))
+        ws.logo("latest", "demo")
+        self.assertFalse((d / "demo-icon-latest.svg").exists())
+        r = ws.commit("projects", "[demo] release r2")
+        self.assertEqual(r.returncode, 0, ws.blocked(r))
+
+        # 手改 latest/ 也会被发现
+        f = d / "demo-primary-latest.svg"
+        f.write_text(f.read_text(encoding="utf-8").replace(PRIMARY, "#123456"), encoding="utf-8")
+        self.assertIn("内容与发布不一致", ws.logo("check", ok=False).stdout)
+        ws.git("projects", "add", "-A")
+        self.assertNotEqual(ws.commit("projects", "[demo] 手改 latest", add=False).returncode, 0)
+
+    def test_latest_without_release_is_rejected(self):
+        ws, p = self.ws, self.p
+        (p / "latest").mkdir()
+        (p / "latest" / "demo-primary-latest.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        self.assertIn("还没有当前发布", ws.logo("check", ok=False).stdout)
+
+
 class LifecycleTest(unittest.TestCase):
     def setUp(self):
         self.ws = Workspace()

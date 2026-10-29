@@ -114,8 +114,10 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
 4. 提交前必须：在 `release.md` 的“决策依据”中写明并引用 `decisions/NNN-*.md`（钩子校验存在）；
    填完 `guide.md`（标志结构、最小尺寸、安全留白、错误用法）——它会进入交付物，未填完时 `export` 会拒绝。
 5. 预览：`./logo preview <slug> rN`（全部版式 + 自动排版的 App 图标与头像）或 `./logo preview <slug> rN/icon`。
-6. `./logo index && ./logo check`，提交：`git -C projects add -A && git -C projects commit -m "[<slug>] release rN"`
-7. 按需生成交付物（不提交）：
+6. 需要给外部（README、其他项目）固定地址时：`./logo latest <slug>` 把当前发布的各标志版式（彩色/单色/反白）写入 `<slug>/latest/<slug>-<版式>[-<配色>]-latest.svg`。
+   latest/ 一旦存在，之后每次发布都须重新运行并与发布同一次提交（check 与钩子核对它与当前发布逐字节一致）；不得手改。
+7. `./logo index && ./logo check`，提交：`git -C projects add -A && git -C projects commit -m "[<slug>] release rN"`
+8. 按需生成交付物（不提交）：
    - `./logo export <slug>`：生成项目 `[export] targets` 声明的目标（svg、favicon、ios、android、avatar）；
    - `./logo export <slug> ios avatar`：只生成点名的目标；`--list` 查看可用与已声明的目标；
    - `./logo render <slug> [版式] --mode mono --size 800`：任意版式、配色、尺寸的单张图；

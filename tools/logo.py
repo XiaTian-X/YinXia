@@ -155,6 +155,7 @@ PROJECT_FILE_PATTERNS = [re.compile(p) for p in (
     r"covers/\d{3}-[a-z0-9-]+/cover\.(toml|md)",
     r"covers/\d{3}-[a-z0-9-]+/[0-9.]+x[0-9.]+\.svg",
     r"covers/\d{3}-[a-z0-9-]+/assets/\d{3}-[a-z0-9-]+\.(md|png|jpe?g|webp)",
+    r"latest/[a-z0-9.-]+-latest\.svg",  # 当前发布的固定地址副本，由 ./logo latest 生成
 )]
 
 # 项目文档与其模板（用于检测未填写的模板占位）
@@ -516,7 +517,10 @@ def all_projects() -> list[Project]:
 # SVG 工具
 # ---------------------------------------------------------------------------
 def recolor_svg(src: Path, mapping: dict[str, str]) -> str:
-    text = src.read_text(encoding="utf-8")
+    return recolor_text(src.read_text(encoding="utf-8"), mapping)
+
+
+def recolor_text(text: str, mapping: dict[str, str]) -> str:
     return HEX_IN_TEXT_RE.sub(lambda m: mapping.get(m.group(0).upper(), m.group(0)), text)
 
 
@@ -548,6 +552,27 @@ def project_targets(p: Project) -> list[str]:
 def release_logo_layouts(ldir: Path) -> list[str]:
     """发布中存在的标志版式（svg 目标与单色结构检查的对象），按固定顺序。"""
     return [n for n in LOGO_LAYOUTS if (ldir / f"{n}.svg").exists()]
+
+
+def latest_name(slug: str, layout: str, mode: str) -> str:
+    """latest/ 中的文件名：<slug>-<版式>[-<配色>]-latest.svg，彩色省略配色名。"""
+    return f"{slug}-{layout}{'' if mode == 'color' else '-' + mode}-latest.svg"
+
+
+def latest_files(p: "Project", ldir: Path, read=None) -> dict[str, bytes]:
+    """由发布版式生成 latest/ 应有的全部文件 {文件名: 内容}：与 export 的 svg 目标同源（含配色覆盖文件）。
+    read(path) 返回文件内容或 None，提交检查时读暂存区。"""
+    read = read or (lambda f: f.read_bytes() if f.exists() else None)
+    out = {}
+    for name in LOGO_LAYOUTS:
+        base = read(ldir / f"{name}.svg")
+        if base is None:
+            continue
+        for mode in p.cfg.get("color_modes", {}).get("modes", ["color"]):
+            override = read(ldir / f"{name}.{mode}.svg") if mode != "color" else None
+            out[latest_name(p.slug, name, mode)] = override if override is not None else \
+                recolor_text(base.decode("utf-8"), p.mode_map(mode)).encode("utf-8")
+    return out
 
 
 def is_layout_file(name: str) -> bool:
@@ -1088,6 +1113,8 @@ def cmd_release(a) -> None:
     if VERSION_ID_RE.match(src) and (layouts / "primary.svg").exists():
         print(f"已用 {src}/logo.svg 起稿主版 layouts/primary.svg：提交前可调整（如留白），提交后冻结")
     print(f"其余版式可选（见 release.md 清单）；完成后用 {cli_prefix()} preview 查看自动排版效果")
+    if (p.dir / "latest").exists():
+        print(f"版式完成后运行 {cli_prefix()} latest {p.slug} 更新 latest/，与发布一起提交")
 
 
 def cmd_state(a) -> None:
@@ -1632,6 +1659,26 @@ def cmd_export(a) -> None:
         print(f"⚠ {w}")
 
 
+def cmd_latest(a) -> None:
+    """把当前发布的标志版式（各配色）写入 <slug>/latest/，供外部用固定地址引用；需与发布一起提交。"""
+    p = Project(a.slug)
+    rid, ldir, root_version = export_release(p, None)
+    files = latest_files(p, ldir)
+    d = p.dir / "latest"
+    d.mkdir(exist_ok=True)
+    removed = []
+    for f in sorted(d.iterdir()):
+        if f.name not in files and f.is_file() and f.name.endswith("-latest.svg"):
+            f.unlink()
+            removed.append(f.name)
+    changed = [n for n, data in files.items() if not (d / n).exists() or (d / n).read_bytes() != data]
+    for n in changed:
+        (d / n).write_bytes(files[n])
+    print(f"latest/ 已对齐 {rid}（← {root_version}）：共 {len(files)} 个文件，更新 {len(changed)} 个"
+          + (f"，删除 {', '.join(removed)}" if removed else "") + f" → {rel(d)}")
+    print("请与发布一起提交；外部可引用 " + f"{p.slug}/latest/{latest_name(p.slug, 'primary', 'color')}")
+
+
 def cmd_render(a) -> None:
     """按需生成单张图：任意标志版式（或 app-icon / avatar 的排版结果）、配色与尺寸。"""
     p = Project(a.slug)
@@ -1958,6 +2005,8 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
             warnings.append(f"{rel(ldir)}: 无法完成版式检查：{e}")
         warnings.extend(release_doc_warnings(p, cur_rel, committed))
 
+    check_latest(p, cur_rel if cur_rel in release_versions else None, errors, staged, indexed)
+
     if sel_ver and "selected_version" in valid and (cur_rel not in release_versions
                                                     or release_versions[cur_rel] != sel_ver):
         svg = p.version_dir(sel_ver) / "logo.svg"
@@ -1976,6 +2025,37 @@ def check_project(p: Project, errors: list[str], warnings: list[str], staged: bo
 
     if (p.dir / "final").exists():
         warnings.append(f"{rel(p.dir / 'final')}: 交付物已改为按需生成到 dist/（不提交），旧的 final/ 可以删除")
+
+
+def check_latest(p: "Project", cur_rel: str | None, errors: list[str], staged: bool, indexed: set[str]) -> None:
+    """latest/ 存在时必须与当前发布逐字节一致（由 ./logo latest 生成），提交时以暂存区为准。"""
+    d = p.dir / "latest"
+    prefix = d.relative_to(PROJECTS).as_posix() + "/"
+    if staged:
+        names = {x[len(prefix):] for x in indexed if x.startswith(prefix)}
+        read = staged_bytes
+    else:
+        names = {f.name for f in d.iterdir() if f.is_file()} if d.is_dir() else set()
+        read = lambda f: f.read_bytes() if f.exists() else None
+    if not names:
+        return
+    fix = f"运行 {cli_prefix()} latest {p.slug} 更新后与发布一起提交"
+    if not cur_rel:
+        errors.append(f"{rel(d)}: 项目还没有当前发布，latest/ 无从对应；删除 latest/ 或先发布")
+        return
+    try:
+        expected = latest_files(p, p.release_dir(cur_rel) / "layouts", read)
+    except LogoError as e:
+        errors.append(f"{rel(d)}: 无法核对 latest/：{e}")
+        return
+    missing = sorted(set(expected) - names)
+    extra = sorted(names - set(expected))
+    stale = sorted(n for n in set(expected) & names if read(d / n) != expected[n])
+    if missing or extra or stale:
+        parts = ([f"缺少 {', '.join(missing)}"] if missing else []) + \
+                ([f"多余 {', '.join(extra)}"] if extra else []) + \
+                ([f"内容与发布不一致 {', '.join(stale)}"] if stale else [])
+        errors.append(f"{rel(d)}: 与当前发布 {cur_rel} 不一致（{'；'.join(parts)}）；{fix}")
 
 
 def license_review_path(entry: dict) -> Path:
@@ -2678,6 +2758,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--release", help="发布号（默认 current_release）")
     s.add_argument("--list", action="store_true", help="列出可用目标及项目已声明的目标")
     s.set_defaults(fn=cmd_export)
+
+    s = sub.add_parser("latest", help="把当前发布的版式写入 latest/（固定文件名，供外部引用，需提交）")
+    s.add_argument("slug")
+    s.set_defaults(fn=cmd_latest)
 
     s = sub.add_parser("render", help="按需生成单张图：任意版式、配色、尺寸（输出到 dist/，不提交）")
     s.add_argument("slug")

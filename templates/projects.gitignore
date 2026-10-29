@@ -18,6 +18,7 @@
 !/*/decisions/
 !/*/releases/
 !/*/covers/
+!/*/latest/
 # dist/（./logo export / render 的按需产物）与其他目录不在白名单内，一律忽略
 
 /*/concepts/*
@@ -66,6 +67,9 @@
 !/*/covers/*/assets/[0-9][0-9][0-9]-*.jpg
 !/*/covers/*/assets/[0-9][0-9][0-9]-*.jpeg
 !/*/covers/*/assets/[0-9][0-9][0-9]-*.webp
+
+/*/latest/*
+!/*/latest/*-latest.svg
 
 # ── 系列记录：_series/<系列名>/ 只放行元数据与系列规则（./logo series 管理）──
 /_series/*
