@@ -45,3 +45,18 @@ official_url  = "https://github.com/lxgw/LxgwPinyinFont"
 download_url  = "https://raw.githubusercontent.com/lxgw/LxgwPinyinFont/89a9cd51c440d9e02d9d9896a7f30e1bc8db1530/LxgwPinyin-Regular.ttf"
 sha256        = "705dc502df2bcf86facfa1afac2aaaf9addf76819f9181694ca0d0217f712bb6"
 retrieved_on  = "2026-10-29"
+
+[[font]]
+id            = "lxgw-wenkai-medium"
+family        = "LXGW WenKai"
+weight        = "Medium"
+file          = "lxgw-wenkai/LXGWWenKai-Medium.ttf"
+version       = "1.530"
+license       = "OFL-1.1"
+license_file  = "lxgw-wenkai/LICENSE.txt"
+tier          = "open-source"
+official_url  = "https://github.com/lxgw/LxgwWenKai"
+# v1.400 起上游把 Bold 改名为 Medium（即原 Bold 字重）。release v1.530 对应提交 4becfb4。
+download_url  = "https://github.com/lxgw/LxgwWenKai/releases/download/v1.530/LXGWWenKai-Medium.ttf"
+sha256        = "f4b8a34d1f838fe411540cb7c97b1c384ac9738a876c4104500bc42508b2312a"
+retrieved_on  = "2026-10-29"

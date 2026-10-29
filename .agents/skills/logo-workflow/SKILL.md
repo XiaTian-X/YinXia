@@ -148,5 +148,6 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
    需要时用 `--features` 开启，如 `--features calt,ss02` 或选择风格变体 `cv05=2`（关闭写作 `--features=-kern`，等同 `--no-kern`）；
    `--lang zh-Hans` / `zh-Hant` 选择地区字形。字体里没有的字会报错，不会转出空框。
    以 `-` 开头的值须用 `=` 连写，如 `--text=-ACME`。
-   已入库：`inter`（英文）、`source-han-sans-sc-bold`（思源黑体 SC Bold，中文）、`lxgw-pinyin-regular`（霞鹜拼音，汉语拼音）。
+   已入库：`inter`（英文）、`source-han-sans-sc-bold`（思源黑体 SC Bold，中文）、`lxgw-pinyin-regular`（霞鹜拼音，汉语拼音）、
+   `lxgw-wenkai-medium`（霞鹜文楷 Medium，中文楷体；上游 v1.400 起原 Bold 改名 Medium）。
    霞鹜拼音用 `--features liga` 把“字母+数字”连写成声调（`Xia4` → Xià，`lv4` → lǜ）；该字体只有 liga，没有 dlig。

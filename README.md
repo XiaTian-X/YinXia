@@ -92,6 +92,8 @@ git -C projects commit -m "chore: initialize design workspace"
 ./logo fonts fetch source-han-sans-sc-bold
 # 需要汉语拼音（带声调）时再执行：
 ./logo fonts fetch lxgw-pinyin-regular
+# 需要中文楷体（霞鹜文楷）时再执行：
+./logo fonts fetch lxgw-wenkai-medium
 ```
 
 字体登记与授权原文位于 [assets/fonts](assets/fonts)。字体文件本身不进入 Git；`fetch` 从登记的官方地址下载，并核对 SHA-256。新增字体须先登记，非开源字体还须完成授权复核。详细流程见 [Logo 工作流](.agents/skills/logo-workflow/SKILL.md)。
