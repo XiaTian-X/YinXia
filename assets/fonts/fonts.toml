@@ -30,3 +30,18 @@ download_url  = "https://github.com/adobe-fonts/source-han-sans/releases/downloa
 archive_member = "OTF/SimplifiedChinese/SourceHanSansSC-Bold.otf"
 sha256        = "df2b90f5bcc6d01dfc964cec5f6d535d6b6aebd26ed7fd79a9c1b3f2112fcb6b"
 retrieved_on  = "2026-10-13"
+
+[[font]]
+id            = "lxgw-pinyin-regular"
+family        = "Lxgw Pinyin"
+weight        = "Regular"
+file          = "lxgw-pinyin/LxgwPinyin-Regular.ttf"
+version       = "1.00"
+license       = "OFL-1.1"
+license_file  = "lxgw-pinyin/LICENSE.txt"
+tier          = "open-source"
+official_url  = "https://github.com/lxgw/LxgwPinyinFont"
+# 上游无 release，固定到提交 89a9cd5 的原始文件。声调靠 liga 连字：outline 须加 --features liga（Xia4 → Xià）。
+download_url  = "https://raw.githubusercontent.com/lxgw/LxgwPinyinFont/89a9cd51c440d9e02d9d9896a7f30e1bc8db1530/LxgwPinyin-Regular.ttf"
+sha256        = "705dc502df2bcf86facfa1afac2aaaf9addf76819f9181694ca0d0217f712bb6"
+retrieved_on  = "2026-10-29"
