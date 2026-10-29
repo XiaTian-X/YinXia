@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/XiaTian-X/xia-logo/main/yinxia/latest/yinxia-primary-latest.svg" alt="印夏 YinXia Logo" width="240">
+  <img src="https://raw.githubusercontent.com/XiaTian-X/xia-logo/main/yinxia/latest/yinxia-primary-latest.svg" alt="印夏 Yìn Xià Logo" width="240">
 </p>
 
-<h1 align="center">印夏（YinXia）</h1>
+<h1 align="center">印夏 Yìn Xià</h1>
 
 <p align="center"><strong>面向设计者与 AI Agent 协作的本地 Logo 与品牌物料管理系统</strong></p>
 
