@@ -439,11 +439,11 @@ class MonoStructureTest(unittest.TestCase):
         ws.commit("projects", "[demo] A-v001")
         ws.logo("release", "demo", "--from", "A-v001")
         ldir = self.p / "releases" / "r1" / "layouts"
-        logos = ["primary", "horizontal", "icon", "wordmark-cn", "wordmark-en"]
+        logos = ["primary", "horizontal", "icon", "wordmark-cn", "wordmark-en", "wordmark-pinyin"]
         for n in logos:
             (ldir / f"{n}.svg").write_text(COLOR_RELIANT, encoding="utf-8")
         out = ws.logo("check").stdout
-        self.assertIn("primary.svg（同内容：icon、horizontal、wordmark-cn、wordmark-en）", out)
+        self.assertIn("primary.svg（同内容：icon、horizontal、wordmark-cn、wordmark-en、wordmark-pinyin）", out)
         kept = COLOR_RELIANT.replace("#FFB300", "#FFFFFF").replace(PRIMARY, "#000000")
         for n in logos:
             for mode, txt in (("mono", kept), ("reversed", kept.replace("#000000", "#X").replace("#FFFFFF", "#000000")

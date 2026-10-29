@@ -107,7 +107,7 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
    基于上一个发布修订版式：`./logo release <slug> --from rN`。
 3. 放入版式（`releases/rN/layouts/`）：
    - **必需** `primary.svg`（主版，已由版本起稿）；
-   - 可选 `icon.svg`（纯图形，用于小尺寸与图标类目标，缺省时用 primary）、`horizontal.svg` / `wordmark-cn.svg` / `wordmark-en.svg`（带文字的组合版）；
+   - 可选 `icon.svg`（纯图形，用于小尺寸与图标类目标，缺省时用 primary）、`horizontal.svg` / `wordmark-cn.svg` / `wordmark-en.svg` / `wordmark-pinyin.svg`（带文字的组合版；拼音字标用 wordmark-pinyin，英文名用 wordmark-en）；
    - App 图标、头像、Android 图标默认由主版**自动排版**（品牌底色 `app_background` + 图形配色 `icon_mode`）；
      效果不满意时才放手工覆盖 `app-icon.svg` / `avatar.svg`（avatar 的底色元素须带 `id="background"`）；
    - 单色/反白自动换色效果不好时，可提供 `<版式>.mono.svg` / `<版式>.reversed.svg`。

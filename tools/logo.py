@@ -193,12 +193,12 @@ STRUCTURE_PALETTE_HINT = "在 [color_modes.mono] 中把部分颜色映射为 #FF
 RELEASE_LAYOUT_CHECKLIST = "\n".join((
     "- [ ] `primary.svg`（必需：主版）",
     "- [ ] `icon.svg`（可选：纯图形版，用于小尺寸与图标类目标；缺省时用 primary）",
-    "- [ ] `horizontal.svg` / `wordmark-cn.svg` / `wordmark-en.svg`（可选：带文字的组合版）",
+    "- [ ] `horizontal.svg` / `wordmark-cn.svg` / `wordmark-en.svg` / `wordmark-pinyin.svg`（可选：带文字的组合版）",
     "- [ ] `app-icon.svg` / `avatar.svg`（可选：自动排版不满意时的手工覆盖）",
 ))
 
 # Logo 资产：标志版式（svg 目标与单色结构检查的对象）与按需生成的目标
-LOGO_LAYOUTS = ("primary", "icon", "horizontal", "wordmark-cn", "wordmark-en")
+LOGO_LAYOUTS = ("primary", "icon", "horizontal", "wordmark-cn", "wordmark-en", "wordmark-pinyin")
 MANUAL_LAYOUTS = ("app-icon", "avatar")  # 自动排版不满意时的手工覆盖
 LAYOUT_NAMES_HINT = "可用：" + "、".join(LOGO_LAYOUTS + MANUAL_LAYOUTS) + " 及 <标志版式>.<配色>.svg"
 TARGET_NAMES = ("svg", "favicon", "ios", "android", "avatar")
@@ -2682,7 +2682,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("render", help="按需生成单张图：任意版式、配色、尺寸（输出到 dist/，不提交）")
     s.add_argument("slug")
     s.add_argument("layout", nargs="?", default="primary",
-                   help="primary / icon / horizontal / wordmark-cn / wordmark-en，或 app-icon / avatar 的排版结果")
+                   help="primary / icon / horizontal / wordmark-cn / wordmark-en / wordmark-pinyin，或 app-icon / avatar 的排版结果")
     s.add_argument("--mode", help="color（默认）/ mono / reversed；app-icon / avatar 由 [export] icon_mode 决定")
     s.add_argument("--size", type=int, default=1024)
     s.add_argument("--format", choices=["png", "svg"], default="png")

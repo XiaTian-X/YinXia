@@ -102,10 +102,12 @@ class BriefCompletenessTest(unittest.TestCase):
 
 class LayoutNamesTest(unittest.TestCase):
     def test_known_and_unknown(self):
-        for ok in ("primary.svg", "icon.mono.svg", "wordmark-cn.reversed.svg", "app-icon.svg", "avatar.svg"):
+        for ok in ("primary.svg", "icon.mono.svg", "wordmark-cn.reversed.svg", "wordmark-pinyin.svg",
+                   "wordmark-pinyin.mono.svg", "app-icon.svg", "avatar.svg"):
             self.assertTrue(logo.is_layout_file(ok), ok)
         # 旧发布的封面、拼写错误、手工覆盖的配色文件（不会被使用）、非 SVG
-        for bad in ("cover-og.svg", "cover-2.7x1.svg", "primay.svg", "app-icon.mono.svg", "primary.png"):
+        for bad in ("cover-og.svg", "cover-2.7x1.svg", "primay.svg", "wordmark-py.svg", "app-icon.mono.svg",
+                    "primary.png"):
             self.assertFalse(logo.is_layout_file(bad), bad)
 
 
