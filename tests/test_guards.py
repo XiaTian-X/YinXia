@@ -115,6 +115,28 @@ class DocsTest(GuardBase):
         self.ws.logo("index")
         self.assertBlocked(self.ws.commit("projects", "x"), "direction.md", "notes.md", "模板占位")
 
+    def test_new_method_sections_must_be_filled(self):
+        """方向的“一句话理念”“标志结构”与版本的“自查”是新模板的必填段：原样留着提示不能提交。"""
+        self.ws.logo("direction", "demo", "C", "circle")
+        ddir = next((self.p / "directions").glob("C-*"))
+        fill_doc(ddir / "direction.md")
+        vdir = ddir / "v001"
+        self.ws.logo("version", "demo", "C")
+        (vdir / "logo.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        fill_doc(vdir / "notes.md")
+        check = next(ln for ln in (self.ws.root / "templates" / "version-notes.md").read_text(encoding="utf-8").splitlines()
+                     if ln.startswith("（按 logo-workflow 自查清单"))
+        notes = (vdir / "notes.md").read_text(encoding="utf-8")
+        head, tail = notes.split("## 3. 自查\n", 1)
+        (vdir / "notes.md").write_text(head + "## 3. 自查\n" + check + "\n" + tail.split("\n", 1)[1], encoding="utf-8")
+        self.ws.logo("index")
+        self.assertBlocked(self.ws.commit("projects", "x"), "notes.md", "模板占位", "自查清单")
+        fill_doc(vdir / "notes.md")
+        direction = (ddir / "direction.md").read_text(encoding="utf-8")
+        self.assertIn("## 一句话理念", direction)
+        self.assertIn("## 标志结构", direction)
+        self.assertCommitted(self.ws.commit("projects", "[demo] C-v001"))
+
     def test_release_requires_decision(self):
         self.ws.logo("release", "demo", "--from", "A-v001")
         rdir = self.p / "releases" / "r1"
@@ -146,7 +168,7 @@ class DocsTest(GuardBase):
 
     def test_brief_only_warns(self):
         brief = self.p / "brief.md"
-        brief.write_text(brief.read_text(encoding="utf-8") + "\n- **行业/领域**：\n", encoding="utf-8")  # 模板原样的空字段
+        brief.write_text(brief.read_text(encoding="utf-8") + "\n- **目标受众**：\n", encoding="utf-8")  # 模板原样的空字段
         self.assertIn("brief.md: 还有 1 处缺失或未填写", self.ws.logo("check").stdout)
         self.assertCommitted(self.ws.commit("projects", "[demo] brief"))  # brief 可随时修改，只提醒不拦截
 
@@ -190,6 +212,8 @@ class LegacyDataTest(GuardBase):
         out = ws.logo("check").stdout
         self.assertNotIn("没有引用决策记录", out)
         self.assertIn("发布 r1 无法导出", out)
+        # 已提交的指南补不上：导出时指向新建发布，而不是“填完再导出”
+        self.assertIn("release demo --from r1 新建发布", ws.logo("export", "demo", ok=False).stderr)
         self.release("r1")
         self.assertCommitted(ws.commit("projects", "[demo] r2"))
         self.assertNotIn("无法导出", ws.logo("check").stdout)  # 只看当前发布

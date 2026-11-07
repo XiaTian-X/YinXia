@@ -39,7 +39,8 @@ class HandoffTest(unittest.TestCase):
         out = self.ws.logo("handoff", "brief", "demo", "--plain").stdout
         for part in ("# 为印夏（YinXia）项目", "## 色板（只能用这些颜色）", f"- primary：{PRIMARY}", "## SVG 硬性要求", "必须有 viewBox",
                      "=== YinXia 交接 v1 · 文件 1/N ===", "=== 结束 1/N ===", "不要写使用条款与授权判断",
-                     "发给外部工具前请确认用户同意", "复用口令：按印夏（YinXia）交接格式 v1 输出"):
+                     "发给外部工具前请确认用户同意", "复用口令：按印夏（YinXia）交接格式 v1 输出",
+                     "wordmark-pinyin", "## 设计质量要求", "先用一种深色画出结构"):
             self.assertIn(part, out)
         self.assertNotIn("私密备注", out)  # 需求确认一节不外发
         self.assertTrue((self.ws.root / ".cache" / "handoff" / "demo-logo-brief-plain.md").exists())
@@ -127,7 +128,8 @@ class HandoffTest(unittest.TestCase):
         self.assertIn("仓库之外", ws.logo("handoff", "skill", str(ws.root / "tools"), ok=False).stderr)
         ws.logo("handoff", "skill", str(ws.tmp / "skills"))
         text = (ws.tmp / "skills" / "yinxia-handoff" / "SKILL.md").read_text(encoding="utf-8")
-        for part in ("name: yinxia-handoff", "# 印夏（YinXia）交接", "必须有 viewBox", "=== 结束 n/N ===", "不要写使用条款"):
+        for part in ("name: yinxia-handoff", "# 印夏（YinXia）交接", "必须有 viewBox", "=== 结束 n/N ===", "不要写使用条款",
+                     "## 设计质量要求", "16 / 32px 下仍能认出"):
             self.assertIn(part, text)
         self.assertNotIn(PRIMARY, text)  # 通用 skill 不含项目信息
 

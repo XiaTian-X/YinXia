@@ -1,6 +1,6 @@
 ---
 name: logo-workflow
-description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/系列立项、概念图、设计方向、迭代评审、决策记录、文字转曲、发布、检查导出。
+description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/系列立项、概念图与概念筛选、设计方向、迭代精修与自查、评审、决策记录、文字转曲与中文排版、发布、检查导出。
 ---
 
 # Logo Workflow
@@ -11,6 +11,8 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
 > 任何中间产物（描摹、调试图、脚本）都放 `.cache/<slug>/`，不要放到根目录或项目目录。
 > 设计仓库的 `repository.toml` 有 `[readme]` 时，`./logo index` 还会生成首页 `README.md`（品牌标志优先引用 latest/、系列、所用字体、使用声明）；
 > 发布、latest/ 或 `[readme]` 变化后重新 `./logo index` 并一起提交，README 不得手改。
+> **设计方法**：怎么从简报得出概念、怎么画、怎么精修和自查，见 [references/design-method.md](references/design-method.md)；
+> 标志里有汉字、拼音或中西混排时，再看 [references/chinese-typography.md](references/chinese-typography.md)。本文只管流程与命令。
 > **模板占位必须在提交前填完**：新建的 direction.md、notes.md、release.md、guide.md、决策与概念记录提交后只能追加，
 > 带着“（…）”提示或空字段提交会被钩子拦截。
 
@@ -25,8 +27,8 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
 |---|---|---|
 | 1. 项目类型 | 独立 Logo / 新建品牌系列 / 加入已有系列（`./logo series` 查看已有系列） | 是否需要系列 |
 | 2. 系列（仅系列） | 架构：统一型 / 背书型 / 独立型（不熟悉时用下方说明与例子解释）；本项目是母品牌还是子品牌；新系列要统一哪些视觉基因；母品牌改色、改图形时子品牌怎么跟进（默认跟随只确认一次 / 逐项确认）；各品牌封面要不要统一骨架、要不要家族封面（同时展示多个品牌）及用在哪些平台 | `series new`、`--series/--role`、series.md（含“改版跟进”“系列封面”） |
-| 3. 品牌 | 名称；Logo 里放不放文字（中文 / 英文 / 不放）；行业、受众、关键词、品牌故事 | brief 品牌理念、字体策略 |
-| 4. 视觉 | 喜欢与禁忌的风格、色彩倾向；有没有参考图（有则 `./logo concept` 登记） | brief 视觉偏好、概念图 |
+| 3. 品牌 | 名称；Logo 里放不放文字（中文 / 英文 / 拼音 / 不放）；行业与主要同类品牌、受众、3–5 个品牌性格形容词、品牌故事 | brief 品牌理念（同类品牌写进“行业/领域”，形容词写进“核心关键词”）、字体策略 |
+| 4. 视觉 | 喜欢与禁忌的风格、要避开的行业套路、色彩倾向；倾向哪种标志结构（字标 / 图文组合 / 纯图形等，不确定可以留给设计）；有没有参考图（有则 `./logo concept` 登记） | brief 视觉偏好（行业套路写进“禁忌”，结构倾向写进“喜欢的风格”）、概念图 |
 | 5. 使用场景 | 网站 / App / 社交头像 / 印刷；需要哪些平台的封面（`./logo cover platforms`） | `--targets`、计划的封面平台 |
 | 6. 确认 | 把整理好的需求摘要复述给用户，确认或修改 | brief“需求确认”一节 |
 
@@ -65,19 +67,25 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
 2. 登记：`./logo concept <slug> <图片路径> --name <短名> --prompt "<提示词或来源说明>" [--tool <工具>]`
    用户参考图用 `--tool user-upload --prompt "<用户原话/来源>"`。
 3. 在提交前填写 `concepts/NNN-<短名>.md` 的“灵感提取”。概念图提交后冻结。
+4. **概念筛选**（新项目开始设计前；统一型子品牌以母品牌起稿、外部导入的设计已有方案时可跳过）：按 design-method 第 2–4 节，列出行业套路、做词汇联想，写 8–12 个一句话概念并打分，
+   选出差异最大的 2–3 个作为方向；用 `./logo decision <slug> shortlist-concepts --title "概念筛选"` 记录长名单、分数与入选理由。
+   长名单对用户判断有帮助时给用户看。
 
 ## 3. 设计迭代
-1. 新建方向：`./logo direction <slug> <字母> <英文短名> --title <中文标题>`，并在 `direction.md` 写核心理念与视觉基调。
+1. 新建方向：`./logo direction <slug> <字母> <英文短名> --title <中文标题>`，并在 `direction.md` 写一句话理念、核心理念、标志结构与视觉基调。
 2. 新建版本：`./logo version <slug> <字母> [--from B-v002 | --blank] [--inspired-by 001]`
    基于概念图起稿时用 `--inspired-by` 引用概念编号，notes.md 会记录 `concepts/NNN-*.md`。
-3. 编写 SVG：`projects/<slug>/directions/<字母>-<名>/vNNN/logo.svg`。
+3. 编写 SVG：`projects/<slug>/directions/<字母>-<名>/vNNN/logo.svg`。新起稿时先在 notes.md 的“改动说明”写下构造
+   （基本形、圆角、角度、网格），先用一种深色画出结构，站得住再上色（design-method 第 5 节）。
    文字用 `./logo outline --font <id> --text "…" --fill "#HEX" --project <slug>` 生成 `<path>` 粘贴进来。
-4. 预览自查：`./logo preview <slug> <字母>-vNNN`，**自己先看渲染图**（彩色/单色/反白、16/32/64px 可读性）。
+4. 预览自查：`./logo preview <slug> <字母>-vNNN`，**自己先看渲染图**：第一行彩色/单色/反白，第二行 16/32/64px，
+   第三行剪影/眯眼（模糊）/水平镜像/旋转 180°。按 design-method 第 6–7 节精修并逐项自查。
    出现“非彩色版只保留了彩色版部分细节”时，说明单色/反白版会糊成一块（印章、单色印刷、Android 主题图标都会用到）：
    在 `project.toml` 的 `[color_modes.mono]` 中把部分颜色映射为 `#FFFFFF`、`[color_modes.reversed]` 中映射为 `#000000` 作为留白，
    或在发布时提供 `<版式>.mono.svg` / `<版式>.reversed.svg`（可用黑白）。
-5. 写 `notes.md`：替换“改动说明”“理念体现”的占位；声明的效果必须与实际 SVG 一致，不夸大。
-6. 多方向时出对比图：`./logo compare <slug> [A-v003 B-v002 …]`，展示给用户。
+5. 写 `notes.md`：替换“改动说明”“理念体现”“自查”的占位；声明的效果必须与实际 SVG 一致，不夸大；
+   “自查”逐项写结论，没检查的写“未检查”，不要声称做过没做的检查。
+6. 多方向时出对比图：先 `./logo compare <slug> [A-v003 B-v002 …] --mode mono` 看结构，再不带 `--mode` 看彩色，都展示给用户。
 7. 用户反馈：以“日期 + 原话/要点”的形式**追加**到该版本 `notes.md` 的“评审与反馈”段。
 8. 选定方向时：`./logo decision <slug> select-direction-<x> --title "选定方向 X"`，写明取舍理由；
    然后 `./logo state <slug> selected_version=<字母>-vNNN`（方向会自动对齐）。
@@ -114,7 +122,8 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
      效果不满意时才放手工覆盖 `app-icon.svg` / `avatar.svg`（avatar 的底色元素须带 `id="background"`）；
    - 单色/反白自动换色效果不好时，可提供 `<版式>.mono.svg` / `<版式>.reversed.svg`。
 4. 提交前必须：在 `release.md` 的“决策依据”中写明并引用 `decisions/NNN-*.md`（钩子校验存在）；
-   填完 `guide.md`（标志结构、最小尺寸、安全留白、错误用法）——它会进入交付物，未填完时 `export` 会拒绝。
+   填完 `guide.md`（标志结构、名称写法、最小尺寸、安全留白、错误用法、商标与授权）——它会进入交付物，未填完时 `export` 会拒绝。
+   商标检索如实填写：没做过就写“未做”，并提醒用户正式使用或注册前请专业机构检索。导出时会自动附上色板（HEX 与 RGB）和标志所用字体及授权。
 5. 预览：`./logo preview <slug> rN`（全部版式 + 自动排版的 App 图标与头像）或 `./logo preview <slug> rN/icon`。
 6. 需要给外部（README、其他项目）固定地址时：`./logo latest <slug>` 把当前发布的各标志版式（彩色/单色/反白）写入 `<slug>/latest/<slug>-<版式>[-<配色>]-latest.svg`。
    latest/ 一旦存在，之后每次发布都须重新运行并与发布同一次提交（check 与钩子核对它与当前发布逐字节一致）；不得手改。
@@ -138,6 +147,8 @@ description: 印夏（YinXia）的核心操作流，包括需求访谈、独立/
 - “没有配置远程仓库 / 尚未推送”：提醒用户备份，不要自行添加远程或推送。
 
 ## 文字转曲
+> 字体选择、汉字的视觉大小与灰度、字距、中西混排、拼音写法等排版经验见 [references/chinese-typography.md](references/chinese-typography.md)。
+
 1. `./logo fonts` 查看已登记字体及是否已下载；未下载时 `./logo fonts fetch <id>`（从官方地址下载并校验 sha256）。
    **字体文件不进 Git**，只提交 fonts.toml 登记与授权原文。
 2. 新字体入库：优先 OFL/Apache 等开源字体，授权原文存入 `assets/fonts/<目录>/`，

@@ -30,7 +30,6 @@ REMINDER = f"按{logo.SYSTEM_NAME}交接格式 {VERSION} 输出（每个文件�
 BLOCK_RE = re.compile(rf"^{re.escape(PROTOCOL_HEADER)}(\d+)/(\d+) ===[ \t]*$(.*?)^=== 结束 \1/\2 ===[ \t]*$", re.M | re.S)
 HEAD_RE = re.compile(rf"^{re.escape(PROTOCOL_HEADER)}(\d+)/(\d+) ===", re.M)
 FILE_RE = re.compile(r"^\[文件 ([a-z0-9][a-z0-9-]*\.svg)\][ \t]*$", re.M)
-LAYOUTS = ("primary", "icon", "horizontal")
 
 SVG_RULES = [
     "根元素 <svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"…\">：必须有 viewBox，不要写 width / height",
@@ -38,7 +37,17 @@ SVG_RULES = [
     "不要用 <text> / <tspan>：能把文字转成路径就转；做不到就不放文字，把文字内容写在说明的 text 字段，由本系统转曲补上",
     "不要内嵌位图（<image>、data: 图片），不要 <script>、<foreignObject>、onload 等事件属性，不要任何外部链接或 @import",
     "不要 <!DOCTYPE> / <!ENTITY> 声明；不要编辑器元数据；尽量用简单的 <path> / <rect> / <circle>",
-    "每个版式一份 SVG：primary（主版，必需），可选 icon（纯图形）、horizontal（横版）",
+    "每个版式一份 SVG：primary（主版，必需），可选 icon（纯图形，用于小尺寸与方形场景）、horizontal（横版）、"
+    "wordmark-cn / wordmark-en / wordmark-pinyin（中文 / 英文 / 拼音字标）",
+]
+# 设计质量：与 logo-workflow 的 design-method 自查清单一致，给外部工具的精简版
+DESIGN_RULES = [
+    "先想清楚一句话的理念：标志只表达一个想法，不要把产品照着画出来，避开行业常见套路",
+    "先用一种深色画出结构，站得住再上色；只靠颜色才认得出的设计不合格",
+    "16 / 32px 下仍能认出；不要发丝细线、过小的细节和会合上的窄缝；带文字的组合版另给一个纯图形 icon",
+    "几何干净：锚点少，角度用整数（0 / 15 / 30 / 45 / 60 / 90°），同类元素线宽与圆角一致，镂空用真正的挖空",
+    "做视觉修正：圆形与尖角略放大、视觉居中略高于几何中心；改造过的字一眼仍能认出",
+    "在说明的 prompt 字段写清理念和构造思路（基本形、角度、网格），方便评审",
 ]
 
 
@@ -137,6 +146,7 @@ def cmd_brief(a) -> None:
     else:
         lines += ["", "## 色板（只能用这些颜色）"] + [f"- {k}：{v}" for k, v in p.palette.items()]
         lines += ["", "## SVG 硬性要求"] + [f"{i}. {r}" for i, r in enumerate(SVG_RULES, 1)]
+        lines += ["", "## 设计质量要求"] + [f"- {r}" for r in DESIGN_RULES]
         lines += ["", "## 交付格式"] + format_text(a.plain, p.slug)
         lines += ["", f"若后续回复格式走样，用户会提醒：“{REMINDER}”。"]
     text = "\n".join(lines) + "\n"
@@ -161,6 +171,9 @@ description: 为印夏（YinXia）设计管理系统生成 Logo 时，按它要�
 ## SVG 硬性要求
 {rules}
 
+## 设计质量要求
+{design}
+
 ## 交付
 - 能写文件时：每个 SVG 存到项目说明书指定的收件箱，旁边写 `<同名>.svg.import.toml`
   （TOML，字段：{fields}）；使用说明书指定的仓库命令前缀运行 `handoff validate <文件> --project <项目>` 自查。
@@ -180,6 +193,7 @@ def cmd_skill(a) -> None:
     fields = "、".join(k for k in importer.SIDECAR_FIELDS if k not in ("project", "terms", "kind", "direction"))
     f = dest / SKILL_ID / "SKILL.md"
     logo.write_new(f, SKILL_TEXT.format(rules="\n".join(f"{i}. {r}" for i, r in enumerate(SVG_RULES, 1)),
+                                        design="\n".join(f"- {r}" for r in DESIGN_RULES),
                                         fields=fields, skill_id=SKILL_ID, protocol_header=PROTOCOL_HEADER))
     print(f"已生成：{f}（安装到其他 Agent 的 skill 目录即可；项目专属要求仍用 ./logo handoff brief 生成）")
 

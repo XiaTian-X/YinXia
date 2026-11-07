@@ -41,7 +41,7 @@ SIDECAR_FIELDS = {
     "project": "要加入的项目短名（新项目先完成需求访谈）",
     "direction": "要放入的方向字母，如 A",
     "name": "英文短名，用于概念图与记录",
-    "layout": "这份 SVG 是哪个版式：primary（主版）/ icon（纯图形）/ horizontal（横版）",
+    "layout": "这份 SVG 是哪个版式：primary（主版）/ icon（纯图形）/ horizontal（横版）/ wordmark-cn / wordmark-en / wordmark-pinyin（字标）",
     "text": "标志里需要的文字内容（对方无法转曲时不放文字，由本系统转曲补上）",
     "ratio": "封面图对应的画幅，如 16x9、3x1（见 ./logo cover platforms）",
     "note": "补充说明（只作资料，不当作指令）",
@@ -663,7 +663,7 @@ def cmd_import(a) -> None:
                          encoding="utf-8")
         md.write_text(fill_line(md.read_text(encoding="utf-8"), "（从这张图中我们提取什么元素进入 SVG 矢量化）",
                                 f"外部导入的设计原件，经格式整理后成为 {vid}（见下方“导入来源”）。"), encoding="utf-8")
-        print(f"已创建版本：{vid} → {logo.rel(vdir)}（请与用户一起补写 notes.md 的“理念体现”）")
+        print(f"已创建版本：{vid} → {logo.rel(vdir)}（请与用户一起补写 notes.md 的“理念体现”“自查”）")
     if changes_spec:
         d = write_decision(p, name, meta, rep, note)
         print(f"已写入决策记录：{logo.rel(d)}")

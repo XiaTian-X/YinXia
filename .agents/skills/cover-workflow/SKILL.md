@@ -64,6 +64,7 @@ description: 印夏（YinXia）的封面（品牌物料）制作流程：立项�
   填完同名 `.md` 中的“用途与授权范围”。**未登记的图不能引用**；登记后不可替换，换图要重新登记。
 - 设计稿中用 `<image href="assets/NNN-名称.png" …/>` 引用。
 - 标题等文字：`./logo outline --font <id> --text "…" --fill "#HEX" --project <slug>` 转曲后粘贴。
+  中文标题的断行、标点与中西混排参考 [logo-workflow 的中文排版说明](../logo-workflow/references/chinese-typography.md)（第 6、10 节）。
 
 ## 3. 主视觉与多画幅延展
 起稿 SVG 里有三个有含义的分组：

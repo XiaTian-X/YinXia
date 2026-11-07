@@ -385,5 +385,21 @@ class ShapingTest(unittest.TestCase):
         self.assertEqual([(g[0] == 0, g[1]) for g in glyphs], [(False, 0), (True, 1), (False, 2)])
 
 
+class SkillDocsTest(unittest.TestCase):
+    """技能与参考文档之间的相对链接必须有效：设计方法、中文排版等参考文件被技能正文引用。"""
+
+    def test_relative_links_resolve(self):
+        root = REPO
+        docs = sorted((root / ".agents" / "skills").rglob("*.md"))
+        self.assertIn(root / ".agents/skills/logo-workflow/references/design-method.md", docs)
+        self.assertIn(root / ".agents/skills/logo-workflow/references/chinese-typography.md", docs)
+        for doc in docs:
+            for target in re.findall(r"\]\(([^)\s]+)\)", doc.read_text(encoding="utf-8")):
+                if re.match(r"[a-z]+:", target) or target.startswith("#"):
+                    continue
+                with self.subTest(doc=doc.relative_to(root).as_posix(), link=target):
+                    self.assertTrue((doc.parent / target.split("#", 1)[0]).exists())
+
+
 if __name__ == "__main__":
     unittest.main()

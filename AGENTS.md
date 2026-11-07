@@ -24,4 +24,4 @@
 - **文档完整**：新建文档提交前必须填完模板占位（“（…）”提示与空字段），因为提交后只能追加；`guide.md` 是交付物，未填完不能导出。
 - **检查**：每次提交前对目标仓库运行 `./logo --repo <名称> check`；全局检查用 `./logo check --all-repos`。系统和每个设计仓库都有独立 pre-commit 检查，设计钩子按实际提交目录选择仓库，不依赖 active。提醒（⚠）要在回复中告知用户。
 - **修改系统时**：改动 `tools/`、`templates/`、`config/` 或钩子后，提交前必须运行 `./logo selftest` 全部通过；新增规则要同时补测试。
-- **工作流引导**：处理 Logo 项目时，始终参照 `logo-workflow` 技能。
+- **工作流引导**：处理 Logo 项目时，始终参照 `logo-workflow` 技能；设计方法与自查见其 `references/design-method.md`，含汉字、拼音或中西混排时另见 `references/chinese-typography.md`。版本 notes.md 的“自查”须如实填写，没检查的写“未检查”。

@@ -26,7 +26,7 @@
 印夏适合需要保留设计过程、反复迭代并输出多种品牌资产的工作：
 
 - **管理设计过程**：记录需求简报、参考图、并行方向、版本说明和用户评审，保留每次取舍的依据。
-- **检查 SVG**：核对色板、字体转曲、结构规范，并预览彩色、单色、反白和小尺寸效果。
+- **检查 SVG**：核对色板、字体转曲、结构规范，并预览彩色、单色、反白、小尺寸，以及剪影、眯眼、镜像与倒转效果。
 - **生成交付物**：从定稿版式生成 SVG、Favicon、iOS/Android 图标和社交头像，附使用指南与文件校验清单。
 - **管理品牌系列**：支持统一型、背书型、独立型架构，以及母子品牌评审和改版跟进。
 - **制作封面物料**：复用已发布的 Logo，管理图片来源、多个画幅、平台裁切与上线记录。
@@ -238,6 +238,8 @@ flowchart LR
 
 > 请阅读 AGENTS.md 和 .agents/skills/logo-workflow/SKILL.md，先运行 ./logo repo list 和 ./logo status --all-repos 告诉我现有仓库与待办，确认目标仓库。我想为一个品牌设计 Logo，请先完成需求访谈，确认项目类型、品牌信息、视觉偏好和使用场景，再开始设计。
 
+设计方法（从简报到概念筛选、起稿、精修与自查）见 [设计方法](.agents/skills/logo-workflow/references/design-method.md)；标志含汉字、拼音或中西混排时，另见 [中文字标与中西混排](.agents/skills/logo-workflow/references/chinese-typography.md)。
+
 每次新会话先看 `./logo repo list` 和 `./logo status --all-repos`，确认目标仓库；后续可用 `./logo --repo <名称> status` 查看该仓库。预览或对比图生成后，需要打开并交给用户审阅，再把结论记录进项目。
 
 ### 1. 确认需求并建立项目
@@ -273,8 +275,9 @@ flowchart LR
 上述路径均位于 `projects/demo/`。文字须使用已登记字体，通过 `./logo outline --project demo …` 转曲。
 
 ```bash
-./logo preview demo A-v001
-# 有多个候选版本时，可生成对比图：
+./logo preview demo A-v001   # 配色、小尺寸、剪影 / 眯眼 / 镜像 / 倒转三行
+# 有多个候选版本时，可生成对比图（先看单色结构，再看彩色）：
+./logo compare demo --mode mono
 ./logo compare demo
 ```
 
@@ -332,7 +335,7 @@ git -C projects commit -m "[demo] release r1"
 ./logo export demo ios avatar
 ```
 
-交付物位于 `projects/demo/dist/r1/`，包含目标文件、`guide.md` 和 `manifest.json`，不提交 Git。
+交付物位于 `projects/demo/dist/r1/`，包含目标文件、`guide.md` 和 `manifest.json`，不提交 Git。导出的 `guide.md` 末尾会自动附上色板（HEX 与 RGB）和标志所用字体及授权。
 
 | 导出目标 | 主要产物 |
 |---|---|

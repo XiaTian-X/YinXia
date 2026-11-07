@@ -1425,11 +1425,22 @@ def make_preview_sheet(p: Project, mode_text, out: Path) -> Path:
             run(["magick", str(png), "-filter", "point", "-resize", f"{zoom * 100}%", "-background", "white",
                  "-gravity", "center", "-extent", "520x200", str(cell)])
             smalls.append(cell)
-        row1, row2 = t / "row1.png", t / "row2.png"
-        run(["magick", *map(str, cells), "+append", str(row1)])
-        run(["magick", *map(str, smalls), "+append", str(row2)])
+        # 第三行结构自查：剪影（只看外轮廓）、眯眼（模糊后看主要形状）、水平镜像、旋转 180°（找意外的形象）
+        base = render_fit(variants["color"], t / "base.png", 300)
+        checks = []
+        for name, ops in (("silhouette", ["-alpha", "extract", "-negate"]),
+                          ("squint", ["-background", "white", "-flatten", "-blur", "0x6"]),
+                          ("mirror", ["-background", "white", "-flatten", "-flop"]),
+                          ("rotate", ["-background", "white", "-flatten", "-rotate", "180"])):
+            cell = t / f"cell-{name}.png"
+            run(["magick", str(base), *ops, "-background", "white", "-gravity", "center",
+                 "-extent", "390x360", str(cell)])
+            checks.append(cell)
+        rows = [t / "row1.png", t / "row2.png", t / "row3.png"]
+        for row, group in zip(rows, (cells, smalls, checks)):
+            run(["magick", *map(str, group), "+append", str(row)])
         out.parent.mkdir(parents=True, exist_ok=True)
-        run(["magick", str(row1), str(row2), "-background", "#DDDDDD", "-splice", "0x4", "-append", str(out)])
+        run(["magick", *map(str, rows), "-background", "#DDDDDD", "-splice", "0x4", "-append", "+repage", str(out)])
     return out
 
 
@@ -1475,7 +1486,8 @@ def cmd_preview(a) -> None:
             return recolor_svg(svg, p.mode_map(mode))
     out = make_preview_sheet(p, mode_text, CACHE / p.slug / "preview" / f"{label}.png")
     print(f"预览：{rel(out)}")
-    print("第一行：彩色 / 单色 / 反白；第二行：16px×8、32px×4、64px×2 放大查看小尺寸效果")
+    print("第一行：彩色 / 单色 / 反白；第二行：16px×8、32px×4、64px×2 放大查看小尺寸效果；"
+          "第三行：剪影 / 眯眼（模糊）/ 水平镜像 / 旋转 180°")
     modes = p.cfg.get("color_modes", {}).get("modes", ["color", "mono", "reversed"])
     if (w := structure_warning(a.target, mode_text, modes,
                                f"可{STRUCTURE_PALETTE_HINT}，或在发布时提供 <版式>.mono.svg")):
@@ -1487,18 +1499,22 @@ def cmd_compare(a) -> None:
     ids = a.ids or [vid for d in p.directions() if (vid := p.latest_version_id(d))]
     if not ids:
         raise LogoError("没有可对比的版本")
+    mode = a.mode
+    bg = dark_background(p) if mode == "reversed" else "white"
     with tempfile.TemporaryDirectory() as td:
         cells = []
         for vid in ids:
-            png = render_fit(p.version_dir(vid) / "logo.svg", Path(td) / f"{vid}.png", 400)
+            svg = p.version_dir(vid) / "logo.svg"
+            text = svg.read_text(encoding="utf-8") if mode == "color" else recolor_svg(svg, p.mode_map(mode))
+            png = render_text(text, Path(td) / f"{vid}.png", 400)
             cell = Path(td) / f"cell-{vid}.png"
-            run(["magick", str(png), "-background", "white", "-gravity", "center", "-extent", "460x460", str(cell)])
+            run(["magick", str(png), "-background", bg, "-gravity", "center", "-extent", "460x460", str(cell)])
             cells.append(cell)
-        out = CACHE / p.slug / "compare" / f"{'_'.join(ids)}.png"
+        out = CACHE / p.slug / "compare" / f"{'_'.join(ids)}{'' if mode == 'color' else '-' + mode}.png"
         out.parent.mkdir(parents=True, exist_ok=True)
         run(["magick", "montage", *map(str, cells), "-tile", f"{min(len(cells), 4)}x", "-geometry", "+6+6",
              "-background", "#DDDDDD", str(out)])
-    print(f"对比图：{rel(out)}")
+    print(f"对比图：{rel(out)}" + ("" if mode == "color" else f"（{mode} 配色）"))
     print("顺序（从左到右、从上到下）：" + ", ".join(ids))
 
 
@@ -1570,14 +1586,20 @@ def short_head(repo: str) -> str:
 
 
 def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist: Path, built: list[str]) -> dict:
-    """写入 guide.md（发布指南 + 色板附录）与 manifest.json：只登记交付物（各目标目录与 guide.md），
+    """写入 guide.md（发布指南 + 色板与所用字体附录）与 manifest.json：只登记交付物（各目标目录与 guide.md），
     每个目标记录生成它的版本（只生成部分目标时，其余目标保留上次的记录）。"""
     guide_src = rdir / "guide.md"
-    pal_rows = "\n".join(f"| {k} | `{v}` |" for k, v in p.palette.items())
+    pal_rows = "\n".join(f"| {k} | `{v}` | {', '.join(str(int(v[i:i + 2], 16)) for i in (1, 3, 5))} |"
+                         for k, v in p.palette.items())
+    font_ids = layout_font_ids(rdir / "layouts")
+    fonts = {f["id"]: f for f in load_fonts()} if font_ids else {}
+    font_part = ("\n## 附录：标志所用字体（自动生成）\n\n" + "\n".join(font_line(fid, fonts) for fid in font_ids)
+                 + "\n\n标志中的文字已转为图形；字体的授权不延伸到标志本身。\n") if font_ids else ""
     (dist / "guide.md").write_text(
         f"<!-- 由 ./logo export 生成；内容来源：{rel(guide_src)} 与 project.toml -->\n\n"
         + guide_src.read_text(encoding="utf-8")
-        + f"\n\n---\n\n## 附录：色板（自动生成）\n\n| 色名 | 色值 |\n|---|---|\n{pal_rows}\n", encoding="utf-8")
+        + f"\n\n---\n\n## 附录：色板（自动生成）\n\n| 色名 | HEX | RGB |\n|---|---|---|\n{pal_rows}\n"
+        + "\n印刷用的 CMYK、专色色值需按实际印刷工艺与色彩配置确定，不能由 RGB 直接换算。\n" + font_part, encoding="utf-8")
 
     try:
         previous = json.loads((dist / "manifest.json").read_text(encoding="utf-8"))
@@ -1627,8 +1649,11 @@ def cmd_export(a) -> None:
         raise LogoError(f"{rid} 缺少 guide.md（交付物的一部分）")
     holes = unfilled_placeholders(f"{p.slug}/releases/{rid}/guide.md", (rdir / "guide.md").read_text(encoding="utf-8"))
     if holes:
-        raise LogoError(f"{rid}/guide.md 是交付物的一部分，还有 {len(holes)} 处模板占位未填写（如“{holes[0]}”）；"
-                        "guide.md 只能追加，请新建发布并在提交前填完")
+        path = (rdir / "guide.md").resolve().relative_to(PROJECTS.resolve()).as_posix()
+        committed = git("cat-file", "-e", f"HEAD:{path}", check=False, repo="projects").returncode == 0
+        fix = (f"guide.md 已提交、只能追加，请 {cli_prefix()} release {p.slug} --from {rid} 新建发布并在提交前填完"
+               if committed else "请先填完再导出（guide.md 提交后只能追加）")
+        raise LogoError(f"{rid}/guide.md 是交付物的一部分，还有 {len(holes)} 处模板占位未填写（如“{holes[0]}”）；{fix}")
     targets = list(dict.fromkeys(a.targets or project_targets(p)))
     unknown = [t for t in targets if t not in TARGET_NAMES]
     if unknown:
@@ -2527,6 +2552,26 @@ def build_index() -> str:
 LICENSE_URLS = {"OFL-1.1": "https://openfontlicense.org", "Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0"}
 
 
+def layout_font_ids(ldir: Path, exists=Path.exists, read=lambda f: f.read_text(encoding="utf-8")) -> list[str]:
+    """发布版式中转曲文字所用的字体 id（依据 outline 注释，按出现顺序去重）；README 与交付指南共用。"""
+    ids: dict[str, None] = {}
+    for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
+        if exists(f):
+            for fid in OUTLINE_FONT_RE.findall(read(f)):
+                ids[fid] = None
+    return list(ids)
+
+
+def font_line(fid: str, fonts: dict[str, dict]) -> str:
+    """字体的 Markdown 列表项：名称（链接官方地址）与授权。"""
+    f = fonts.get(fid, {})
+    title = " ".join(x for x in (f.get("family"), f.get("weight")) if x) or fid
+    lic = f.get("license", "")
+    lic_text = f"[{lic}]({LICENSE_URLS[lic]})" if lic in LICENSE_URLS else lic
+    line = f"- [{title}]({f['official_url']})" if f.get("official_url") else f"- {title}"
+    return line + (f" · {lic_text}" if lic_text else "")
+
+
 def readme_config() -> dict | None:
     """设计仓库 repository.toml 的 [readme]（提交检查时读暂存区）；没有时返回 None，表示不生成 README。"""
     meta = PROJECTS / "repository.toml"
@@ -2601,10 +2646,8 @@ def build_readme() -> str | None:
         if exists(latest):
             lines.append(f"- 固定地址（始终指向当前发布）：[`{p.slug}/latest/`]({p.slug}/latest/)")
         lines.append("")
-        for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
-            if exists(f):
-                for fid in OUTLINE_FONT_RE.findall(read(f)):
-                    used_fonts[fid] = None
+        for fid in layout_font_ids(ldir, exists, read):
+            used_fonts[fid] = None
     groups = series.all_series()
     if groups:
         lines += ["## 系列", ""]
@@ -2617,14 +2660,7 @@ def build_readme() -> str | None:
     fonts = {f["id"]: f for f in load_fonts()}
     if used_fonts:
         lines += ["## 标志所用字体", ""]
-        for fid in used_fonts:
-            f = fonts.get(fid, {})
-            title = " ".join(x for x in (f.get("family"), f.get("weight")) if x) or fid
-            lic = f.get("license", "")
-            lic_text = f"[{lic}]({LICENSE_URLS[lic]})" if lic in LICENSE_URLS else lic
-            lines.append(f"- [{title}]({f['official_url']})" if f.get("official_url") else f"- {title}")
-            lines[-1] += f" · {lic_text}" if lic_text else ""
-        lines.append("")
+        lines += [font_line(fid, fonts) for fid in used_fonts] + [""]
     if cfg.get("notice", "").strip():
         lines += ["## 使用声明", "", cfg["notice"].strip(), ""]
     lines += ["---", "", "项目进度见 [PROJECTS.md](PROJECTS.md)。"]
@@ -2866,7 +2902,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("ids", nargs="*", help="字体 id（默认全部）")
     s.set_defaults(fn=cmd_fonts)
 
-    s = sub.add_parser("preview", help="渲染预览图（彩色/单色/反白/小尺寸）")
+    s = sub.add_parser("preview", help="渲染预览图（彩色/单色/反白/小尺寸/剪影、眯眼、镜像、倒转）")
     s.add_argument("slug")
     s.add_argument("target", help="A-v001、r1（全部版式）、r1/icon 或 SVG 路径")
     s.set_defaults(fn=cmd_preview)
@@ -2874,6 +2910,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("compare", help="生成多版本对比图（默认各方向最新版本）")
     s.add_argument("slug")
     s.add_argument("ids", nargs="*", help="版本号列表")
+    s.add_argument("--mode", default="color", help="配色：color（默认）/ mono / reversed；先看单色更容易比较结构")
     s.set_defaults(fn=cmd_compare)
 
     s = sub.add_parser("export", help="按需生成 Logo 资产到 dist/（不提交）")

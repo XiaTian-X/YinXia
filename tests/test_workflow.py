@@ -258,7 +258,36 @@ class LifecycleTest(unittest.TestCase):
         (self.p / "releases" / "r1" / "layouts" / "primary.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
         r = ws.logo("export", "demo", ok=False)
         self.assertIn("guide.md", r.stderr)
+        self.assertIn("请先填完再导出", r.stderr)  # 还没提交：直接填完即可，不必新建发布
         self.assertFalse((self.p / "dist").exists())
+
+    @unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
+    def test_guide_trademark_section_and_palette_rgb(self):
+        ws = self.ws
+        ws.new_version()
+        ws.commit("projects", "[demo] A-v001")
+        toml = self.p / "project.toml"
+        toml.write_text(toml.read_text(encoding="utf-8").replace("[fonts]\nused = []", '[fonts]\nused = ["inter"]'),
+                        encoding="utf-8")
+        icon = TRIANGLE.format(c=PRIMARY).replace("<path", "<!-- outline: font=inter size=10 text=\"A\" -->\n<path")
+        prepare_release(ws, extra={"icon.svg": icon})  # icon 带 outline 注释：视为用 Inter 转曲的文字
+        guide = self.p / "releases" / "r1" / "guide.md"
+        template = (ws.root / "templates" / "release-guide.md").read_text(encoding="utf-8")
+        hole = next(ln for ln in template.splitlines() if ln.startswith("- **商标检索**"))
+        filled = guide.read_text(encoding="utf-8")
+        self.assertIn("## 商标与授权", filled)
+        self.assertIn("## 名称写法", filled)
+        guide.write_text(filled.replace("- **商标检索**： 测试内容", hole), encoding="utf-8")
+        self.assertIn("guide.md", ws.logo("export", "demo", ok=False).stderr)  # 商标检索没写不能导出
+        guide.write_text(filled, encoding="utf-8")
+        ws.logo("export", "demo", "svg")
+        text = (self.p / "dist" / "r1" / "guide.md").read_text(encoding="utf-8")
+        self.assertIn("| 色名 | HEX | RGB |", text)
+        self.assertIn("| `#00897B` | 0, 137, 123 |", text)
+        self.assertIn("不能由 RGB 直接换算", text)
+        self.assertIn("## 附录：标志所用字体（自动生成）", text)
+        self.assertIn("- [Inter Regular](https://github.com/rsms/inter) · [OFL-1.1](https://openfontlicense.org)", text)
+        self.assertNotIn("所用字体**", (self.p / "releases" / "r1" / "guide.md").read_text(encoding="utf-8"))  # 不用手填
 
     @unittest.skipUnless(HAS_RENDER, "需要 resvg 与 magick")
     def test_guide_erratum_is_append_only_and_reaches_delivery(self):
@@ -404,6 +433,11 @@ class ExportTest(unittest.TestCase):
         self.assertIn("A-v001", out)
         self.assertTrue((self.ws.root / ".cache" / "demo" / "compare" / "A-v001.png").exists())
         self.assertIn("方向不存在：Z", self.ws.logo("compare", "demo", "A-v001", "Z-v001", ok=False).stderr)
+        out = self.ws.logo("compare", "demo", "--mode", "mono").stdout  # 先看单色结构
+        self.assertIn("（mono 配色）", out)
+        mono = self.ws.root / ".cache" / "demo" / "compare" / "A-v001-mono.png"
+        self.assertEqual(pixel(mono, "w/2", "h/2")[:6], "000000")  # 主色换成单色的黑
+        self.assertIn("未知配色模式", self.ws.logo("compare", "demo", "--mode", "sepia", ok=False).stderr)
 
     def test_partial_export_keeps_target_origin(self):
         mpath = self.dist / "manifest.json"
@@ -532,6 +566,24 @@ class MonoStructureTest(unittest.TestCase):
         self.assertIn("单色版约", w)
         self.assertIsNone(logo.structure_warning(
             "fixed", lambda m: COLOR_RELIANT if m == "color" else self.recolor(COLOR_RELIANT, keep), ["color", "mono"], ""))
+
+    def test_preview_structure_row(self):
+        ws = self.ws
+        ws.new_version(svg=TRIANGLE.format(c=PRIMARY))
+        out = ws.logo("preview", "demo", "A-v001").stdout
+        self.assertIn("第三行：剪影 / 眯眼（模糊）/ 水平镜像 / 旋转 180°", out)
+        sheet = ws.root / out.split("预览：", 1)[1].split()[0]
+        self.assertEqual(subprocess.run(["magick", "identify", "-format", "%w %h", str(sheet)], capture_output=True,
+                                        text=True, check=True).stdout, "1560 1092")
+
+        def at(x: int, y: int) -> str:
+            return pixel(sheet, str(x), str(y))[:6]
+
+        top = 4 + 520 + 4 + 200 + 4  # 第三行的起点；每格 390×360，图形 300px 居中
+        self.assertEqual(at(195, top + 180), "000000")  # 剪影：只剩纯黑外形
+        # 三角形尖朝上：靠上、偏左的点在原图（镜像格与原图相同）中是留白，倒转后底边朝上，同一点落在图形内
+        self.assertEqual(at(390 * 2 + 95, top + 90), "FFFFFF")
+        self.assertNotEqual(at(390 * 3 + 95, top + 90), "FFFFFF")
 
     def test_check_preview_and_palette_fix(self):
         ws = self.ws
