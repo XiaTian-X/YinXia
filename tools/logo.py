@@ -1028,7 +1028,7 @@ def cmd_version(a) -> None:
         base = a.based_on or (None if a.blank else p.latest_version_id(ddir))
         base_svg = p.version_dir(base) / "logo.svg" if base else None  # 先校验，避免留下半成品目录
     inspired = p.concept_ref(a.inspired_by) if a.inspired_by else "无"
-    svg = (base_svg or TEMPLATES / "blank.svg").read_text(encoding="utf-8")
+    svg = read_utf8(base_svg) if base_svg else template_text("blank.svg")
     vid, vdir = create_version(p, ddir, svg, base or "（无，全新起稿）", inspired)
     print(f"已创建版本：{vid} → {rel(vdir)}")
     print("提示：完成 logo.svg 与 notes.md 后再提交；提交后该版本即冻结")

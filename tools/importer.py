@@ -108,8 +108,8 @@ def sidecar(path: Path) -> dict[str, str]:
     if not side.exists():
         return {}
     try:
-        data = tomllib.loads(side.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        data = tomllib.loads(logo.read_utf8(side))
+    except tomllib.TOMLDecodeError as e:
         raise logo.LogoError(f"{side.name} 格式错误：{e}")
     return {k: str(v) for k, v in data.items() if k in SIDECAR_FIELDS}
 

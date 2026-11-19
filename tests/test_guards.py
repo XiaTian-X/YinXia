@@ -209,6 +209,24 @@ class DamagedFilesTest(GuardBase):
         self.assertIn(".gitignore 与系统模板不一致", r.stdout)
         self.assertClean(r)
 
+    def test_version_and_sidecar_reads_name_the_file(self):
+        ws = self.ws
+        (self.v1 / "logo.svg").write_bytes(b"\xff")  # 上一版是新版本的起稿底稿
+        r = ws.logo("version", "demo", "A", ok=False)
+        self.assertIn("v001/logo.svg: 不是 UTF-8", r.stderr)
+        self.assertClean(r)
+        (ws.root / "templates" / "blank.svg").unlink()
+        r = ws.logo("version", "demo", "A", "--blank", ok=False)
+        self.assertIn("系统模板缺失：templates/blank.svg", r.stderr)
+        self.assertClean(r)
+        inbox = ws.root / "inbox"
+        inbox.mkdir(exist_ok=True)
+        (inbox / "a.svg").write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        (inbox / "a.svg.import.toml").write_bytes(b"\xff")
+        r = ws.logo("import", str(inbox / "a.svg"), "--project", "demo", "--direction", "A", "--analyze", ok=False)
+        self.assertIn("a.svg.import.toml: 不是 UTF-8", r.stderr)
+        self.assertClean(r)
+
     def test_missing_template_is_reported(self):
         (self.ws.root / "templates" / "brief.md").unlink()
         r = self.ws.logo("status", ok=False)
