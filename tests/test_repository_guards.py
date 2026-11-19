@@ -208,6 +208,48 @@ class RepositoryGuardsTest(unittest.TestCase):
         self.assertNotEqual(self.ws.logo('status', ok=False).returncode, 0)
         self.assertNotEqual(self.cli('default', 'status', ok=False).returncode, 0)
 
+    def test_scratch_venv_in_cache_does_not_lock_system(self):
+        """临时虚拟环境自带符号链接，不能锁住系统；系统会写入的目录不能借 pyvenv.cfg 绕过检查。"""
+        import shutil
+        self.ws.new_project('demo')
+        cache = self.ws.root / '.cache'
+        outside = self.ws.tmp / 'outside'
+        outside.mkdir()
+        (outside / 'cfg').write_text('home = /usr/bin\n', encoding='utf-8')
+
+        def venv(rel: str, marker: bool = True):
+            d = cache / rel
+            (d / 'bin').mkdir(parents=True)
+            if marker:
+                (d / 'pyvenv.cfg').write_text('home = /usr/bin\n', encoding='utf-8')
+            (d / 'bin' / 'python').symlink_to(outside, target_is_directory=True)
+            return d
+
+        allowed = venv('tool-env')
+        self.ws.logo('status')
+        self.ws.logo('check')
+        self.ws.logo('--repo', 'default', 'check', '--staged', '--scope', 'system')  # 系统提交钩子同样不受影响
+        shutil.rmtree(allowed)
+
+        linked_marker = venv('linked-marker', marker=False)
+        (linked_marker / 'pyvenv.cfg').symlink_to(outside / 'cfg')
+        shutil.rmtree(linked_marker / 'bin')
+        (linked_marker / 'link').symlink_to(outside, target_is_directory=True)
+        blocked = [linked_marker, venv('no-marker', marker=False), venv('demo'), venv('handoff'), venv('_series'),
+                   venv('work/nested')]  # 依次：标记是链接、没有标记、项目同名、系统目录（两个）、不在缓存根下
+        for d in blocked:
+            for other in blocked:  # 每次只留一个，确认它自己就会被拦下
+                if other != d:
+                    shutil.move(str(other), str(self.ws.tmp / f'parked-{blocked.index(other)}'))
+            with self.subTest(path=d.relative_to(cache).as_posix()):
+                r = self.ws.logo('status', ok=False)
+                self.assertNotEqual(r.returncode, 0)
+                self.assertIn('缓存目录不允许符号链接', r.stderr)
+                self.assertIn('请删除该链接', r.stderr)
+            for other in blocked:
+                if other != d:
+                    shutil.move(str(self.ws.tmp / f'parked-{blocked.index(other)}'), str(other))
+
     def test_cache_link_and_external_skill_cannot_write_into_design_repository(self):
         import shutil
         alpha = self.repo('alpha')

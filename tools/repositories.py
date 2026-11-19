@@ -17,6 +17,8 @@ import logo
 REGISTRY = logo.ROOT / ".yinxia" / "repositories.toml"
 REPOSITORIES = logo.ROOT / "repositories"
 KINDS = ("workspace", "single")
+CACHE_SYSTEM_DIRS = {"_series", "downloads", "handoff", "import", "imported", "repositories"}  # 系统写入的缓存顶层目录
+CACHE_LINK_FIX = "请删除该链接；临时 Python 虚拟环境可放在 .cache/<名称>/，名称不要与项目或系统缓存目录相同"
 
 
 def registry_locked(fn):
@@ -164,20 +166,27 @@ def validate_tree(path: Path) -> None:
             dirs.remove(".git")
 
 
+def scratch_venv(path: Path) -> bool:
+    """缓存根下的临时 Python 虚拟环境：系统不向其中写入，它自带的符号链接不构成跨仓库写入风险。"""
+    marker = path / "pyvenv.cfg"
+    return (not path.is_symlink() and marker.is_file() and not marker.is_symlink()
+            and path.name not in CACHE_SYSTEM_DIRS and not (logo.PROJECTS / path.name / "project.toml").exists())
+
+
 def validate_cache() -> None:
     for path in (logo.CACHE, *logo.CACHE.parents):
         if path == logo.ROOT:
             break
         if path.is_symlink():
-            raise logo.LogoError(f"{path}: 缓存目录不允许符号链接，避免跨仓库写入")
+            raise logo.LogoError(f"{path}: 缓存目录不允许符号链接，避免跨仓库写入；请改回普通目录")
     for directory, dirs, files in os.walk(logo.CACHE, followlinks=False):
         parent = Path(directory)
         # default 的旧缓存根与命名仓库缓存共用 .cache，不检查其他仓库的缓存。
-        dirs[:] = [name for name in dirs if name != ".git" and not (
-            parent == logo.CACHE and logo.REPOSITORY_ID == "default" and name == "repositories")]
+        dirs[:] = [name for name in dirs if name != ".git" and not (parent == logo.CACHE and (
+            (logo.REPOSITORY_ID == "default" and name == "repositories") or scratch_venv(parent / name)))]
         for name in dirs + files:
             if (parent / name).is_symlink():
-                raise logo.LogoError(f"{parent / name}: 缓存目录不允许符号链接，避免跨仓库写入")
+                raise logo.LogoError(f"{parent / name}: 缓存目录不允许符号链接，避免跨仓库写入；{CACHE_LINK_FIX}")
 
 
 def configure(selector: str | None = None, hook_path: str | None = None) -> None:
