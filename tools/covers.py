@@ -533,7 +533,7 @@ def skeleton_notes(cdir: Path, c: dict) -> list[str]:
             out.append(f"{logo.rel(svg)}: 关键内容仍是骨架原文（来自 {c.get('skeleton')}）；请按 cover.md 替换标题等文案")
     for name, sha in c.get("skeleton_sha", {}).items():  # 套用后骨架又被修改：提醒对照调整
         src = skeleton_dir(c.get("skeleton", "")) / name
-        if not src.exists() or skeleton_print(src.read_text(encoding="utf-8")) != sha:
+        if not src.exists() or skeleton_print(logo.read_utf8(src)) != sha:
             out.append(f"{logo.rel(cdir)}: 所套用的骨架 {c.get('skeleton')}/{name} 已{'删除' if not src.exists() else '修改'}，"
                        "可对照调整本封面")
     return out
@@ -841,7 +841,7 @@ def geometry_warnings(cdir: Path, ratio: str, platforms: list[dict], groups=KEY_
     """按平台检查关键内容（Logo、content）是否会被裁掉、超出安全区或被遮挡，以及 Logo 在手机上的显示高度。"""
     canvas = load_config()["ratios"][ratio]
     svg = cdir / f"{ratio}.svg"
-    text = svg.read_text(encoding="utf-8")
+    text = logo.read_utf8(svg)
     key = "cover-geometry-v1|" + json.dumps([text, canvas, platforms, rules()] + ([list(groups)] if groups != KEY_GROUPS else []),
                                              sort_keys=True, ensure_ascii=False)
     # 照片不影响结论（只渲染 Logo 与 content），所以只按设计稿文本、画布、平台与规则缓存
@@ -1050,7 +1050,7 @@ def sync_family(fam: Family, cdir: Path, cfg: dict, a) -> None:
     ratios = load_config()["ratios"]
     texts, report = {}, []
     for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):
-        text = old = svg.read_text(encoding="utf-8")
+        text = old = logo.read_utf8(svg)
         for slug, rid in wanted.items():  # 发布未变也重新嵌入：旧封面的 Logo 未隔离 id 时借此更新
             proj = logo.Project(slug)
             new, change = swap_logo(text, proj, release_layouts(proj, rid), rid, gid=f"logo-{slug}")
@@ -1086,7 +1086,7 @@ def cmd_sync_logo(a) -> None:
     new_texts, report = {}, []
     ratios = load_config()["ratios"]
     for svg in sorted(s for s in cdir.glob("*.svg") if s.stem in ratios):  # 含预备中的画幅，免得发布不一致
-        old = svg.read_text(encoding="utf-8")
+        old = logo.read_utf8(svg)
         new, change = swap_logo(old, p, ldir, rid)  # 发布未变也重新嵌入：旧封面的 Logo 未隔离 id 时借此更新
         if new != old:
             new_texts[svg] = new
@@ -1326,9 +1326,9 @@ def cmd_new(a) -> None:
     for key in need:  # 先全部生成，成功后再落盘
         on_ratio = [plats[t] for t in targets if plats[t]["ratio"] == key]
         if skdir and (skdir / f"{key}.svg").exists():
-            texts[key] = from_skeleton((skdir / f"{key}.svg").read_text(encoding="utf-8"), p, ldir, rid, on_ratio,
+            texts[key] = from_skeleton(logo.read_utf8(skdir / f"{key}.svg"), p, ldir, rid, on_ratio,
                                        ratios[key])
-            shas[f"{key}.svg"] = skeleton_print((skdir / f"{key}.svg").read_text(encoding="utf-8"))
+            shas[f"{key}.svg"] = skeleton_print(logo.read_utf8(skdir / f"{key}.svg"))
             continue
         texts[key], note = starter_svg(p, ldir, rid, layout, logo.icon_mode(p), on_ratio, ratios[key])
         if skdir:
@@ -1397,7 +1397,7 @@ def cmd_retarget(a) -> None:
             if note:
                 notes.append(f"{key}.svg：{note}")
             continue
-        text = svg.read_text(encoding="utf-8")
+        text = logo.read_utf8(svg)
         guides = guides_xml(on_ratio, ratios[key])
         try:
             g0, g1 = group_span(text, "guides")

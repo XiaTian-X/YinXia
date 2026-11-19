@@ -33,7 +33,7 @@ def project_todo(p: "logo.Project") -> list[dict]:
     st = p.cfg.get("state", {})
     # -- 访谈 --
     brief = p.dir / "brief.md"
-    holes = logo.document_issues(f"{p.slug}/brief.md", brief.read_text(encoding="utf-8")) if brief.exists() else ["缺少 brief.md"]
+    holes = logo.document_issues(f"{p.slug}/brief.md", logo.read_utf8(brief)) if brief.exists() else ["缺少 brief.md"]
     if holes:
         add("访谈", f"brief.md 还有 {len(holes)} 处缺失或未填写（如“{holes[0]}”），需求访谈未完成", "与用户完成 logo-workflow 第 0 步访谈")
     if (rh := series.rules_holes(p)):
@@ -84,7 +84,7 @@ def project_todo(p: "logo.Project") -> list[dict]:
         add("交付", f"当前发布 {cur} 尚未标记交付", f"./logo export {p.slug} 交付后 ./logo state {p.slug} stage=delivered")
     if cur:
         guide = p.dir / "releases" / cur / "guide.md"
-        if guide.exists() and logo.unfilled_placeholders(f"{p.slug}/releases/{cur}/guide.md", guide.read_text(encoding="utf-8")):
+        if guide.exists() and logo.unfilled_placeholders(f"{p.slug}/releases/{cur}/guide.md", logo.read_utf8(guide)):
             add("交付", f"当前发布 {cur} 的 guide.md 未填完，无法导出", "未提交时填完；已提交则 ./logo release --from 新建发布")
         terms: list[str] = []
         importer.terms_warnings(p, terms)

@@ -57,7 +57,7 @@ DESIGN_RULES = [
 def brief_points(p: "logo.Project") -> list[str]:
     """brief.md 中已填写的字段（跳过模板占位与系统写入的项目类型行）。"""
     out = []
-    for line in (p.dir / "brief.md").read_text(encoding="utf-8").splitlines():
+    for line in logo.read_utf8(p.dir / "brief.md").splitlines():
         m = re.match(r"^- \*\*(.+?)\*\*[:：]\s*(.+)$", line.strip())
         if m and not m.group(2).startswith("（") and m.group(1) not in ("系列规则", "生成目标", "确认日期", "用户确认的要点"):
             out.append(f"{m.group(1)}：{m.group(2)}")
@@ -253,11 +253,13 @@ def cmd_receive(a) -> None:
     """把交接文本拆成文件放进收件箱 inbox/<项目>/（原样保存 SVG 与来源说明），之后照常预演、确认、导入。"""
     p = logo.Project(a.project)
     import repositories
-    repositories.validate_tree(importer.INBOX)
+    dest = importer.INBOX / p.slug
+    if importer.INBOX.is_symlink():
+        raise logo.LogoError(f"{logo.rel(importer.INBOX)}: 收件箱不能是符号链接")
+    repositories.validate_tree(dest)  # 只有写入的目录需要把关，收件箱里其他外部文件不影响
     blocks, problems = parse_text(read_input(a.text))
     if problems:
         raise logo.LogoError("交接文本不完整，未写入任何文件：\n  " + "\n  ".join(problems))
-    dest = importer.INBOX / p.slug
     clash = [name for b in blocks for name in (b["file"], b["file"] + importer.SIDECAR)
              if (dest / name).exists()]
     if clash:

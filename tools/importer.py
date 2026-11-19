@@ -119,7 +119,8 @@ def inbox_items() -> list[dict]:
     items = []
     for f in sorted(INBOX.rglob("*")) if INBOX.exists() else []:
         rel_parts = f.relative_to(INBOX).parts
-        if not f.is_file() or f.name.endswith(SIDECAR) or any(x.startswith(".") for x in rel_parts) or len(rel_parts) > 2:
+        if (f.is_symlink() or not f.is_file() or f.name.endswith(SIDECAR)
+                or any(x.startswith(".") for x in rel_parts) or len(rel_parts) > 2):
             continue
         info = {"file": f.relative_to(INBOX).as_posix(), "bytes": f.stat().st_size,
                 "age_days": (dt.date.today() - dt.date.fromtimestamp(f.stat().st_mtime)).days}
@@ -408,10 +409,7 @@ def preview_ok(key: str) -> bool:
 
 
 def previewed() -> dict:
-    try:
-        return json.loads((PREVIEWS / "previewed.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
+    return logo.load_cache(PREVIEWS / "previewed.json")
 
 
 def write_preview(name: str, original: bytes, kind: str, rep: dict) -> Path:
@@ -482,7 +480,7 @@ def check_init(p: "logo.Project") -> None:
     if p.palette != default_palette():
         raise logo.LogoError(f"{p.slug} 的色板已经设定（不再是模板默认值），--init 会把它整个覆盖；"
                              "请去掉 --init 按已有项目导入，色板外的颜色逐项决定")
-    text = p.toml_path.read_text(encoding="utf-8")
+    text = logo.read_utf8(p.toml_path)
     if "[palette]\n" not in text or "[fonts]\n" not in text:
         raise logo.LogoError("project.toml 结构与模板不同，无法初始化色板；请手工整理后重试")
 
@@ -490,7 +488,7 @@ def check_init(p: "logo.Project") -> None:
 def apply_palette(p: "logo.Project", add: dict[str, str], init: bool) -> None:
     """改项目规范：新颜色加入色板；初始化时色板与配色模式整体取自图中颜色，App 底色取第一个颜色。"""
     import series  # 延迟导入：series.py 依赖 logo
-    text = p.toml_path.read_text(encoding="utf-8")
+    text = logo.read_utf8(p.toml_path)
     if init:
         if "[palette]\n" not in text or "[fonts]\n" not in text:
             raise logo.LogoError("project.toml 结构与模板不同，无法初始化色板；请手工整理后重试")
@@ -659,9 +657,9 @@ def cmd_import(a) -> None:
         summary += [f"- {line}" for line in report_lines(rep, init)]
         vid, vdir = logo.create_version(p, ddir, rep["final"], f"外部导入（concepts/{stem}.md）", f"concepts/{stem}.md")
         notes = vdir / "notes.md"
-        notes.write_text(fill_line(notes.read_text(encoding="utf-8"), "（这个版本做了什么设计或修改）", "\n".join(summary)),
+        notes.write_text(fill_line(logo.read_utf8(notes), "（这个版本做了什么设计或修改）", "\n".join(summary)),
                          encoding="utf-8")
-        md.write_text(fill_line(md.read_text(encoding="utf-8"), "（从这张图中我们提取什么元素进入 SVG 矢量化）",
+        md.write_text(fill_line(logo.read_utf8(md), "（从这张图中我们提取什么元素进入 SVG 矢量化）",
                                 f"外部导入的设计原件，经格式整理后成为 {vid}（见下方“导入来源”）。"), encoding="utf-8")
         print(f"已创建版本：{vid} → {logo.rel(vdir)}（请与用户一起补写 notes.md 的“理念体现”“自查”）")
     if changes_spec:
@@ -801,7 +799,7 @@ def cover_preview(name: str, img: Path, plan: dict, decided: dict, unresolved: l
 
 def place_background(svg: Path, href: str, fit: str, canvas: dict) -> None:
     """在画幅设计稿的底色之上放入导入的底图；已导入过的底图被替换而不是叠加。"""
-    text = svg.read_text(encoding="utf-8")
+    text = logo.read_utf8(svg)
     el = (f'<image id="{IMPORTED_BG}" href="{href}" x="0" y="0" width="{canvas["width"]}" height="{canvas["height"]}" '
           f'preserveAspectRatio="{FITS[fit]}"/>')
     m = re.search(rf'<image\b[^>]*\bid="{IMPORTED_BG}"[^>]*/>', text)
@@ -960,7 +958,7 @@ def terms_warnings(p: "logo.Project", warnings: list[str]) -> None:
         return
     try:
         root = p.release_root_version(cur)
-        notes = (p.version_dir(root) / "notes.md").read_text(encoding="utf-8")
+        notes = logo.read_utf8(p.version_dir(root) / "notes.md")
     except (logo.LogoError, OSError):
         return
     if f"**使用条款**: {UNCONFIRMED}" in notes:

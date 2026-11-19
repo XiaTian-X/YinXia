@@ -18,7 +18,10 @@ REGISTRY = logo.ROOT / ".yinxia" / "repositories.toml"
 REPOSITORIES = logo.ROOT / "repositories"
 KINDS = ("workspace", "single")
 CACHE_SYSTEM_DIRS = {"_series", "downloads", "handoff", "import", "imported", "repositories"}  # 系统写入的缓存顶层目录
-CACHE_LINK_FIX = "请删除该链接；临时 Python 虚拟环境可放在 .cache/<名称>/，名称不要与项目或系统缓存目录相同"
+CACHE_PROJECT_DIRS = {"compare", "covers", "preview"}  # 系统在 .cache/<项目>/ 下写入的目录
+CACHE_LINK_FIX = ("请删除该链接；临时 Python 虚拟环境可放在 .cache/<名称>/ 或 .cache/<项目>/<名称>/，"
+                  "名称不要与项目或系统缓存目录相同")
+REGISTRY_FIX = "请修复该文件，或删除它后用 ./logo repo add <名称> <路径> 重新登记（设计文件不受影响）；./logo --repo default 仍可使用"
 
 
 def registry_locked(fn):
@@ -33,13 +36,16 @@ def registry_locked(fn):
 
 
 def registry() -> dict:
-    data = logo.load_toml(REGISTRY) if REGISTRY.exists() else {}
+    try:
+        data = logo.load_toml(REGISTRY) if REGISTRY.exists() else {}
+    except logo.LogoError as e:
+        raise logo.LogoError(f"{e}；{REGISTRY_FIX}")
     active, entries = data.get("active", "default"), data.get("repositories", {})
     if not isinstance(active, str) or not isinstance(entries, dict):
-        raise logo.LogoError("本地仓库登记表格式错误")
+        raise logo.LogoError(f"本地仓库登记表格式错误；{REGISTRY_FIX}")
     for name, value in entries.items():
         if name == "default" or not logo.SLUG_RE.fullmatch(name) or not isinstance(value, str) or not value:
-            raise logo.LogoError(f"本地仓库登记无效：{name!r}")
+            raise logo.LogoError(f"本地仓库登记无效：{name!r}；{REGISTRY_FIX}")
     return {"active": active, "repositories": entries}
 
 
@@ -149,7 +155,8 @@ def select(selector: str | None = None, hook_path: str | None = None) -> tuple[s
 
 
 def validate_tree(path: Path) -> None:
-    """设计资料不能通过符号链接或嵌套仓库把读写转到另一个仓库。"""
+    """设计资料不能通过符号链接或嵌套仓库把读写转到另一个仓库。
+    根目录的 inbox/ 存放待确认的外部文件，不进 Git，导入时逐个把关，其内容不影响整个仓库。"""
     if path.is_symlink():
         raise logo.LogoError(f"{path}: 不允许符号链接")
     for directory, dirs, files in os.walk(path, followlinks=False):
@@ -159,18 +166,23 @@ def validate_tree(path: Path) -> None:
             if parent == path and name == ".git":
                 continue
             if child.is_symlink():
-                raise logo.LogoError(f"{logo.rel(child)}: 设计仓库内不允许符号链接")
+                raise logo.LogoError(f"{logo.rel(child)}: 设计仓库内不允许符号链接；请删除或移到仓库之外")
             if name == ".git":
-                raise logo.LogoError(f"{logo.rel(parent)}: 设计仓库内不允许嵌套 Git 仓库")
-        if parent == path and ".git" in dirs:
-            dirs.remove(".git")
+                raise logo.LogoError(f"{logo.rel(parent)}: 设计仓库内不允许嵌套 Git 仓库；请删除或移到仓库之外")
+        if parent == path:
+            dirs[:] = [name for name in dirs if name not in (".git", "inbox")]
 
 
 def scratch_venv(path: Path) -> bool:
-    """缓存根下的临时 Python 虚拟环境：系统不向其中写入，它自带的符号链接不构成跨仓库写入风险。"""
+    """系统不会写入的临时 Python 虚拟环境：其自带的符号链接不构成跨仓库写入风险。"""
+    is_project = lambda name: (logo.PROJECTS / name / "project.toml").exists()
+    if path.parent == logo.CACHE:
+        allowed = path.name not in CACHE_SYSTEM_DIRS and not is_project(path.name)
+    else:
+        allowed = (path.parent.parent == logo.CACHE and is_project(path.parent.name)
+                   and path.name not in CACHE_PROJECT_DIRS)
     marker = path / "pyvenv.cfg"
-    return (not path.is_symlink() and marker.is_file() and not marker.is_symlink()
-            and path.name not in CACHE_SYSTEM_DIRS and not (logo.PROJECTS / path.name / "project.toml").exists())
+    return allowed and not path.is_symlink() and marker.is_file() and not marker.is_symlink()
 
 
 def validate_cache() -> None:
@@ -179,11 +191,13 @@ def validate_cache() -> None:
             break
         if path.is_symlink():
             raise logo.LogoError(f"{path}: 缓存目录不允许符号链接，避免跨仓库写入；请改回普通目录")
+    if logo.CACHE.exists() and not logo.CACHE.is_dir():
+        raise logo.LogoError(f"{logo.rel(logo.CACHE)}: 应为缓存目录，现在是文件；请删除或改名")
     for directory, dirs, files in os.walk(logo.CACHE, followlinks=False):
         parent = Path(directory)
         # default 的旧缓存根与命名仓库缓存共用 .cache，不检查其他仓库的缓存。
-        dirs[:] = [name for name in dirs if name != ".git" and not (parent == logo.CACHE and (
-            (logo.REPOSITORY_ID == "default" and name == "repositories") or scratch_venv(parent / name)))]
+        dirs[:] = [name for name in dirs if name != ".git" and not scratch_venv(parent / name) and not (
+            parent == logo.CACHE and logo.REPOSITORY_ID == "default" and name == "repositories")]
         for name in dirs + files:
             if (parent / name).is_symlink():
                 raise logo.LogoError(f"{parent / name}: 缓存目录不允许符号链接，避免跨仓库写入；{CACHE_LINK_FIX}")
@@ -212,19 +226,25 @@ def setup_data_repository(path: Path) -> None:
         logo.run(["git", "-C", str(path), "init", "-q"])
     if not git_root(path):
         raise logo.LogoError(f"不是独立 Git 仓库：{path}")
-    wanted = logo.PROJECTS_GITIGNORE_TEMPLATE.read_text(encoding="utf-8")
+    wanted = logo.PROJECTS_GITIGNORE_TEMPLATE.read_bytes()
     ignore = path / ".gitignore"
-    if not ignore.exists() or ignore.read_text(encoding="utf-8") != wanted:
-        ignore.write_text(wanted, encoding="utf-8")
+    if not ignore.exists() or ignore.read_bytes() != wanted:
+        ignore.write_bytes(wanted)
         print(f"已写入 {logo.rel(ignore)}（白名单模板），请在该设计仓库提交")
     hook = os.path.relpath(logo.ROOT / ".githooks" / "projects", path)
     logo.run(["git", "-C", str(path), "config", "core.hooksPath", hook])
 
 
+def brand_files(path: Path) -> list[Path]:
+    return [p for p in path.glob("*/project.toml") if p.parent.name != "inbox"]
+
+
 def check_layout(path: Path, value: str) -> list[str]:
-    projects = list(path.glob("*/project.toml"))
+    projects = brand_files(path)
     errors = []
-    if (path / "inbox/project.toml").exists():
+    tracked = subprocess.run(["git", "-C", str(path), "ls-files", "--", "inbox/project.toml"], capture_output=True,
+                             text=True, env=logo.git_env(path)).stdout
+    if tracked.strip():  # 收件箱里未提交的外部文件不算品牌
         errors.append("inbox 是收件箱保留目录，不能用作品牌项目目录")
     if value == "single":
         if len(projects) > 1:
@@ -268,7 +288,7 @@ def cmd_list(a) -> None:
         except logo.LogoError as e:
             value, error = "?", str(e)
         items.append({"id": name, "path": str(path), "kind": value, "active": name == data["active"],
-                      "projects": len(list(path.glob("*/project.toml"))), "error": error})
+                      "projects": len(brand_files(path)), "error": error})
     if a.json:
         print(json.dumps({"active": data["active"], "repositories": items}, ensure_ascii=False, indent=2))
     else:

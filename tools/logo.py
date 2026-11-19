@@ -300,8 +300,27 @@ def load_toml(p: Path) -> dict:
         raise LogoError(f"{rel(p)} 格式错误：{e}")
 
 
+def decode_utf8(data: bytes, path: Path) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise LogoError(f"{rel(path)}: 不是 UTF-8 文本，请改用 UTF-8 重新保存，或从 Git 恢复")
+
+
+def read_utf8(path: Path) -> str:
+    """读取设计资料与系统文本；编码错误时指明是哪个文件，由调用方决定是否影响其他项目。"""
+    return decode_utf8(path.read_bytes(), path).replace("\r\n", "\n").replace("\r", "\n")
+
+
+def template_text(template_name: str) -> str:
+    try:
+        return read_utf8(TEMPLATES / template_name)
+    except FileNotFoundError:
+        raise LogoError(f"系统模板缺失：{rel(TEMPLATES / template_name)}，请从 Git 恢复")
+
+
 def render_template(template_name: str, **values: str) -> str:
-    text = (TEMPLATES / template_name).read_text(encoding="utf-8")
+    text = template_text(template_name)
     return re.sub(r"\{\{([a-zA-Z_][a-zA-Z0-9_]*)\}\}", lambda m: values.get(m[1], m[0]), text)
 
 
@@ -361,7 +380,7 @@ class Project:
 
     def set_state(self, **updates: str) -> None:
         """在 project.toml 的 [state] 表中更新字段（保留其余内容与注释）。"""
-        text = self.toml_path.read_text(encoding="utf-8")
+        text = read_utf8(self.toml_path)
         updates = {**updates, "updated": today()}
         m = re.search(r"^\[state\]\s*$", text, re.M)
         if not m:
@@ -429,7 +448,7 @@ class Project:
         if font_id in used:
             return False
         line = "used = [" + ", ".join(f'"{x}"' for x in used + [font_id]) + "]"
-        text = self.toml_path.read_text(encoding="utf-8")
+        text = read_utf8(self.toml_path)
         m = re.search(r"^\[fonts\]\s*$", text, re.M)
         if not m:
             text = text.rstrip("\n") + f"\n\n[fonts]\n{line}\n"
@@ -511,14 +530,14 @@ def all_projects() -> list[Project]:
                 if re.fullmatch(r"[^/]+/project\.toml", path)]
     if not PROJECTS.exists():
         return []
-    return [Project(p.name) for p in sorted(PROJECTS.iterdir()) if (p / "project.toml").exists()]
+    return [Project(p.name) for p in sorted(PROJECTS.iterdir()) if p.name != "inbox" and (p / "project.toml").exists()]
 
 
 # ---------------------------------------------------------------------------
 # SVG 工具
 # ---------------------------------------------------------------------------
 def recolor_svg(src: Path, mapping: dict[str, str]) -> str:
-    return recolor_text(src.read_text(encoding="utf-8"), mapping)
+    return recolor_text(read_utf8(src), mapping)
 
 
 def recolor_text(text: str, mapping: dict[str, str]) -> str:
@@ -529,7 +548,7 @@ def layout_mode_text(p: Project, ldir: Path, name: str, mode: str) -> str:
     """某版式在某配色下的 SVG 文本：优先使用手工覆盖文件 name.mode.svg，否则按色板自动换色。"""
     override = ldir / f"{name}.{mode}.svg"
     if mode != "color" and override.exists():
-        return override.read_text(encoding="utf-8")
+        return read_utf8(override)
     return recolor_svg(ldir / f"{name}.svg", p.mode_map(mode))
 
 
@@ -572,7 +591,7 @@ def latest_files(p: "Project", ldir: Path, read=None) -> dict[str, bytes]:
         for mode in p.cfg.get("color_modes", {}).get("modes", ["color"]):
             override = read(ldir / f"{name}.{mode}.svg") if mode != "color" else None
             out[latest_name(p.slug, name, mode)] = override if override is not None else \
-                recolor_text(base.decode("utf-8"), p.mode_map(mode)).encode("utf-8")
+                recolor_text(decode_utf8(base, ldir / f"{name}.svg"), p.mode_map(mode)).encode("utf-8")
     return out
 
 
@@ -624,7 +643,7 @@ def icon_mode(p: Project) -> str:
 def app_icon_text(p: Project, ldir: Path) -> str:
     """App 图标（iOS / Google Play / Android 旧版 / Apple 触控）：手工覆盖 app-icon.svg，否则自动排版。"""
     if (ldir / "app-icon.svg").exists():
-        return (ldir / "app-icon.svg").read_text(encoding="utf-8")
+        return read_utf8(ldir / "app-icon.svg")
     comp = load_targets()["compose"]
     return compose_svg(layout_mode_text(p, ldir, mark_layout(ldir), icon_mode(p)), comp["app_icon_content"],
                        app_background(p))
@@ -633,7 +652,7 @@ def app_icon_text(p: Project, ldir: Path) -> str:
 def avatar_text(p: Project, ldir: Path) -> str:
     """头像：手工覆盖 avatar.svg，否则品牌底色铺满、图形缩进圆形安全区。"""
     if (ldir / "avatar.svg").exists():
-        return (ldir / "avatar.svg").read_text(encoding="utf-8")
+        return read_utf8(ldir / "avatar.svg")
     comp = load_targets()["compose"]
     return compose_svg(layout_mode_text(p, ldir, mark_layout(ldir), icon_mode(p)), comp["avatar_content"],
                        app_background(p))
@@ -786,20 +805,37 @@ def write_atomic(path: Path, text: str) -> None:
     """先写临时文件再整体替换：并发读写（如并行测试）时不会读到写了一半的文件。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(text, encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def load_cache(path: Path) -> dict:
+    """读取可再生成的 JSON 缓存：缺失、损坏或类型不对都当作没有缓存。"""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_cache(path: Path, data: dict) -> None:
+    """写入缓存；写不进去只是下次重新计算，不影响当前命令。"""
+    try:
+        write_atomic(path, json.dumps(data, ensure_ascii=False))
+    except OSError:
+        pass
 
 
 def cached(key_text: str, compute):
     """按内容哈希缓存可 JSON 序列化的计算结果（渲染类检查用，内容不变时不重复渲染）。"""
     key = hashlib.sha256(key_text.encode("utf-8")).hexdigest()
-    try:
-        cache = json.loads(STRUCTURE_CACHE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        cache = {}
+    cache = load_cache(STRUCTURE_CACHE)
     if key not in cache:
         cache[key] = compute()
-        write_atomic(STRUCTURE_CACHE, json.dumps(cache))
+        save_cache(STRUCTURE_CACHE, cache)
     return cache[key]
 
 
@@ -968,7 +1004,7 @@ def check_new_direction(p: Project, letter: str) -> str:
     if any(d.name.split("-", 1)[0] == letter for d in p.directions()):
         raise LogoError(f"方向 {letter} 已存在")
     brief = p.dir / "brief.md"
-    holes = document_issues(f"{p.slug}/brief.md", brief.read_text(encoding="utf-8")) if brief.exists() else ["缺少 brief.md"]
+    holes = document_issues(f"{p.slug}/brief.md", read_utf8(brief)) if brief.exists() else ["缺少 brief.md"]
     if holes:  # 先问清楚再设计：需求访谈的结果写进 brief.md 并经用户确认后才能开始
         raise LogoError(f"{rel(brief)} 还有 {len(holes)} 处缺失或未填写（如“{holes[0]}”）；"
                         "请先完成需求访谈（logo-workflow 技能第 0 步）并经用户确认，再开始设计")
@@ -1453,7 +1489,7 @@ def cmd_preview(a) -> None:
             raise LogoError(f"{a.target} 还没有任何版式")
         ldir = rdir / "layouts"
         known = set(LOGO_LAYOUTS) | {"app-icon", "avatar"}  # 旧发布中的 cover-* 不属于 Logo 资产，不再预览
-        items = [(f.stem, f.read_text(encoding="utf-8")) for f in layouts if f.stem.split(".")[0] in known]
+        items = [(f.stem, read_utf8(f)) for f in layouts if f.stem.split(".")[0] in known]
         try:  # 未手工覆盖时，附上自动排版的 App 图标与头像，导出前即可查看效果
             if not (ldir / "app-icon.svg").exists():
                 items.append(("app-icon（自动排版）", app_icon_text(p, ldir)))
@@ -1505,7 +1541,7 @@ def cmd_compare(a) -> None:
         cells = []
         for vid in ids:
             svg = p.version_dir(vid) / "logo.svg"
-            text = svg.read_text(encoding="utf-8") if mode == "color" else recolor_svg(svg, p.mode_map(mode))
+            text = read_utf8(svg) if mode == "color" else recolor_svg(svg, p.mode_map(mode))
             png = render_text(text, Path(td) / f"{vid}.png", 400)
             cell = Path(td) / f"cell-{vid}.png"
             run(["magick", str(png), "-background", bg, "-gravity", "center", "-extent", "460x460", str(cell)])
@@ -1597,7 +1633,7 @@ def write_dist_extras(p: Project, rid: str, rdir: Path, root_version: str, dist:
                  + "\n\n标志中的文字已转为图形；字体的授权不延伸到标志本身。\n") if font_ids else ""
     (dist / "guide.md").write_text(
         f"<!-- 由 ./logo export 生成；内容来源：{rel(guide_src)} 与 project.toml -->\n\n"
-        + guide_src.read_text(encoding="utf-8")
+        + read_utf8(guide_src)
         + f"\n\n---\n\n## 附录：色板（自动生成）\n\n| 色名 | HEX | RGB |\n|---|---|---|\n{pal_rows}\n"
         + "\n印刷用的 CMYK、专色色值需按实际印刷工艺与色彩配置确定，不能由 RGB 直接换算。\n" + font_part, encoding="utf-8")
 
@@ -1647,7 +1683,7 @@ def cmd_export(a) -> None:
     rdir = ldir.parent
     if not (rdir / "guide.md").exists():
         raise LogoError(f"{rid} 缺少 guide.md（交付物的一部分）")
-    holes = unfilled_placeholders(f"{p.slug}/releases/{rid}/guide.md", (rdir / "guide.md").read_text(encoding="utf-8"))
+    holes = unfilled_placeholders(f"{p.slug}/releases/{rid}/guide.md", read_utf8(rdir / "guide.md"))
     if holes:
         path = (rdir / "guide.md").resolve().relative_to(PROJECTS.resolve()).as_posix()
         committed = git("cat-file", "-e", f"HEAD:{path}", check=False, repo="projects").returncode == 0
@@ -1736,7 +1772,7 @@ def load_release_meta(rdir: Path) -> dict:
     meta = {}
     f = rdir / "release.md"
     if f.exists():
-        for line in f.read_text(encoding="utf-8").splitlines():
+        for line in read_utf8(f).splitlines():
             m = re.match(r"^-\s+\**\s*([^*:：]+?)\s*\**\s*[:：]\s*(.*)$", line)
             if m and m.group(1) in RELEASE_META_KEYS:
                 meta.setdefault(RELEASE_META_KEYS[m.group(1)], m.group(2).strip().strip("`"))
@@ -1773,8 +1809,8 @@ def system_text(path: Path) -> str | None:
     """读取系统文件：系统提交检查时取暂存区，否则取工作区；不存在时返回 None。"""
     if STAGED_SYSTEM and is_system_config(path):
         raw = system_staged_bytes(path)
-        return raw.decode("utf-8") if raw is not None else None
-    return path.read_text(encoding="utf-8") if path.exists() else None
+        return decode_utf8(raw, path) if raw is not None else None
+    return read_utf8(path) if path.exists() else None
 
 
 def staged_bytes(path: Path) -> bytes | None:
@@ -1879,13 +1915,13 @@ def release_doc_warnings(p: Project, rid: str, committed: set[str]) -> list[str]
     base = f"{p.slug}/releases/{rid}"
     guide = rdir / "guide.md"
     if f"{base}/guide.md" in committed and guide.exists():
-        holes = unfilled_placeholders(f"{base}/guide.md", guide.read_text(encoding="utf-8"))
+        holes = unfilled_placeholders(f"{base}/guide.md", read_utf8(guide))
         if holes:
             out.append(f"{rel(guide)}: 发布 {rid} 无法导出——guide.md 已提交但还有 {len(holes)} 处模板占位"
                        f"（只能追加，补不上）；请 ./logo release {p.slug} --from {rid} 新建发布，并在提交前填完 guide.md")
     rmd = rdir / "release.md"
     if f"{base}/release.md" in committed and rmd.exists():
-        refs = DECISION_REF_RE.findall(rmd.read_text(encoding="utf-8"))
+        refs = DECISION_REF_RE.findall(read_utf8(rmd))
         if not refs:
             out.append(f"{rel(rmd)}: 发布 {rid} 没有引用决策记录，追溯链缺少“决策依据”；"
                        f"可用 ./logo decision {p.slug} <短名> 补写决策，再在 release.md 末尾追加引用 decisions/NNN-*.md")
@@ -2255,11 +2291,8 @@ def check_history(warnings: list[str]) -> None:
         return
     rules = "|".join(pt.pattern for pt in FROZEN_PATTERNS + APPEND_ONLY_PATTERNS)
     key = hashlib.sha256(f"v2-exact-bytes|{r.stdout.decode().strip()}|{rules}".encode()).hexdigest()
-    try:
-        cache = json.loads(HISTORY_CACHE.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        cache = {}
-    if cache.get("key") != key:
+    cache = load_cache(HISTORY_CACHE)
+    if cache.get("key") != key or not isinstance(cache.get("found"), list):
         found = []
         log = git("-c", "core.quotePath=false", "log", "--format=@@%H", "--name-status", "--no-renames",
                   "--diff-filter=MD", repo="projects").stdout.decode("utf-8")
@@ -2282,7 +2315,7 @@ def check_history(warnings: list[str]) -> None:
                 if not new.startswith(old):
                     found.append(f"{commit[:7]} 改写了只追加文件 {path}")
         cache = {"key": key, "found": found}
-        write_atomic(HISTORY_CACHE, json.dumps(cache, ensure_ascii=False))
+        save_cache(HISTORY_CACHE, cache)
     found = cache["found"]
     if found:
         more = f" 等 {len(found)} 处" if len(found) > 5 else ""
@@ -2314,7 +2347,7 @@ def check_backup(warnings: list[str]) -> None:
 def template_placeholders(template_name: str) -> tuple[str, ...]:
     """模板中必须被替换的占位行：含（提示）或以冒号结尾的空字段；“追加区”、{{变量}} 行与 > 说明除外。"""
     out, in_append = [], False
-    for line in (TEMPLATES / template_name).read_text(encoding="utf-8").splitlines():
+    for line in template_text(template_name).splitlines():
         s = line.strip()
         if s.startswith("#"):
             in_append = "追加" in s
@@ -2359,7 +2392,7 @@ def document_issues(path: str, text: str) -> list[str]:
     issues = unfilled_placeholders(path, text)
     if not re.fullmatch(r"[^/]+/brief\.md", path):
         return issues
-    required = brief_fields((TEMPLATES / "brief.md").read_text(encoding="utf-8"))
+    required = brief_fields(template_text("brief.md"))
     actual = brief_fields(text)
     for section, fields in required.items():
         if section not in actual:
@@ -2390,13 +2423,15 @@ def check_new_docs(staged: bool, errors: list[str], warnings: list[str]) -> None
     briefs = {f"{p.slug}/brief.md" for p in all_projects()}
     for path in sorted(added | briefs):
         f = PROJECTS / path
-        if staged and path in added:
-            text = git("show", f":{path}", repo="projects").stdout.decode("utf-8")
-        elif f.exists():
-            text = f.read_text(encoding="utf-8")
-        else:
-            continue
         sink = errors if (staged and path not in briefs) else warnings
+        try:
+            raw = staged_bytes(f) if staged else None  # 提交时只看暂存区，工作区里未暂存的问题不拦截
+            if staged and raw is None or not staged and not f.exists():
+                continue
+            text = decode_utf8(raw, f) if staged else read_utf8(f)
+        except LogoError as e:
+            (errors if staged else warnings).append(str(e))
+            continue
         holes = document_issues(path, text)
         if holes:
             what = "缺失或未填写" if path in briefs else "模板占位未填写"
@@ -2422,8 +2457,7 @@ def check_hooks(warnings: list[str]) -> None:
     expected = {"system": (".githooks", ROOT / ".githooks" / "pre-commit"),
                 "projects": (project_hooks_path(), ROOT / ".githooks" / "projects" / "pre-commit")}
     gi = PROJECTS / ".gitignore"
-    if projects_repo_ready() and (not gi.exists() or gi.read_text(encoding="utf-8")
-                                  != PROJECTS_GITIGNORE_TEMPLATE.read_text(encoding="utf-8")):
+    if projects_repo_ready() and (not gi.exists() or gi.read_bytes() != PROJECTS_GITIGNORE_TEMPLATE.read_bytes()):
         warnings.append(f"{rel(gi)} 与系统模板不一致，运行 {cli_prefix()} setup 更新后在项目仓库提交")
     for repo, (hooks_path, script) in expected.items():
         if repo == "projects" and not projects_repo_ready():
@@ -2552,7 +2586,7 @@ def build_index() -> str:
 LICENSE_URLS = {"OFL-1.1": "https://openfontlicense.org", "Apache-2.0": "https://www.apache.org/licenses/LICENSE-2.0"}
 
 
-def layout_font_ids(ldir: Path, exists=Path.exists, read=lambda f: f.read_text(encoding="utf-8")) -> list[str]:
+def layout_font_ids(ldir: Path, exists=Path.exists, read=read_utf8) -> list[str]:
     """发布版式中转曲文字所用的字体 id（依据 outline 注释，按出现顺序去重）；README 与交付指南共用。"""
     ids: dict[str, None] = {}
     for f in sorted(ldir.glob("*.svg")) if ldir.exists() else []:
@@ -2604,7 +2638,7 @@ def build_readme() -> str | None:
         return None
     import series  # 延迟导入：series.py 依赖本模块
     exists = (lambda f: staged_bytes(f) is not None) if STAGED_CHECK else (lambda f: f.exists())
-    read = (lambda f: (staged_bytes(f) or b"").decode("utf-8")) if STAGED_CHECK else (lambda f: f.read_text(encoding="utf-8"))
+    read = (lambda f: decode_utf8(staged_bytes(f) or b"", f)) if STAGED_CHECK else read_utf8
     names = cfg.get("names", {})
 
     def label(p: Project) -> str:
@@ -2741,7 +2775,7 @@ def cmd_check(a) -> None:
                 import covers  # 延迟导入：covers.py 依赖本模块
                 covers.check_family_covers(perr, warnings, staged)
                 check_secrets("projects", staged, perr)
-        except LogoError as e:
+        except (LogoError, OSError) as e:
             if scope != "system":
                 raise
             perr.append(f"项目检查中断：{e}")  # 系统提交不受设计仓库内容影响，只提醒
@@ -2754,6 +2788,8 @@ def cmd_check(a) -> None:
     if not a.slug:
         check_fonts(errors, warnings)
         if scope != "projects":
+            errors.extend(f"系统模板缺失：{rel(TEMPLATES / name)}，请从 Git 恢复"
+                          for name in sorted({tpl for _, tpl in DOC_TEMPLATES}) if not (TEMPLATES / name).is_file())
             check_stray_files("system", errors, warnings)
             check_secrets("system", a.staged, errors)
         if not a.staged:  # 以下只在手动检查时运行，不拖慢提交
@@ -2997,10 +3033,20 @@ def main(argv: list[str] | None = None) -> None:
         if args.cmd not in ("repo", "selftest", "check"):
             repositories.validate_tree(PROJECTS)
         if args.cmd not in ("repo", "selftest"):
-            repositories.validate_cache()
+            try:
+                repositories.validate_cache()
+            except LogoError as e:
+                if not system_check:
+                    raise
+                args.project_selection_error = args.project_selection_error or str(e)  # 跳过项目检查，也就不写缓存
         args.fn(args)
     except LogoError as e:
         print(f"✗ {scope_hint(str(e))}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        path = Path(os.fsdecode(e.filename)) if isinstance(e.filename, (str, bytes)) else None
+        hint = "（缓存内容可删除后重试）" if path and path.resolve().is_relative_to(ROOT / ".cache") else ""
+        print(f"✗ 无法读写 {rel(path) + '：' if path else ''}{e.strerror or e}{hint}", file=sys.stderr)
         sys.exit(1)
 
 

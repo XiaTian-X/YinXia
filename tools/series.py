@@ -70,7 +70,7 @@ def rules_holes(p: "logo.Project") -> list[str]:
     md = SERIES_DIR / m["id"] / "series.md"
     if not md.exists():
         return [f"（缺少 {rules_path(m['id'])}）"]
-    return logo.unfilled_placeholders(rules_path(m["id"]), md.read_text(encoding="utf-8"))
+    return logo.unfilled_placeholders(rules_path(m["id"]), logo.read_utf8(md))
 
 
 def skeleton_problem(sid: str, ref: str) -> str | None:
@@ -237,7 +237,7 @@ def compare_set(sid: str, with_: list[str] | None) -> list[tuple["logo.Project",
 def rules_lines(sid: str) -> list[str]:
     """series.md 的各行；文件缺失时为空（缺失由 check_series 报错，这里不中断检查与命令）。"""
     md = SERIES_DIR / sid / "series.md"
-    return md.read_text(encoding="utf-8").splitlines() if md.exists() else []
+    return logo.read_utf8(md).splitlines() if md.exists() else []
 
 
 def checklist(sid: str) -> list[str]:
@@ -369,7 +369,7 @@ def palette_users(p: "logo.Project") -> set[str]:
     """子品牌受色板约束的 SVG（各版本与发布版式）中用到的颜色。"""
     files = [v / "logo.svg" for d in p.directions() for v in p.versions_in(d)]
     files += [f for rd in p.releases() for f in (rd / "layouts").glob("*.svg")]
-    return {c.upper() for f in files if f.exists() for c in logo.HEX_IN_TEXT_RE.findall(f.read_text(encoding="utf-8"))}
+    return {c.upper() for f in files if f.exists() for c in logo.HEX_IN_TEXT_RE.findall(logo.read_utf8(f))}
 
 
 def toml_set(text: str, table: str, key: str, literal: str) -> str:
@@ -419,7 +419,7 @@ def cmd_sync(a) -> None:
         bad = [k for k in keys if k not in offered]
         if bad:
             raise logo.LogoError(f"不是母品牌有变化的颜色：{', '.join(bad)}（可选：{', '.join(offered) or '无'}）")
-    text = p.toml_path.read_text(encoding="utf-8")
+    text = logo.read_utf8(p.toml_path)
     cfg_modes = p.cfg.get("color_modes", {})
     master_modes = master.cfg.get("color_modes", {})
     used, palette = palette_users(p), p.palette
@@ -615,7 +615,7 @@ def cmd_skeleton(a) -> None:
         raise logo.LogoError("--note 须写明用户的意见（为什么以这张为骨架）")
     ref = f"{p.slug}/{cdir.name}"
     path = SERIES_DIR / a.id / "series.toml"
-    path.write_text(toml_set(path.read_text(encoding="utf-8"), "covers", "skeleton", toml_value(ref)), encoding="utf-8")
+    path.write_text(toml_set(logo.read_utf8(path), "covers", "skeleton", toml_value(ref)), encoding="utf-8")
     ratios = "、".join(s.stem for s in sorted(cdir.glob("*.svg")))
     md = SERIES_DIR / a.id / "series.md"
     if md.exists():
@@ -635,12 +635,12 @@ def cmd_add(a) -> None:
         raise logo.LogoError(f"{p.slug} 已属于系列 {membership(p).get('id')}")
     master = check_join(a.id, a.role, p.slug)
     rid = master.cfg["state"]["current_release"] if master else None
-    text = p.toml_path.read_text(encoding="utf-8")
+    text = logo.read_utf8(p.toml_path)
     p.toml_path.write_text(text.rstrip("\n") + "\n\n" + series_section(a.id, a.role, rid), encoding="utf-8")
     kind, rules = describe(a.id, a.role)
     brief = p.dir / "brief.md"
     if brief.exists():  # brief 可随时修改：更新“项目类型与架构”两行（老项目没有这两行时跳过）
-        b = brief.read_text(encoding="utf-8")
+        b = logo.read_utf8(brief)
         b = re.sub(r"^- \*\*项目类型\*\*[:：].*$", f"- **项目类型**：{kind}", b, count=1, flags=re.M)
         b = re.sub(r"^- \*\*系列规则\*\*[:：].*$", f"- **系列规则**：{rules}", b, count=1, flags=re.M)
         brief.write_text(b, encoding="utf-8")

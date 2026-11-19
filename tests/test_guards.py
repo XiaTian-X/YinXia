@@ -173,6 +173,75 @@ class DocsTest(GuardBase):
         self.assertCommitted(self.ws.commit("projects", "[demo] brief"))  # brief 可随时修改，只提醒不拦截
 
 
+class DamagedFilesTest(GuardBase):
+    """单个损坏的文件要报出文件名，不能变成 Python 异常，也不能拖垮无关的操作。"""
+
+    def assertClean(self, r):
+        self.assertNotIn('Traceback', r.stdout + r.stderr)
+
+    def test_non_utf8_brief_stays_with_its_project(self):
+        ws = self.ws
+        ws.new_project("other")
+        (self.p / "brief.md").write_bytes(b"\xff")
+        out = ws.logo("status").stdout
+        self.assertIn("projects/demo/brief.md: 不是 UTF-8", out)
+        self.assertIn("other（", out)
+        self.assertIn("demo/brief.md: 不是 UTF-8", ws.logo("check").stdout)
+        self.assertIn("demo/brief.md: 不是 UTF-8", ws.logo("--repo", "default", "check", "--staged", "--scope", "system").stdout)
+        self.assertIn("不是 UTF-8", ws.logo("direction", "demo", "Z", "zed", ok=False).stderr)
+        ws.logo("decision", "other", "note")
+        fill_doc(next((ws.projects / "other" / "decisions").glob("*.md")))
+        ws.git("projects", "add", "other")
+        self.assertCommitted(ws.commit("projects", "[other] note", add=False))  # 未暂存的坏文件不拦别的提交
+        ws.git("projects", "add", "demo/brief.md")
+        self.assertBlocked(ws.commit("projects", "[demo] brief", add=False), "demo/brief.md: 不是 UTF-8")
+
+    def test_non_utf8_design_files_are_named(self):
+        ws = self.ws
+        svg = self.v1 / "logo.svg"
+        svg.write_bytes(b"\xff")
+        r = ws.logo("preview", "demo", "A-v001", ok=False)
+        self.assertIn("logo.svg: 不是 UTF-8", r.stderr)
+        self.assertClean(r)
+        svg.write_text(TRIANGLE.format(c=PRIMARY), encoding="utf-8")
+        (ws.projects / ".gitignore").write_bytes(b"\xff")
+        r = ws.logo("check", ok=False)
+        self.assertIn(".gitignore 与系统模板不一致", r.stdout)
+        self.assertClean(r)
+
+    def test_missing_template_is_reported(self):
+        (self.ws.root / "templates" / "brief.md").unlink()
+        r = self.ws.logo("status", ok=False)
+        self.assertIn("系统模板缺失", r.stdout + r.stderr)
+        self.assertClean(r)
+        r = self.ws.logo("--repo", "default", "check", "--staged", "--scope", "system", ok=False)  # 缺模板是系统问题，要拦
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("系统模板缺失：templates/brief.md", r.stdout)
+
+    def test_disposable_cache_files_never_break_commands(self):
+        ws = self.ws
+        cache = ws.root / ".cache"
+        history, structure = cache / "history-check.json", cache / "structure-cache.json"
+        cache.mkdir(exist_ok=True)
+        for text in ("[1]", "{bad", '{"key": 1}'):
+            history.write_text(text, encoding="utf-8")
+            structure.write_text(text, encoding="utf-8")
+            self.assertClean(ws.logo("check"))
+        history.unlink()
+        history.mkdir()
+        structure.unlink()
+        structure.mkdir()
+        self.assertClean(ws.logo("check"))
+        self.assertEqual(sorted(x.name for x in cache.glob(".*.tmp")), [])  # 写不进去也不留临时文件
+        (cache / "demo").mkdir(exist_ok=True)
+        import shutil
+        shutil.rmtree(cache / "demo")
+        (cache / "demo").write_text("x", encoding="utf-8")
+        r = ws.logo("preview", "demo", "A-v001", ok=False)
+        self.assertIn("无法读写", r.stderr)
+        self.assertClean(r)
+
+
 class LegacyDataTest(GuardBase):
     """规则出台前（或绕过钩子）提交的数据：钩子只看新增文档，这些要由 check 提醒。"""
 

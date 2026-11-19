@@ -225,30 +225,96 @@ class RepositoryGuardsTest(unittest.TestCase):
             (d / 'bin' / 'python').symlink_to(outside, target_is_directory=True)
             return d
 
-        allowed = venv('tool-env')
+        allowed = [venv('tool-env'), venv('demo/env')]  # 缓存根下，或项目缓存里系统不写入的目录
         self.ws.logo('status')
         self.ws.logo('check')
         self.ws.logo('--repo', 'default', 'check', '--staged', '--scope', 'system')  # 系统提交钩子同样不受影响
-        shutil.rmtree(allowed)
+        for d in allowed:
+            shutil.rmtree(d)
 
-        linked_marker = venv('linked-marker', marker=False)
+        def assert_blocked():
+            r = self.ws.logo('status', ok=False)
+            self.assertNotEqual(r.returncode, 0)
+            self.assertIn('缓存目录不允许符号链接', r.stderr)
+            self.assertIn('请删除该链接', r.stderr)
+
+        linked_marker = venv('linked-marker', marker=False)  # pyvenv.cfg 本身是链接，不算虚拟环境
         (linked_marker / 'pyvenv.cfg').symlink_to(outside / 'cfg')
-        shutil.rmtree(linked_marker / 'bin')
-        (linked_marker / 'link').symlink_to(outside, target_is_directory=True)
-        blocked = [linked_marker, venv('no-marker', marker=False), venv('demo'), venv('handoff'), venv('_series'),
-                   venv('work/nested')]  # 依次：标记是链接、没有标记、项目同名、系统目录（两个）、不在缓存根下
-        for d in blocked:
-            for other in blocked:  # 每次只留一个，确认它自己就会被拦下
-                if other != d:
-                    shutil.move(str(other), str(self.ws.tmp / f'parked-{blocked.index(other)}'))
-            with self.subTest(path=d.relative_to(cache).as_posix()):
-                r = self.ws.logo('status', ok=False)
-                self.assertNotEqual(r.returncode, 0)
-                self.assertIn('缓存目录不允许符号链接', r.stderr)
-                self.assertIn('请删除该链接', r.stderr)
-            for other in blocked:
-                if other != d:
-                    shutil.move(str(self.ws.tmp / f'parked-{blocked.index(other)}'), str(other))
+        assert_blocked()
+        shutil.rmtree(linked_marker)
+        cases = (('no-marker', False), ('demo', True), ('handoff', True), ('_series', True),  # 无标记、项目同名、系统目录
+                 ('work/nested', True), ('demo/preview', True))  # 不在项目缓存下、系统写入的目录
+        for rel, marker in cases:
+            with self.subTest(path=rel):
+                venv(rel, marker)
+                assert_blocked()
+                shutil.rmtree(cache / rel.split('/')[0])
+
+    def test_system_commit_is_independent_of_design_cache(self):
+        """default 缓存有问题时设计操作被拦下，系统提交只提醒，也不会顺着链接写入。"""
+        ws = self.ws
+        ws.new_project('demo')
+        outside = ws.tmp / 'outside'
+        outside.mkdir()
+        cache = ws.root / '.cache'
+        (cache / 'demo').mkdir(parents=True, exist_ok=True)
+        (cache / 'demo' / 'preview').symlink_to(outside, target_is_directory=True)
+        self.assertNotEqual(ws.logo('status', ok=False).returncode, 0)
+        with (ws.root / 'README.md').open('a', encoding='utf-8') as f:
+            f.write('\n补充\n')
+        r = ws.commit('system', 'docs: note')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn('缓存目录不允许符号链接', r.stdout + r.stderr)
+        self.assertEqual(list(outside.iterdir()), [])
+        (cache / 'demo' / 'preview').unlink()
+        import shutil
+        shutil.rmtree(cache)
+        cache.write_text('x', encoding='utf-8')  # .cache 被同名文件占用
+        r = ws.logo('status', ok=False)
+        self.assertIn('应为缓存目录', r.stderr)
+        self.assertNotIn('Traceback', r.stderr)
+        self.assertIn('应为缓存目录', ws.logo('--repo', 'default', 'check', '--staged', '--scope', 'system').stdout)
+
+    def test_inbox_contents_do_not_lock_repository(self):
+        """收件箱放的是外部文件：带 .git 或链接的文件夹不影响仓库，但写入目录和收件箱本身仍要把关。"""
+        import shutil
+        alpha = self.repo('alpha')
+        self.brand('alpha')
+        outside = self.ws.tmp / 'outside'
+        outside.mkdir()
+        (outside / 'a.svg').write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>', encoding='utf-8')
+        pack = alpha / 'inbox' / 'pack'
+        (pack / '.git').mkdir(parents=True)
+        (pack / 'link').symlink_to(outside, target_is_directory=True)
+        (alpha / 'inbox' / 'file.svg').symlink_to(outside / 'a.svg')
+        (alpha / 'inbox' / 'project.toml').write_text('[project]\n', encoding='utf-8')  # 外部文件不会被当成品牌
+        self.assertNotIn('inbox（', self.cli('alpha', 'status').stdout)
+        self.cli('alpha', 'check')
+        self.assertEqual(self.git(alpha, 'add', '-A').returncode, 0)
+        self.assertEqual(self.git(alpha, 'ls-files', 'inbox').stdout, '')  # 收件箱内容不进提交
+        self.assertNotIn('file.svg', self.cli('alpha', 'inbox').stdout)  # 符号链接不算待导入文件
+        self.assertIn('符号链接', self.cli('alpha', 'import', str(alpha / 'inbox/file.svg'), '--project', 'brand', ok=False).stderr)
+        reply = self.ws.tmp / 'reply.txt'
+        reply.write_text('x', encoding='utf-8')
+        (alpha / 'inbox' / 'brand').symlink_to(outside, target_is_directory=True)
+        self.assertIn('不允许符号链接', self.cli('alpha', 'handoff', 'receive', str(reply), '--project', 'brand', ok=False).stderr)
+        shutil.rmtree(alpha / 'inbox')
+        (alpha / 'inbox').symlink_to(outside, target_is_directory=True)
+        self.assertIn('不允许符号链接', self.cli('alpha', 'status', ok=False).stderr)
+
+    def test_damaged_registry_explains_recovery(self):
+        ws = self.ws
+        alpha = self.repo('alpha')
+        registry = ws.root / '.yinxia' / 'repositories.toml'
+        registry.write_text('[x', encoding='utf-8')
+        for args in (['repo', 'list'], ['status']):
+            r = ws.logo(*args, ok=False)
+            self.assertIn('repo add', r.stderr)
+            self.assertNotIn('Traceback', r.stderr)
+        self.assertEqual(ws.logo('--repo', 'default', 'status').returncode, 0)
+        registry.unlink()
+        ws.logo('repo', 'add', 'alpha', str(alpha))
+        self.cli('alpha', 'status')
 
     def test_cache_link_and_external_skill_cannot_write_into_design_repository(self):
         import shutil
